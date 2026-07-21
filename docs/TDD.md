@@ -480,7 +480,7 @@ Alert mức tối thiểu:
 | DC-000 | Discovery Gate (`docs/dashboard-discovery.md`) | P0 | — | ✅ PASSED 2026-07-21 |
 | DC-001 | Auth: Google OAuth + email allowlist (allowlist V1 = `mdinh.dong86@gmail.com`) | P0 | DC-000 | ✅ Done — chờ E2E khi có Google creds + Postgres |
 | DC-002 | AppShell + navigation mới | P0 | DC-001 | ✅ Done |
-| DC-003 | Profile switcher toàn cục | P0 | DC-002 | — |
+| DC-003 | Profile switcher toàn cục | P0 | DC-002 | ✅ Done |
 | DC-004 | Trang `/admin` link ngoài tới Hermes cũ | P0 | DC-002 | — |
 | DC-005 | Dashboard summary API/UI | P0 | DC-002, DC-006 | — |
 | DC-006 | Task projection từ Hermes REST/SSE | P0 | DC-000, DC-001 | — |

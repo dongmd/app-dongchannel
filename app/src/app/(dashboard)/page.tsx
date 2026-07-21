@@ -1,17 +1,36 @@
 import { getServerSession } from "next-auth";
 import { authOptions } from "@/lib/auth/options";
+import { getProfileFilter } from "@/lib/profiles/server";
+import { PROFILE_LABELS } from "@/lib/profiles/types";
 
-export default async function OverviewPage() {
-  const session = await getServerSession(authOptions);
+interface Props {
+  searchParams: Promise<Record<string, string | string[] | undefined>>;
+}
+
+export default async function OverviewPage({ searchParams }: Props) {
+  const [session, profile] = await Promise.all([
+    getServerSession(authOptions),
+    getProfileFilter(searchParams),
+  ]);
+  const profileLabel = PROFILE_LABELS[profile];
 
   return (
     <div className="mx-auto max-w-5xl space-y-6">
-      <header className="space-y-1">
-        <h1 className="text-2xl font-semibold">Tổng quan</h1>
-        <p className="text-sm text-muted-foreground">
-          Daily command center — sẽ có KPI, decision inbox, active tasks, next best actions ở
-          DC-005.
-        </p>
+      <header className="flex items-start justify-between gap-4">
+        <div className="space-y-1">
+          <h1 className="text-2xl font-semibold">Tổng quan</h1>
+          <p className="text-sm text-muted-foreground">
+            Daily command center — sẽ có KPI, decision inbox, active tasks, next best actions ở
+            DC-005.
+          </p>
+        </div>
+        <span
+          className="inline-flex items-center gap-1.5 rounded-full border border-border bg-muted/30 px-3 py-1 text-xs text-muted-foreground"
+          title={`Đang lọc theo ${profileLabel.long}`}
+        >
+          <span className="h-1.5 w-1.5 rounded-full bg-primary" aria-hidden="true" />
+          Profile: <strong className="text-foreground">{profileLabel.short}</strong>
+        </span>
       </header>
 
       {session?.user ? (

@@ -2,10 +2,10 @@
 
 import { Bell, Plus, Search } from "lucide-react";
 import { UserMenu } from "@/components/user-menu";
+import { ProfileSwitcher } from "./profile-switcher";
 
-// AC02 — global header với search + profile switcher placeholder + +Task + notif + user menu.
-// Profile switcher = DC-003. Search = DC-013. +Task = DC-005 (dashboard summary). Notif = DC-015.
-// V1 các button chưa hoạt động, chỉ tạo khung UI đúng ARIA + focus.
+// AC02 — global header với search + profile switcher + +Task + notif + user menu.
+// Search = DC-013. +Task = DC-005 (dashboard summary). Notif = DC-015.
 export function GlobalHeader() {
   return (
     <header
@@ -15,16 +15,8 @@ export function GlobalHeader() {
       {/* Chừa chỗ mobile menu toggle */}
       <div className="w-10 md:hidden" aria-hidden="true" />
 
-      {/* Profile switcher — DC-003 */}
-      <button
-        type="button"
-        disabled
-        className="hidden items-center gap-2 rounded-md border border-border px-3 py-1.5 text-sm text-muted-foreground disabled:opacity-60 md:flex"
-        aria-label="Chọn profile (chưa hoạt động — DC-003)"
-      >
-        <span className="font-mono text-xs">▼</span>
-        Tất cả
-      </button>
+      {/* Profile switcher — hiện cả mobile & desktop */}
+      <ProfileSwitcher />
 
       {/* Search — DC-013 */}
       <div className="flex flex-1 items-center gap-2 rounded-md border border-border bg-muted/20 px-3 py-1.5 text-sm text-muted-foreground">
