@@ -24,8 +24,8 @@ Dashboard vận hành AFF Research Bot & YouTube Global Bot. Kết nối với H
 
 - Node.js ≥ 20.11
 - pnpm 9 (hoặc npm 10 — có lockfile riêng)
-- PostgreSQL 16 (dev local: `docker run -d --name pg-dev -e POSTGRES_PASSWORD=ops -e POSTGRES_USER=ops -e POSTGRES_DB=dongchannel_ops -p 5432:5432 postgres:16-alpine`; prod: đã có trên VPS)
-- SSH tunnel tới Hermes trên VPS: `ssh -N -L 9119:127.0.0.1:9119 vocapro &` (để dev local reach Hermes API)
+- PostgreSQL 16 (dev: dùng VPS Postgres qua SSH tunnel; prod: đã có trên VPS host)
+- SSH tunnel tới VPS: chạy `./scripts/dev-tunnel.sh` trong 1 terminal riêng để mở cả Hermes 9119 + Postgres 5432
 
 ## Bắt đầu
 
