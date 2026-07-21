@@ -1,0 +1,52 @@
+# Caddy — HTTPS tự động cho dashboard Hermes
+# Đặt tại ./caddy/Caddyfile (mount cả THƯ MỤC vào container, không mount riêng file)
+#
+# Caddy tự động: đăng ký ACME, xin chứng chỉ Let's Encrypt, redirect HTTP->HTTPS,
+# gia hạn trước khi hết hạn. WebSocket (/api/ws, /api/pty) proxy trong suốt,
+# không cần khai báo thêm như nginx.
+
+{
+	email ban@doanhnghiepmotnguoi.com   # ← email nhận thông báo hết hạn chứng chỉ
+}
+
+dashboard.doanhnghiepmotnguoi.com {
+	encode zstd gzip
+
+	# ─────────────────────────────────────────────────────────────
+	# TÙY CHỌN BẢO MẬT BỔ SUNG
+	#
+	# Middleware xác thực của dashboard BỎ QUA /api/plugins/ — các route
+	# plugin (gồm Kanban REST) không có xác thực vì dashboard vốn thiết kế
+	# để bind localhost. Bỏ comment 2 dòng dưới để chặn tại tầng Caddy.
+	#
+	# ĐÁNH ĐỔI: panel Kanban trên dashboard sẽ hỏng. Chỉ bật nếu bạn
+	# dùng Kanban qua CLI và Telegram là chính.
+	# ─────────────────────────────────────────────────────────────
+	# @plugins path /api/plugins/*
+	# respond @plugins 403
+
+	reverse_proxy hermes:9119 {
+		# Caddy tự set X-Forwarded-For / -Proto / -Host và giữ nguyên Host gốc
+		# — đúng thứ mà proxy_headers và DNS-rebinding guard của dashboard cần.
+		flush_interval -1   # không buffer response streaming (SSE)
+	}
+
+	header {
+		Strict-Transport-Security "max-age=31536000; includeSubDomains"
+		X-Content-Type-Options    "nosniff"
+		Referrer-Policy           "strict-origin-when-cross-origin"
+		-Server
+	}
+
+	log {
+		output file /data/access.log
+		format json
+	}
+}
+
+# ─── Landing page cho aff (thêm sau khi đã chọn vertical) ───
+# doanhnghiepmotnguoi.com, www.doanhnghiepmotnguoi.com {
+# 	root * /srv/landing
+# 	file_server
+# 	encode zstd gzip
+# }

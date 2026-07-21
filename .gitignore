@@ -1,0 +1,35 @@
+# Repo-root .gitignore (defense-in-depth)
+# App-specific ignores nằm trong app/.gitignore
+
+# Sensitive local config
+hermes-or-openclaw/config.txt
+**/config.txt
+**/.env
+**/.env.local
+**/.env.production.local
+**/.env.development.local
+*.pem
+*.key
+
+# Memory (per-user Claude context)
+.claude/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Editors
+.idea/
+.vscode/
+*.swp
+
+# External plugin cache (installed via /vibe:init, not project source)
+vibe-kit/
+
+# Word source docs (kept as .md in docs/)
+docs/*.docx
+
+# Next.js build artifacts (also covered by app/.gitignore)
+app/node_modules/
+app/.next/
+app/tsconfig.tsbuildinfo

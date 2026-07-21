@@ -1,0 +1,73 @@
+# Hermes Agent + Caddy reverse proxy với HTTPS tự động
+# Đặt file này cùng thư mục với ./caddy/Caddyfile
+#
+# TRƯỚC KHI CHẠY:
+#   1. Trỏ A record dashboard.<tên-miền-của-bạn> về IP VPS, đợi DNS phân giải xong
+#   2. ufw allow 80,443/tcp && ufw allow 443/udp   (KHÔNG mở 9119)
+#   3. Sửa domain trong ./caddy/Caddyfile
+#   4. Chạy: docker exec -it hermes hermes dashboard register \
+#              --redirect-uri https://dashboard.<tên-miền>/auth/callback
+#
+# LƯU Ý: port 9119 KHÔNG được publish ra host. Caddy nói chuyện với Hermes
+# qua mạng nội bộ 'edge'. Chỉ 80/443 mở ra internet.
+
+services:
+  caddy:
+    image: caddy:2-alpine
+    container_name: caddy
+    restart: unless-stopped
+    ports:
+      - "80:80"        # bắt buộc cho ACME HTTP-01 challenge
+      - "443:443"
+      - "443:443/udp"  # HTTP/3
+    volumes:
+      - ./caddy:/etc/caddy:ro   # mount THƯ MỤC, không mount trực tiếp file Caddyfile
+      - caddy_data:/data        # chứng chỉ TLS — BẮT BUỘC persist
+      - caddy_config:/config
+    networks:
+      - edge
+
+  hermes:
+    image: nousresearch/hermes-agent:latest
+    container_name: hermes
+    restart: unless-stopped
+    command: gateway run
+    # KHÔNG có 'ports:' — 9119 chỉ reachable từ mạng edge
+    volumes:
+      - ~/.hermes:/opt/data
+      - /var/run/docker.sock:/var/run/docker.sock   # cho terminal.backend: docker
+    shm_size: 1gb                                    # bắt buộc nếu dùng Playwright
+    environment:
+      - HERMES_DASHBOARD=1
+      - HERMES_DASHBOARD_HOST=0.0.0.0                # Caddy cần reach được
+      - HERMES_DASHBOARD_PORT=9119
+      - HERMES_DASHBOARD_PUBLIC_URL=https://dashboard.doanhnghiepmotnguoi.com
+
+      # ─── XÁC THỰC: chọn MỘT trong ba ───
+      # (a) OAuth Nous Portal — CÁCH DUY NHẤT docs khuyến nghị cho internet
+      - HERMES_DASHBOARD_OAUTH_CLIENT_ID=${HERMES_DASHBOARD_OAUTH_CLIENT_ID}
+
+      # (b) OIDC tự host (Authentik/Keycloak/Zitadel/Authelia)
+      # - HERMES_DASHBOARD_OIDC_ISSUER=https://auth.example.com/application/o/hermes/
+      # - HERMES_DASHBOARD_OIDC_CLIENT_ID=hermes-dashboard
+
+      # (c) Username/password — docs nói RÕ: chỉ dùng trong mạng tin cậy/VPN,
+      #     KHÔNG phù hợp để mở ra internet. Chỉ dùng nếu bạn đặt sau Tailscale.
+      # - HERMES_DASHBOARD_BASIC_AUTH_USERNAME=admin
+      # - HERMES_DASHBOARD_BASIC_AUTH_PASSWORD_HASH=${HERMES_BASIC_HASH}
+      # - HERMES_DASHBOARD_BASIC_AUTH_SECRET=${HERMES_BASIC_SECRET}
+    networks:
+      - edge
+    deploy:
+      resources:
+        limits:
+          memory: 4G
+          cpus: "2.0"
+
+volumes:
+  caddy_data:
+  caddy_config:
+
+networks:
+  edge:
+    driver: bridge

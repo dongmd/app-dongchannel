@@ -1,0 +1,205 @@
+# ~/.hermes/config.yaml
+# Cấu hình Hermes Agent cho workflow research Affiliate global
+# Provider: OpenRouter · Giao diện: Telegram · Chạy trong Docker trên VPS Ubuntu
+#
+# TRƯỚC KHI DÙNG:
+#   1. Kiểm tra lại ID model trên openrouter.ai/models — tên model thay đổi liên tục
+#   2. Thay 123456789 bằng Telegram user ID thật của bạn (lấy từ @userinfobot)
+#   3. Secret (API key, bot token) KHÔNG đặt ở đây — đặt trong ~/.hermes/.env
+#   4. chmod 600 ~/.hermes/.env
+
+# ============================================================
+# MODEL CHÍNH — thứ agent "suy nghĩ" bằng
+# ============================================================
+# Với ngân sách <$50/tháng: dùng Flash làm model CHÍNH, không phải Opus.
+# Giá tham chiếu 7/2026 ($/1M vào-ra): Flash 2.5 = 0,30/2,50 · Sonnet 4.6 = 3/15 · Opus 4.8 = 5/25
+model:
+  provider: openrouter
+  default: google/gemini-2.5-flash
+  base_url: ''
+  api_mode: chat_completions
+
+# Alias để chuyển nhanh trong Telegram: /model re  hoặc  /model manh
+# LƯU Ý: đổi model GIỮA phiên sẽ xóa prompt cache (mất ưu đãi 75–90% giá input).
+# Hãy chọn model ở ĐẦU phiên, hoặc mở phiên mới.
+model_aliases:
+  re:
+    model: google/gemini-2.5-flash
+    provider: openrouter
+  manh:
+    model: anthropic/claude-sonnet-4.6
+    provider: openrouter
+
+# ============================================================
+# MODEL PHỤ — nơi tiết kiệm chi phí lớn nhất
+# Mặc định mọi khe là 'auto' = dùng luôn model chính. Đó là chỗ rò tiền.
+# ============================================================
+auxiliary:
+  # QUAN TRỌNG NHẤT với research aff: mọi lander đối thủ đi qua đây
+  web_extract:
+    provider: openrouter
+    model: google/gemini-2.5-flash
+    base_url: ''
+    api_key: ''
+    timeout: 120
+    extra_body: {}
+    download_timeout: 30
+
+  compression:
+    provider: openrouter
+    model: google/gemini-2.5-flash
+    base_url: ''
+    api_key: ''
+    timeout: 120
+    extra_body: {}
+    download_timeout: 30
+
+  title_generation:
+    provider: openrouter
+    model: google/gemini-2.5-flash
+    base_url: ''
+    api_key: ''
+    timeout: 120
+    extra_body: {}
+    download_timeout: 30
+
+  # Chấm điểm rủi ro cho approvals.mode: smart
+  approval:
+    provider: openrouter
+    model: google/gemini-2.5-flash
+    base_url: ''
+    api_key: ''
+    timeout: 120
+    extra_body: {}
+    download_timeout: 30
+
+  # Đọc screenshot lander / creative đối thủ
+  vision:
+    provider: openrouter
+    model: google/gemini-2.5-flash
+    base_url: ''
+    api_key: ''
+    timeout: 120
+    extra_body: {}
+    download_timeout: 30
+
+  # Review nền sau session (vòng lặp tự học) — có thể chạy vài phút
+  background_review:
+    provider: openrouter
+    model: google/gemini-2.5-flash
+
+# ============================================================
+# ĐỊNH TUYẾN PROVIDER — chỉ có tác dụng với OpenRouter
+# ============================================================
+provider_routing:
+  sort: "price"              # price | throughput | latency
+  only: []
+  ignore: []
+  order: []
+  require_parameters: true
+  data_collection: "deny"    # cấm provider hạ nguồn thu thập dữ liệu của bạn
+
+# ============================================================
+# SUBAGENT — quét song song nhiều network/offer bằng model rẻ
+# ============================================================
+delegation:
+  max_iterations: 50
+  max_concurrent_children: 3
+  max_spawn_depth: 1              # giữ 1 (phẳng) cho tới khi nắm rõ chi phí
+  orchestrator_enabled: true
+  model: "google/gemini-3-flash-preview"
+  provider: "openrouter"
+  child_timeout_seconds: 1800     # trần 30 phút, tránh treo đốt tiền
+
+# ============================================================
+# BỘ NHỚ — write_approval BẮT BUỘC bật với use case này
+# Agent đọc nội dung do đối thủ kiểm soát → rủi ro prompt injection
+# ============================================================
+memory:
+  memory_enabled: true
+  user_profile_enabled: true
+  memory_char_limit: 2200
+  user_char_limit: 1375
+  write_approval: true
+
+# ============================================================
+# SKILLS — cũng bắt buộc bật cổng duyệt
+# ============================================================
+skills:
+  write_approval: true
+
+# ============================================================
+# PHÊ DUYỆT LỆNH
+# ============================================================
+approvals:
+  mode: smart                # smart | manual | off — KHÔNG bao giờ dùng 'off' trên gateway
+  timeout: 60                # hết giờ = TỪ CHỐI (fail-closed)
+  cron_mode: deny
+  mcp_reload_confirm: true
+  destructive_slash_confirm: true
+  # Chạy TRƯỚC cả --yolo và mode: off. Luôn bọc pattern trong dấu nháy.
+  deny:
+    - "curl * | *sh*"
+    - "wget * | *sh*"
+    - "*ssh-keygen*"
+    - "*>> */.ssh/authorized_keys*"
+    - "git push --force*"
+
+# ============================================================
+# BẢO MẬT
+# ============================================================
+security:
+  allow_private_urls: false      # MẶC ĐỊNH — đừng đổi. Chặn SSRF vào metadata cloud.
+  tirith_enabled: true
+  tirith_timeout: 5
+  tirith_fail_open: true         # đặt false nếu muốn siết chặt hơn
+  allow_lazy_installs: false
+  website_blocklist:
+    enabled: true
+    domains: []
+      # - "*.internal.example.com"
+
+# ============================================================
+# PHANH CHỐNG VÒNG LẶP — mặc định TẮT, nên bật cho gateway không người trông
+# Rất cần khi agent gặp trang có cloaking / anti-bot
+# ============================================================
+tool_loop_guardrails:
+  hard_stop_enabled: true
+  hard_stop_after:
+    exact_failure: 5
+    idempotent_no_progress: 5
+
+# ============================================================
+# SANDBOX TERMINAL
+# ============================================================
+terminal:
+  backend: docker
+  container_cpu: 1
+  container_memory: 2048         # MB
+  container_disk: 10240          # MB
+  container_persistent: true
+  docker_forward_env: []         # GIỮ RỖNG — biến ở đây có thể bị exfiltrate
+
+# ============================================================
+# TELEGRAM
+# Bot token đặt trong ~/.hermes/.env, KHÔNG đặt ở đây
+# CẢNH BÁO: phải là platforms.telegram.extra — đặt sai chỗ sẽ bị bỏ qua IM LẶNG
+# ============================================================
+gateway:
+  platforms:
+    telegram:
+      extra:
+        allow_from:
+          - "123456789"          # ← Telegram user ID của bạn
+        allow_admin_from:
+          - "123456789"
+        user_allowed_commands:
+          - status
+          - model
+          - history
+
+# ============================================================
+# HIỂN THỊ
+# ============================================================
+display:
+  memory_notifications: on       # off | on | verbose

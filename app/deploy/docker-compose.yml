@@ -1,0 +1,35 @@
+# DRAFT — chưa apply lên VPS. Chờ chủ sản phẩm duyệt (nguyên tắc #10).
+#
+# ⚠️ ĐÃ CHỈNH sau Discovery Gate 2026-07-21:
+#  - Postgres 16 ĐÃ có trên VPS host (`postgresql@16-main`). KHÔNG chạy container Postgres.
+#  - Hermes `network_mode: host` → Next.js cần reach 127.0.0.1:9119 của host.
+#  - CloudPanel quản Nginx trên host → KHÔNG dùng Nginx trong compose.
+#
+# Recommended: dùng CloudPanel site:add:nodejs (không container hoá Next.js) → nhẹ hơn
+# và tránh RAM overhead của Docker (VPS 3.9GB tight). Xem deploy/README.md.
+#
+# Nếu vẫn muốn container hoá:
+
+services:
+  app:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile
+    container_name: dongchannel-app
+    restart: unless-stopped
+    # network_mode: host → reach Hermes 127.0.0.1:9119 và Postgres 127.0.0.1:5432 trực tiếp
+    # Không expose port ra host — CloudPanel Nginx đọc port từ site config
+    network_mode: host
+    environment:
+      NODE_ENV: production
+      PORT: 3000
+      HOSTNAME: 127.0.0.1
+    env_file:
+      - /home/opssite/.env  # đặt bởi CloudPanel Node.js site
+    mem_limit: 512m
+    cpus: 1.0
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:3000/api/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
