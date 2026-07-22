@@ -1,10 +1,13 @@
 import Link from "next/link";
 import { notFound } from "next/navigation";
+import { getServerSession } from "next-auth";
 import { ArrowLeft, ExternalLink, Sparkles } from "lucide-react";
 import { getTaskDetail } from "@/lib/tasks/detail";
 import { PROFILE_LABELS } from "@/lib/profiles/types";
+import { authOptions } from "@/lib/auth/options";
 import { TaskStatusBadge } from "@/components/tasks/task-status-badge";
 import { MessageTimeline } from "@/components/tasks/message-timeline";
+import { ReviewActions } from "@/components/tasks/review-actions";
 
 export default async function TaskDetailPage({
   params,
@@ -12,8 +15,9 @@ export default async function TaskDetailPage({
   params: Promise<{ id: string }>;
 }) {
   const { id } = await params;
-  const task = await getTaskDetail(id);
+  const [task, session] = await Promise.all([getTaskDetail(id), getServerSession(authOptions)]);
   if (!task) notFound();
+  const canReview = session?.user?.role === "OWNER" || session?.user?.role === "ADMIN";
 
   const hermesUrl = process.env.NEXT_PUBLIC_HERMES_DASHBOARD_URL;
   // AC07 — Deep link tới session trên Hermes cũ. Nếu Hermes SPA có route sessions/:id sẽ hoạt động.
@@ -126,12 +130,16 @@ export default async function TaskDetailPage({
         </div>
       </section>
 
+      {/* DC-009 — Review actions */}
+      <ReviewActions
+        taskId={task.id}
+        status={task.status}
+        updatedAt={task.updatedAt.toISOString()}
+        canReview={canReview}
+      />
+
       {/* AC02 — Timeline */}
       <MessageTimeline messages={task.messages} />
-
-      <div className="rounded-lg border border-dashed border-border p-4 text-center text-xs text-muted-foreground">
-        Review actions (Approve / Request revision / Reject / Retry) sẽ có ở DC-009.
-      </div>
     </div>
   );
 }

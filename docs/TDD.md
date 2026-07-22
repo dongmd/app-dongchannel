@@ -486,7 +486,7 @@ Alert mức tối thiểu:
 | DC-006 | Task projection từ Hermes (CLI exec pattern) | P0 | DC-001 | ✅ Done — ingest yt/aff E2E, idempotent |
 | DC-007 | Task list/filter/search cơ bản | P0 | DC-006 | ✅ Done |
 | DC-008 | Task detail + activity timeline | P0 | DC-006 | ✅ Done (SSE proxy defer DC-015) |
-| DC-009 | Review actions + audit | P0 | DC-008 | — |
+| DC-009 | Review actions + audit | P0 | DC-008 | ✅ Done (Retry defer DC-015) |
 | DC-010 | Memory proposal/approval | P0 | DC-009 | — |
 | DC-011 | AFF offer pipeline | P1 | DC-006 | — |
 | DC-012 | YouTube video pipeline | P1 | DC-006 | — |
