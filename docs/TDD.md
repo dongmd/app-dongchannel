@@ -482,7 +482,7 @@ Alert mức tối thiểu:
 | DC-002 | AppShell + navigation mới | P0 | DC-001 | ✅ Done |
 | DC-003 | Profile switcher toàn cục | P0 | DC-002 | ✅ Done |
 | DC-004 | Trang `/admin` link ngoài tới Hermes cũ | P0 | DC-002 | ✅ Done |
-| DC-005 | Dashboard summary API/UI | P0 | DC-002, DC-006 | — |
+| DC-005 | Dashboard summary API/UI | P0 | DC-002 | ✅ Done (shell + aggregator; counts=0 vì tasks/memory chờ DC-006/010) |
 | DC-006 | Task projection từ Hermes REST/SSE | P0 | DC-000, DC-001 | — |
 | DC-007 | Task list/filter/search cơ bản | P0 | DC-006 | — |
 | DC-008 | Task detail + activity timeline (SSE proxy) | P0 | DC-006 | — |

@@ -3,6 +3,7 @@
 import { Bell, Plus, Search } from "lucide-react";
 import { UserMenu } from "@/components/user-menu";
 import { ProfileSwitcher } from "./profile-switcher";
+import { HeaderStatusIndicator } from "./header-status-indicator";
 
 // AC02 — global header với search + profile switcher + +Task + notif + user menu.
 // Search = DC-013. +Task = DC-005 (dashboard summary). Notif = DC-015.
@@ -44,6 +45,9 @@ export function GlobalHeader() {
       >
         <Bell className="h-4 w-4" aria-hidden="true" />
       </button>
+
+      {/* Hermes compact status — click mở /admin */}
+      <HeaderStatusIndicator />
 
       <UserMenu />
     </header>
