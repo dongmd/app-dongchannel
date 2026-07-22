@@ -1,9 +1,10 @@
 "use client";
 
-import { Bell, Plus, Search } from "lucide-react";
+import { Bell, Plus } from "lucide-react";
 import { UserMenu } from "@/components/user-menu";
 import { ProfileSwitcher } from "./profile-switcher";
 import { HeaderStatusIndicator } from "./header-status-indicator";
+import { HeaderSearch } from "./header-search";
 
 // AC02 — global header với search + profile switcher + +Task + notif + user menu.
 // Search = DC-013. +Task = DC-005 (dashboard summary). Notif = DC-015.
@@ -20,10 +21,7 @@ export function GlobalHeader() {
       <ProfileSwitcher />
 
       {/* Search — DC-013 */}
-      <div className="flex flex-1 items-center gap-2 rounded-md border border-border bg-muted/20 px-3 py-1.5 text-sm text-muted-foreground">
-        <Search className="h-4 w-4" aria-hidden="true" />
-        <span>Tìm task, offer, video, memory… (sẽ có ở DC-013)</span>
-      </div>
+      <HeaderSearch />
 
       {/* +Task */}
       <button
