@@ -489,7 +489,7 @@ Alert mức tối thiểu:
 | DC-009 | Review actions + audit | P0 | DC-008 | ✅ Done (Retry defer DC-015) |
 | DC-010 | Memory proposal/approval | P0 | DC-009 | ✅ Done (auto-extractor defer V1.1) |
 | DC-011 | AFF offer pipeline | P1 | DC-006 | ✅ Done (Markets/Angles/Results tab hint, follow-up DC-011b) |
-| DC-012 | YouTube video pipeline | P1 | DC-006 | — |
+| DC-012 | YouTube video pipeline | P1 | DC-006 | ✅ Done (Niches editor hint follow-up DC-012b) |
 | DC-013 | Unified search (Postgres FTS) | P1 | DC-007, DC-010 | — |
 | DC-014 | Result forms | P1 | DC-011, DC-012 | — |
 | DC-015 | Notifications/realtime (SSE broadcast) | P1 | DC-006 | — |
