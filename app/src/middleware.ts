@@ -72,7 +72,11 @@ export async function middleware(req: NextRequest) {
     );
   }
 
-  const loginUrl = new URL("/login", req.url);
+  // Trust reverse-proxy headers (CloudPanel Nginx set X-Forwarded-Host + Proto).
+  // Fallback req.nextUrl.origin nếu client gọi trực tiếp (dev).
+  const proto = req.headers.get("x-forwarded-proto") ?? req.nextUrl.protocol.replace(":", "");
+  const host = req.headers.get("x-forwarded-host") ?? req.headers.get("host") ?? req.nextUrl.host;
+  const loginUrl = new URL("/login", `${proto}://${host}`);
   loginUrl.searchParams.set("callbackUrl", pathname + search);
   return NextResponse.redirect(loginUrl, {
     headers: { "x-request-id": requestId },
