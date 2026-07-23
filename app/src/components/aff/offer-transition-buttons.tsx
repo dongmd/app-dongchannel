@@ -4,7 +4,7 @@ import { useRouter } from "next/navigation";
 import { useState, useTransition } from "react";
 import { ArrowRight } from "lucide-react";
 import type { OfferStatus } from "@/lib/db/schema/aff";
-import { OFFER_STATUS_LABELS } from "@/lib/aff/offers";
+import { OFFER_STATUS_LABELS } from "@/lib/aff/labels";
 import { cn } from "@/lib/utils";
 
 interface Props {

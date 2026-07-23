@@ -10,23 +10,13 @@ import {
   type OfferStatus,
 } from "@/lib/db/schema/aff";
 import { auditEvents } from "@/lib/db/schema/audit";
+import { allowedTransitionsGraph, nextStatuses, OFFER_STATUS_LABELS } from "./labels";
 
-// AC02 — pipeline transition graph.
-// Cho phép quay lại (VD SCALE → ITERATE nếu perf drop) nhưng không nhảy cóc.
-const ALLOWED_TRANSITIONS: Record<OfferStatus, OfferStatus[]> = {
-  NEW: ["RESEARCHING", "STOP"],
-  RESEARCHING: ["WATCHLIST", "STOP", "NEW"],
-  WATCHLIST: ["APPROVED_FOR_TEST", "STOP", "RESEARCHING"],
-  APPROVED_FOR_TEST: ["TESTING", "STOP", "WATCHLIST"],
-  TESTING: ["ITERATE", "SCALE", "STOP"],
-  ITERATE: ["TESTING", "SCALE", "STOP"],
-  SCALE: ["ITERATE", "STOP"],
-  STOP: [], // terminal
-};
+// Re-export labels + nextStatuses cho server callers (backwards compat).
+// Client components import trực tiếp từ ./labels.
+export { OFFER_STATUS_LABELS, nextStatuses };
 
-export function nextStatuses(current: OfferStatus): OfferStatus[] {
-  return ALLOWED_TRANSITIONS[current] ?? [];
-}
+const ALLOWED_TRANSITIONS = allowedTransitionsGraph();
 
 export interface OfferListItem {
   id: string;
@@ -239,17 +229,6 @@ export async function transitionOffer(input: TransitionInput): Promise<Transitio
     return { ok: true, offer: updated };
   });
 }
-
-export const OFFER_STATUS_LABELS: Record<OfferStatus, string> = {
-  NEW: "Mới",
-  RESEARCHING: "Đang nghiên cứu",
-  WATCHLIST: "Watchlist",
-  APPROVED_FOR_TEST: "Duyệt test",
-  TESTING: "Đang test",
-  ITERATE: "Iterate",
-  SCALE: "Scale",
-  STOP: "Dừng",
-};
 
 export function isStale(lastVerifiedAt: Date | null): boolean {
   if (!lastVerifiedAt) return true;

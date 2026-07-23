@@ -3,6 +3,10 @@ import { AppShell } from "@/components/layout/app-shell";
 import { ProfileFilterProvider } from "@/lib/profiles/context";
 import { getCookieProfile } from "@/lib/profiles/server";
 
+// Force dynamic — session cookie đọc mỗi request, header có useSearchParams client.
+// Không được static prerender any dashboard route.
+export const dynamic = "force-dynamic";
+
 // Route group (dashboard) — layout wrap.
 // Async: resolve cookie profile 1 lần ở server rồi truyền xuống ProfileFilterProvider
 // để client hook có initial giá trị mà không cần đọc document.cookie (tránh hydration mismatch).

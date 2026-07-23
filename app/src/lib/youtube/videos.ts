@@ -9,22 +9,11 @@ import {
 } from "@/lib/db/schema/youtube";
 import { offers } from "@/lib/db/schema/aff";
 import { auditEvents } from "@/lib/db/schema/audit";
+import { allowedTransitionsGraph, nextStatuses, VIDEO_STATUS_LABELS } from "./labels";
 
-// AC02 — pipeline graph. Cho phép quay lại 1 bước; không nhảy cóc.
-const ALLOWED_TRANSITIONS: Record<VideoStatus, VideoStatus[]> = {
-  IDEA: ["VALIDATING", "REVIEWED"],
-  VALIDATING: ["APPROVED", "IDEA", "REVIEWED"],
-  APPROVED: ["SCRIPTING", "VALIDATING", "REVIEWED"],
-  SCRIPTING: ["PRODUCING", "APPROVED", "REVIEWED"],
-  PRODUCING: ["SCHEDULED", "SCRIPTING", "REVIEWED"],
-  SCHEDULED: ["PUBLISHED", "PRODUCING", "REVIEWED"],
-  PUBLISHED: ["REVIEWED"],
-  REVIEWED: [], // terminal
-};
+export { VIDEO_STATUS_LABELS, nextStatuses };
 
-export function nextStatuses(current: VideoStatus): VideoStatus[] {
-  return ALLOWED_TRANSITIONS[current] ?? [];
-}
+const ALLOWED_TRANSITIONS = allowedTransitionsGraph();
 
 // Filter grouping cho tabs Ideas/Production/Performance.
 const IDEAS: VideoStatus[] = ["IDEA", "VALIDATING", "APPROVED"];
@@ -233,13 +222,3 @@ export async function transitionVideo(input: TransitionInput): Promise<Transitio
   });
 }
 
-export const VIDEO_STATUS_LABELS: Record<VideoStatus, string> = {
-  IDEA: "Ý tưởng",
-  VALIDATING: "Đang validate",
-  APPROVED: "Đã duyệt",
-  SCRIPTING: "Viết script",
-  PRODUCING: "Đang sản xuất",
-  SCHEDULED: "Đã schedule",
-  PUBLISHED: "Đã đăng",
-  REVIEWED: "Đã review",
-};

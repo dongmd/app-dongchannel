@@ -1,5 +1,5 @@
 import type { VideoStatus } from "@/lib/db/schema/youtube";
-import { VIDEO_STATUS_LABELS } from "@/lib/youtube/videos";
+import { VIDEO_STATUS_LABELS } from "@/lib/youtube/labels";
 import { cn } from "@/lib/utils";
 
 const TONE: Record<VideoStatus, string> = {

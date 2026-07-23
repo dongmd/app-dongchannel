@@ -494,7 +494,7 @@ Alert mức tối thiểu:
 | DC-014 | Result forms | P1 | DC-011, DC-012 | — |
 | DC-015 | Notifications/realtime (SSE broadcast) | P1 | DC-006 | ✅ Done |
 | DC-016 | Responsive/a11y/security hardening | P0 release gate | All P0 | ✅ Done (2 transitive vulns sharp/postcss accepted) |
-| DC-017 | Docker Compose + Nginx production deploy | P0 | DC-016 | — |
+| DC-017 | CloudPanel Node.js site + Nginx production deploy | P0 | DC-016 | 🔄 In Progress (Option C — replace app.dongchannel.com, Hermes UI drop) |
 
 ## 30. Acceptance test script cho chủ sản phẩm
 

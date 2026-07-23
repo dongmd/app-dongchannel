@@ -4,7 +4,7 @@ import { useRouter } from "next/navigation";
 import { useState, useTransition } from "react";
 import { ArrowRight } from "lucide-react";
 import type { VideoStatus } from "@/lib/db/schema/youtube";
-import { VIDEO_STATUS_LABELS } from "@/lib/youtube/videos";
+import { VIDEO_STATUS_LABELS } from "@/lib/youtube/labels";
 import { cn } from "@/lib/utils";
 
 interface Props {
