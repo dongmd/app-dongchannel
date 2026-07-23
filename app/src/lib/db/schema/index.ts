@@ -7,3 +7,4 @@ export * from "./tasks";
 export * from "./memory";
 export * from "./aff";
 export * from "./youtube";
+export * from "./notifications";

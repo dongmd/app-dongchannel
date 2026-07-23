@@ -492,7 +492,7 @@ Alert mức tối thiểu:
 | DC-012 | YouTube video pipeline | P1 | DC-006 | ✅ Done (Niches editor hint follow-up DC-012b) |
 | DC-013 | Unified search (Postgres FTS) | P1 | DC-007, DC-010 | ✅ Done (inline to_tsvector V1; GIN index defer DC-016) |
 | DC-014 | Result forms | P1 | DC-011, DC-012 | — |
-| DC-015 | Notifications/realtime (SSE broadcast) | P1 | DC-006 | — |
+| DC-015 | Notifications/realtime (SSE broadcast) | P1 | DC-006 | ✅ Done |
 | DC-016 | Responsive/a11y/security hardening | P0 release gate | All P0 | — |
 | DC-017 | Docker Compose + Nginx production deploy | P0 | DC-016 | — |
 

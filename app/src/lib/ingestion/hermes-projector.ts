@@ -5,6 +5,7 @@ import { profiles, PROFILE_SLUGS, type ProfileSlug } from "@/lib/db/schema/profi
 import { hermesMessages, hermesSessions } from "@/lib/db/schema/hermes";
 import { tasks } from "@/lib/db/schema/tasks";
 import { exportSessionsJsonl } from "@/lib/hermes/exec";
+import { createNotification } from "@/lib/notifications/create";
 
 // AC03/AC04/AC06 — pull sessions từ Hermes CLI, upsert idempotent, derive tasks.
 // V1: mỗi session → 1 task status IMPORTED (backfill lịch sử).
@@ -187,18 +188,36 @@ export async function ingestProfile(profile: ProfileSlug): Promise<IngestResult>
         .limit(1);
       if (existingTask.length === 0) {
         const code = await nextTaskCode(profile);
-        await db.insert(tasks).values({
-          code,
-          profileSlug: profile,
-          sourceHermesSessionId: sessionRow.id,
-          title: sessionValues.title,
-          type: "general",
-          status: "IMPORTED",
-          reviewStatus: "NONE",
-          startedAt: sessionValues.startedAt,
-          completedAt: sessionValues.endedAt,
-        });
+        const [inserted] = await db
+          .insert(tasks)
+          .values({
+            code,
+            profileSlug: profile,
+            sourceHermesSessionId: sessionRow.id,
+            title: sessionValues.title,
+            type: "general",
+            status: "IMPORTED",
+            reviewStatus: "NONE",
+            startedAt: sessionValues.startedAt,
+            completedAt: sessionValues.endedAt,
+          })
+          .returning({ id: tasks.id, code: tasks.code });
         result.tasksCreated++;
+        if (inserted) {
+          const taskId = inserted.id;
+          const taskCode = inserted.code;
+          const taskTitle = sessionValues.title;
+          queueMicrotask(() => {
+            void createNotification({
+              type: "task.imported",
+              entityType: "task",
+              entityId: taskId,
+              title: `Task mới: ${taskCode}`,
+              body: taskTitle,
+              href: `/tasks/${taskId}`,
+            });
+          });
+        }
       }
     } catch (err) {
       result.errors.push(`session ${hermesSessionId}: ${(err as Error).message}`);

@@ -3,6 +3,7 @@ import { and, eq } from "drizzle-orm";
 import { db } from "@/lib/db";
 import { tasks, type TaskReviewStatus, type TaskStatus } from "@/lib/db/schema/tasks";
 import { auditEvents } from "@/lib/db/schema/audit";
+import { createNotification } from "@/lib/notifications/create";
 
 // AC02 — chỉ cho phép review từ IMPORTED hoặc WAITING_REVIEW.
 // (V1 cho phép review IMPORTED trực tiếp — backfill flow. DC-010+ khi có extractor
@@ -158,6 +159,20 @@ export async function reviewTask(input: ReviewInput): Promise<ReviewResult> {
       requestId: input.requestId,
     });
 
+    // AC02 — noti fire-and-forget (không block transaction). Chỉ notify khi
+    // chuyển sang REVISION_REQUESTED (owner cần xử lý task tiếp).
+    if (input.action === "request_revision") {
+      queueMicrotask(() => {
+        void createNotification({
+          type: "task.revision_requested",
+          entityType: "task",
+          entityId: updated.id,
+          title: `${updated.code}: cần sửa`,
+          body: input.reason ?? undefined,
+          href: `/tasks/${updated.id}`,
+        });
+      });
+    }
     return { ok: true, task: updated };
   });
 }
