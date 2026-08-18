@@ -1,5 +1,6 @@
 import {
   boolean,
+  check,
   index,
   integer,
   jsonb,
@@ -249,6 +250,73 @@ export const affiliatePrograms = pgTable(
   }),
 );
 
+// ─── Affiliate program GEOs ───────────────────────────────────────
+// P1-R03 / M3. Replaces `offers.countries text[]` with one row per country, so
+// that terms which genuinely differ by country can be expressed:
+//
+//   US → CPA $80, PPC YES
+//   UK → CPA $60, PPC CONDITIONAL
+//   CA → CPA $50, PPC NO
+//
+// A text[] of country codes cannot carry any of that.
+//
+// Every override column is NULLABLE WITH NO DEFAULT, and that is the whole
+// design. Three states have to stay distinguishable:
+//
+//   NULL       → no GEO-specific finding; inherit the programme-level value
+//   'UNKNOWN'  → someone looked at this country specifically and could not tell
+//   YES/NO/... → a verified GEO-specific term
+//
+// Giving these columns a default of UNKNOWN would collapse the first two, and
+// every GEO row ever created would silently assert "checked, unknown" about a
+// country nobody examined. The programme-level columns are NOT NULL DEFAULT
+// UNKNOWN because there the absence of a finding *is* "unknown"; here it is
+// "inherit", which is a different fact.
+//
+// Nothing in this table is ever auto-populated. A row exists only where a GEO
+// was actually researched.
+export const affiliateProgramGeos = pgTable(
+  "affiliate_program_geos",
+  {
+    id: uuid("id").primaryKey().default(sql`gen_random_uuid()`),
+    programId: uuid("program_id")
+      .notNull()
+      .references(() => affiliatePrograms.id, { onDelete: "cascade" }),
+
+    // ISO 3166-1 alpha-2, uppercase. Constrained rather than trusted: "usa",
+    // "gb " and "United Kingdom" all silently break GEO matching later.
+    geo: text("geo").notNull(),
+
+    // Payout overrides. NULL = inherit from the programme.
+    payoutType: offerCommissionTypeEnum("payout_type"),
+    payoutValue: real("payout_value"),
+    payoutCurrency: text("payout_currency"),
+    payoutUnit: text("payout_unit"),
+    cookieDurationDays: integer("cookie_duration_days"),
+
+    // Permission overrides. NULL = inherit from the programme.
+    ppcAllowed: affiliatePermissionEnum("ppc_allowed"),
+    brandBiddingAllowed: affiliatePermissionEnum("brand_bidding_allowed"),
+    directLinkingAllowed: affiliatePermissionEnum("direct_linking_allowed"),
+
+    // Evidence tracking is per GEO: US terms can be verified while UK terms
+    // are still stale.
+    confidence: offerConfidenceEnum("confidence").notNull().default("UNVERIFIED"),
+    lastVerifiedAt: timestamp("last_verified_at", { withTimezone: true }),
+
+    notes: text("notes"),
+    metadata: jsonb("metadata"),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => ({
+    programGeoUq: uniqueIndex("affiliate_program_geos_program_geo_uq").on(t.programId, t.geo),
+    // "which programmes run in the US" is a primary query for route decisions.
+    geoIdx: index("affiliate_program_geos_geo_idx").on(t.geo),
+    geoFormat: check("affiliate_program_geos_geo_format", sql`${t.geo} ~ '^[A-Z]{2}$'`),
+  }),
+);
+
 // ─── Offer restrictions (traffic source + brand bidding) ─────────
 // DEPRECATED by M2. Superseded by the permission columns on
 // `affiliate_programs`. Retained until the app no longer reads `offers`.
@@ -342,3 +410,6 @@ export type NewAffiliateNetworkRow = typeof affiliateNetworks.$inferInsert;
 export type AffiliateProgramRow = typeof affiliatePrograms.$inferSelect;
 export type NewAffiliateProgramRow = typeof affiliatePrograms.$inferInsert;
 export type AffiliatePermission = (typeof affiliatePermissionEnum.enumValues)[number];
+
+export type AffiliateProgramGeoRow = typeof affiliateProgramGeos.$inferSelect;
+export type NewAffiliateProgramGeoRow = typeof affiliateProgramGeos.$inferInsert;
