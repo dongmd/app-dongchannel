@@ -376,6 +376,166 @@ export const affiliateResults = pgTable("affiliate_results", {
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
 });
 
+// ─── Affiliate projects / tests / metrics ─────────────────────────
+// P1-R03 / M4. Splits what `affiliate_results` conflated.
+//
+// `affiliate_results` carried the identity of a test and its measurements in
+// one row: offer, angle, period, impressions, clicks, commission, cost, profit.
+// That makes a re-measured period either a duplicate row or a destructive
+// update, and it leaves nowhere to record *why* a test was approved.
+//
+//   affiliate_projects      a decision to pursue a programme
+//   affiliate_tests         one experiment inside that project
+//   affiliate_test_metrics  one measurement window of that experiment
+//
+// Deliberately absent: `affiliate_conversions` and `affiliate_payout_events`.
+// They only mean something once a network connector exists, and FINAL section
+// 7.1 defines profit as *validated* commission -- net of reversals and
+// rejections that only the network can report. Creating those tables now would
+// invite writing unvalidated numbers into them.
+export const affiliateProjectStatusEnum = pgEnum("affiliate_project_status", [
+  "CANDIDATE",
+  "RESEARCH",
+  "READY_FOR_APPROVAL",
+  "APPROVED_FOR_TEST",
+  "CAMPAIGN_DRAFTED",
+  "TESTING",
+  "SCALE",
+  "HOLD",
+  "STOPPED",
+]);
+
+export const affiliateTestStatusEnum = pgEnum("affiliate_test_status", [
+  "DRAFT",
+  "RUNNING",
+  "PAUSED",
+  "COMPLETED",
+  "ABANDONED",
+]);
+
+export const affiliateTrafficRouteEnum = pgEnum("affiliate_traffic_route", [
+  "PPC",
+  "SEO",
+  "CONTENT",
+  "YOUTUBE",
+  "OTHER",
+]);
+
+export const affiliateProjects = pgTable(
+  "affiliate_projects",
+  {
+    id: uuid("id").primaryKey().default(sql`gen_random_uuid()`),
+    programId: uuid("program_id")
+      .notNull()
+      .references(() => affiliatePrograms.id, { onDelete: "cascade" }),
+    name: text("name").notNull(),
+    status: affiliateProjectStatusEnum("status").notNull().default("CANDIDATE"),
+    // Which route was chosen and why. FINAL section 7.5: "PPC forbidden" routes
+    // an opportunity to SEO rather than rejecting it.
+    route: affiliateTrafficRouteEnum("route"),
+    routeReason: text("route_reason"),
+    // Who approved the spend, and when. Approval is a record, never inferred
+    // from a status value.
+    approvedBy: text("approved_by"),
+    approvedAt: timestamp("approved_at", { withTimezone: true }),
+    notes: text("notes"),
+    metadata: jsonb("metadata"),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => ({
+    programNameUq: uniqueIndex("affiliate_projects_program_name_uq").on(t.programId, t.name),
+    statusIdx: index("affiliate_projects_status_idx").on(t.status),
+  }),
+);
+
+export const affiliateTests = pgTable(
+  "affiliate_tests",
+  {
+    id: uuid("id").primaryKey().default(sql`gen_random_uuid()`),
+    projectId: uuid("project_id")
+      .notNull()
+      .references(() => affiliateProjects.id, { onDelete: "cascade" }),
+    // The creative angle under test, where there is one.
+    angleId: uuid("angle_id").references(() => angles.id, { onDelete: "set null" }),
+    // GEO is a row here, not free text, so a test cannot claim a country the
+    // programme has no terms for.
+    geoId: uuid("geo_id").references(() => affiliateProgramGeos.id, { onDelete: "set null" }),
+    name: text("name").notNull(),
+    status: affiliateTestStatusEnum("status").notNull().default("DRAFT"),
+    route: affiliateTrafficRouteEnum("route"),
+    // Budget ceiling for this experiment. FINAL section 1.3 requires a spend
+    // ceiling on any autonomous money action.
+    budgetCapValue: real("budget_cap_value"),
+    budgetCapCurrency: text("budget_cap_currency"),
+    startedAt: timestamp("started_at", { withTimezone: true }),
+    endedAt: timestamp("ended_at", { withTimezone: true }),
+    stopReason: text("stop_reason"),
+    notes: text("notes"),
+    metadata: jsonb("metadata"),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => ({
+    projectIdx: index("affiliate_tests_project_idx").on(t.projectId),
+    statusIdx: index("affiliate_tests_status_idx").on(t.status),
+  }),
+);
+
+export const affiliateTestMetrics = pgTable(
+  "affiliate_test_metrics",
+  {
+    id: uuid("id").primaryKey().default(sql`gen_random_uuid()`),
+    testId: uuid("test_id")
+      .notNull()
+      .references(() => affiliateTests.id, { onDelete: "cascade" }),
+    periodStart: timestamp("period_start", { withTimezone: true }).notNull(),
+    periodEnd: timestamp("period_end", { withTimezone: true }).notNull(),
+
+    // Traffic side: what the ad platform reports. Nullable, because a metric
+    // that was not collected is not zero.
+    impressions: integer("impressions"),
+    clicks: integer("clicks"),
+    spend: real("spend"),
+
+    // Money side. `commission_reported` is what the network currently shows;
+    // `commission_validated` is what survived reversal and rejection.
+    //
+    // They are separate columns and neither is derived from the other. FINAL
+    // section 7.1 measures profit on the validated figure precisely because
+    // affiliate conversions get reversed, and collapsing the two would let a
+    // pending commission be reported as profit.
+    conversionsReported: integer("conversions_reported"),
+    conversionsValidated: integer("conversions_validated"),
+    commissionReported: real("commission_reported"),
+    commissionValidated: real("commission_validated"),
+    currency: text("currency").notNull().default("USD"),
+
+    // Profit is NOT a computed column and carries no default. It is written
+    // only when validated commission is actually known; deriving it from
+    // reported figures would manufacture a profit number.
+    netProfitValidated: real("net_profit_validated"),
+
+    source: text("source"), // 'google-ads', 'network-api', 'manual'
+    notes: text("notes"),
+    metadata: jsonb("metadata"),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => ({
+    testPeriodUq: uniqueIndex("affiliate_test_metrics_test_period_uq").on(
+      t.testId,
+      t.periodStart,
+      t.periodEnd,
+    ),
+    testIdx: index("affiliate_test_metrics_test_idx").on(t.testId),
+    periodOrder: check(
+      "affiliate_test_metrics_period_order",
+      sql`${t.periodEnd} > ${t.periodStart}`,
+    ),
+  }),
+);
+
+
 // ─── Scorecards (chung cho market/offer/angle) ───────────────────
 export const scorecards = pgTable(
   "scorecards",
@@ -413,3 +573,7 @@ export type AffiliatePermission = (typeof affiliatePermissionEnum.enumValues)[nu
 
 export type AffiliateProgramGeoRow = typeof affiliateProgramGeos.$inferSelect;
 export type NewAffiliateProgramGeoRow = typeof affiliateProgramGeos.$inferInsert;
+
+export type AffiliateProjectRow = typeof affiliateProjects.$inferSelect;
+export type AffiliateTestRow = typeof affiliateTests.$inferSelect;
+export type AffiliateTestMetricRow = typeof affiliateTestMetrics.$inferSelect;
