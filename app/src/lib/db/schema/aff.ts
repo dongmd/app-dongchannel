@@ -1,4 +1,16 @@
-import { integer, jsonb, pgEnum, pgTable, real, text, timestamp, uniqueIndex, uuid } from "drizzle-orm/pg-core";
+import {
+  boolean,
+  index,
+  integer,
+  jsonb,
+  pgEnum,
+  pgTable,
+  real,
+  text,
+  timestamp,
+  uniqueIndex,
+  uuid,
+} from "drizzle-orm/pg-core";
 import { sql } from "drizzle-orm";
 
 // Pipeline theo PRD FR-03:
@@ -150,7 +162,96 @@ export const offers = pgTable(
   }),
 );
 
+// ─── Affiliate programs ───────────────────────────────────────────
+// P1-R03 / M2. The FINAL-shaped replacement for `offers`.
+//
+// `offers` is intentionally left in place: the app still reads it, and the
+// rule is that no legacy table is dropped until application compatibility has
+// been proven. Moving the app across and dropping `offers` is a separate,
+// tracked step.
+//
+// Permissions are the reason this table exists in this shape. `offer_restrictions`
+// stored them as integer 0/1 defaulting to 1, with no way to express "nobody has
+// checked". That default asserts "PPC is allowed" about every programme ever
+// inserted. FINAL section 9 requires unknown to stay UNKNOWN, and a wrong claim
+// here is the kind that gets an affiliate account closed -- so the default is
+// UNKNOWN and no legacy 0/1 value is inferred into it.
+export const affiliatePermissionEnum = pgEnum("affiliate_permission", [
+  "YES",
+  "NO",
+  "CONDITIONAL",
+  "UNKNOWN",
+]);
+
+export const affiliatePrograms = pgTable(
+  "affiliate_programs",
+  {
+    id: uuid("id").primaryKey().default(sql`gen_random_uuid()`),
+
+    // Who owns the programme.
+    merchantId: uuid("merchant_id").references(() => merchants.id, { onDelete: "set null" }),
+    // Which vertical it sits in. Retained from `offers` -- a market is a
+    // category, not a company, so both references are real and neither
+    // replaces the other.
+    marketId: uuid("market_id").references(() => markets.id, { onDelete: "set null" }),
+    // Which network it is run through, normalised out of the old free-text
+    // `offers.network`.
+    networkId: uuid("network_id").references(() => affiliateNetworks.id, { onDelete: "set null" }),
+    // The provider's own identifier, kept so a connector can sync incrementally.
+    networkExternalRef: text("network_external_ref"),
+
+    name: text("name").notNull(),
+    programUrl: text("program_url"),
+    applicationUrl: text("application_url"),
+
+    // Economics. Enums reused from the offer model rather than duplicated --
+    // same meanings, and a second near-identical pg enum helps nobody.
+    payoutType: offerCommissionTypeEnum("payout_type").notNull().default("UNKNOWN"),
+    payoutValue: real("payout_value"),
+    payoutCurrency: text("payout_currency"),
+    payoutUnit: text("payout_unit"), // 'percent' | 'usd' | 'usd_recurring'
+    recurring: boolean("recurring"),
+    cookieDurationDays: integer("cookie_duration_days"),
+    payoutThreshold: real("payout_threshold"),
+
+    // Traffic permissions. All default UNKNOWN, deliberately.
+    ppcAllowed: affiliatePermissionEnum("ppc_allowed").notNull().default("UNKNOWN"),
+    brandBiddingAllowed: affiliatePermissionEnum("brand_bidding_allowed")
+      .notNull()
+      .default("UNKNOWN"),
+    directLinkingAllowed: affiliatePermissionEnum("direct_linking_allowed")
+      .notNull()
+      .default("UNKNOWN"),
+
+    applicationRequired: affiliatePermissionEnum("application_required")
+      .notNull()
+      .default("UNKNOWN"),
+    ownerAccountStatus: text("owner_account_status"),
+
+    status: offerStatusEnum("status").notNull().default("NEW"),
+    confidence: offerConfidenceEnum("confidence").notNull().default("UNVERIFIED"),
+    lastVerifiedAt: timestamp("last_verified_at", { withTimezone: true }),
+
+    notes: text("notes"),
+    metadata: jsonb("metadata"),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => ({
+    // Same merchant may not have two programmes of the same name. Postgres
+    // treats NULLs as distinct, so this does not over-constrain rows whose
+    // merchant is not yet identified.
+    merchantNameUq: uniqueIndex("affiliate_programs_merchant_name_uq").on(t.merchantId, t.name),
+    merchantIdx: index("affiliate_programs_merchant_idx").on(t.merchantId),
+    networkIdx: index("affiliate_programs_network_idx").on(t.networkId),
+    marketIdx: index("affiliate_programs_market_idx").on(t.marketId),
+    statusIdx: index("affiliate_programs_status_idx").on(t.status),
+  }),
+);
+
 // ─── Offer restrictions (traffic source + brand bidding) ─────────
+// DEPRECATED by M2. Superseded by the permission columns on
+// `affiliate_programs`. Retained until the app no longer reads `offers`.
 export const offerRestrictions = pgTable("offer_restrictions", {
   id: uuid("id").primaryKey().default(sql`gen_random_uuid()`),
   offerId: uuid("offer_id")
@@ -233,3 +334,7 @@ export type MerchantRow = typeof merchants.$inferSelect;
 export type NewMerchantRow = typeof merchants.$inferInsert;
 export type AffiliateNetworkRow = typeof affiliateNetworks.$inferSelect;
 export type NewAffiliateNetworkRow = typeof affiliateNetworks.$inferInsert;
+
+export type AffiliateProgramRow = typeof affiliatePrograms.$inferSelect;
+export type NewAffiliateProgramRow = typeof affiliatePrograms.$inferInsert;
+export type AffiliatePermission = (typeof affiliatePermissionEnum.enumValues)[number];
