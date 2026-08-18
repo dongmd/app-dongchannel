@@ -127,9 +127,21 @@ load_env .env
 echo "→ drizzle migrate"
 pnpm db:migrate
 
-# ─── 4. Seed allowlist (idempotent) ─────────────────────────────
-echo "→ seed allowlist"
-pnpm db:seed || true  # non-fatal nếu đã seeded
+# ─── 4. Seed allowlist (bootstrap only, opt-in) ─────────────────
+# The seed is idempotent -- it inserts with ON CONFLICT DO NOTHING and never
+# updates or deletes -- but it is a *bootstrap* step, and it grants OWNER to
+# whichever address sits first in AUTH_EMAIL_ALLOWLIST. Running it on every
+# production deploy means an env edit silently becomes an access-control
+# change on the next deploy, which is not something a deploy should do by
+# default.
+#
+# It also ran behind `|| true`, so a genuine failure was invisible.
+if [ "${DEPLOY_RUN_SEED:-0}" = "1" ]; then
+  echo "→ seed allowlist (DEPLOY_RUN_SEED=1)"
+  pnpm db:seed
+else
+  echo "→ skip seed (set DEPLOY_RUN_SEED=1 to bootstrap the allowlist)"
+fi
 
 # ─── 5. Build standalone ────────────────────────────────────────
 echo "→ next build standalone"

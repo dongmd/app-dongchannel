@@ -27,11 +27,20 @@ async function main() {
   for (let i = 0; i < entries.length; i++) {
     const email = entries[i]!;
     const role = i === 0 ? "OWNER" : "VIEWER";
-    await db
+    // .returning() reports what the insert actually did. The previous version
+    // printed a tick either way, so a row added by hand months earlier looked
+    // like the seed had just created it -- a log line that is not evidence.
+    const inserted = await db
       .insert(emailAllowlist)
       .values({ email, role, addedBy: "seed:bootstrap" })
-      .onConflictDoNothing({ target: emailAllowlist.email });
-    console.log(`✓ seed ${email} (${role})`);
+      .onConflictDoNothing({ target: emailAllowlist.email })
+      .returning({ email: emailAllowlist.email });
+
+    if (inserted.length > 0) {
+      console.log(`+ inserted ${email} (${role})`);
+    } else {
+      console.log(`= already present, unchanged: ${email}`);
+    }
   }
 
   const count = await db.execute(sql`SELECT count(*)::int AS n FROM email_allowlist`);
