@@ -99,6 +99,26 @@ export const evidence = pgTable(
 // source to report a payout would silently replace the first, and the fact
 // that two sources disagree -- which is the single most useful signal that a
 // number should not be trusted -- would be destroyed on write.
+// ─── Visibility classification (P1-R04 / G-59) ────────────────────
+// Two axes, because one is not enough. An earlier draft treated all affiliate
+// data as uniformly private, which is wrong in both directions: it forbids
+// citing a merchant's own published commission rate, while giving no explicit
+// protection to a negotiated one.
+//
+//   source_access  where the fact came from  → how sensitive it inherently is
+//   visibility     where it may be shown     → the decision made about it
+export const claimVisibilityEnum = pgEnum("claim_visibility", [
+  "PUBLIC",
+  "INTERNAL",
+  "CONFIDENTIAL",
+]);
+
+export const claimSourceAccessEnum = pgEnum("claim_source_access", [
+  "PUBLIC_WEB",
+  "AUTHENTICATED",
+  "FIRST_PARTY",
+]);
+
 export const claimVerificationStatusEnum = pgEnum("claim_verification_status", [
   "UNVERIFIED",
   "VERIFIED",
@@ -135,6 +155,20 @@ export const claims = pgTable(
     verifiedBy: text("verified_by"),
     expiresAt: timestamp("expires_at", { withTimezone: true }),
 
+    // Defaults are the most restrictive value on each axis. Forgetting to
+    // classify a claim must fail closed -- an unclassified negotiated rate
+    // defaulting to PUBLIC is the failure this whole requirement exists to
+    // prevent.
+    sourceAccess: claimSourceAccessEnum("source_access").notNull().default("FIRST_PARTY"),
+    visibility: claimVisibilityEnum("visibility").notNull().default("CONFIDENTIAL"),
+
+    // An owner may promote a claim above what its source_access implies. No
+    // agent may: the override has to name a human and a time, and the check
+    // constraint below refuses the promotion without one.
+    visibilityOverrideBy: text("visibility_override_by"),
+    visibilityOverrideAt: timestamp("visibility_override_at", { withTimezone: true }),
+    visibilityOverrideReason: text("visibility_override_reason"),
+
     agentRunId: uuid("agent_run_id"),
     notes: text("notes"),
     metadata: jsonb("metadata"),
@@ -143,6 +177,7 @@ export const claims = pgTable(
   },
   (t) => ({
     entityKeyIdx: index("claims_entity_key_idx").on(t.entityType, t.entityId, t.claimKey),
+    visibilityIdx: index("claims_visibility_idx").on(t.visibility),
     statusIdx: index("claims_verification_status_idx").on(t.verificationStatus),
     expiresIdx: index("claims_expires_idx").on(t.expiresAt),
     // A claim marked VERIFIED must say when. Otherwise "verified" is a word
@@ -150,6 +185,20 @@ export const claims = pgTable(
     verifiedNeedsDate: check(
       "claims_verified_needs_date",
       sql`${t.verificationStatus} <> 'VERIFIED' OR ${t.verifiedAt} IS NOT NULL`,
+    ),
+    // The rule that matters. A fact obtained from a logged-in dashboard or a
+    // private negotiation cannot become PUBLIC unless a named owner said so.
+    // Enforced by the database, so no code path -- agent, API or console --
+    // can skip it.
+    publicNeedsOpenSourceOrOverride: check(
+      "claims_public_requires_open_source_or_override",
+      sql`${t.visibility} <> 'PUBLIC'
+          OR ${t.sourceAccess} = 'PUBLIC_WEB'
+          OR ${t.visibilityOverrideBy} IS NOT NULL`,
+    ),
+    overrideNeedsDate: check(
+      "claims_override_needs_date",
+      sql`${t.visibilityOverrideBy} IS NULL OR ${t.visibilityOverrideAt} IS NOT NULL`,
     ),
   }),
 );
