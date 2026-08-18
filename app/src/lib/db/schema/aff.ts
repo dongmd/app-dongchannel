@@ -267,9 +267,12 @@ export const offerRestrictions = pgTable("offer_restrictions", {
 // ─── Angles ──────────────────────────────────────────────────────
 export const angles = pgTable("angles", {
   id: uuid("id").primaryKey().default(sql`gen_random_uuid()`),
+  // M2b: repointed from `offers` to `affiliate_programs`. Column name kept as
+  // offer_id for now -- renaming it is churn across the angles UI for no
+  // behavioural gain, and M4 reshapes this area anyway.
   offerId: uuid("offer_id")
     .notNull()
-    .references(() => offers.id, { onDelete: "cascade" }),
+    .references(() => affiliatePrograms.id, { onDelete: "cascade" }),
   audienceLabel: text("audience_label"),
   painPoint: text("pain_point"),
   desire: text("desire"),
@@ -285,9 +288,10 @@ export const angles = pgTable("angles", {
 // ─── Affiliate test results ──────────────────────────────────────
 export const affiliateResults = pgTable("affiliate_results", {
   id: uuid("id").primaryKey().default(sql`gen_random_uuid()`),
+  // M2b: repointed to `affiliate_programs`. This table is reshaped in M4.
   offerId: uuid("offer_id")
     .notNull()
-    .references(() => offers.id, { onDelete: "cascade" }),
+    .references(() => affiliatePrograms.id, { onDelete: "cascade" }),
   angleId: uuid("angle_id").references(() => angles.id, { onDelete: "set null" }),
   periodStart: timestamp("period_start", { withTimezone: true }).notNull(),
   periodEnd: timestamp("period_end", { withTimezone: true }).notNull(),

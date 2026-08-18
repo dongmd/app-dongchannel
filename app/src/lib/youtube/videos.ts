@@ -7,7 +7,7 @@ import {
   type VideoRow,
   type VideoStatus,
 } from "@/lib/db/schema/youtube";
-import { offers } from "@/lib/db/schema/aff";
+import { affiliatePrograms } from "@/lib/db/schema/aff";
 import { auditEvents } from "@/lib/db/schema/audit";
 import { allowedTransitionsGraph, nextStatuses, VIDEO_STATUS_LABELS } from "./labels";
 
@@ -73,11 +73,11 @@ export async function listVideos(input: ListVideosInput = {}): Promise<VideoList
       publishedAt: videos.publishedAt,
       updatedAt: videos.updatedAt,
       nicheName: niches.name,
-      offerName: offers.name,
+      offerName: affiliatePrograms.name,
     })
     .from(videos)
     .leftJoin(niches, eq(videos.nicheId, niches.id))
-    .leftJoin(offers, eq(videos.offerId, offers.id))
+    .leftJoin(affiliatePrograms, eq(videos.offerId, affiliatePrograms.id))
     .where(whereClauses.length > 0 ? and(...whereClauses) : undefined)
     .orderBy(desc(videos.updatedAt))
     .limit(limit);
@@ -94,11 +94,11 @@ export async function getVideoDetail(id: string): Promise<VideoDetail | null> {
     .select({
       video: videos,
       nicheName: niches.name,
-      offerName: offers.name,
+      offerName: affiliatePrograms.name,
     })
     .from(videos)
     .leftJoin(niches, eq(videos.nicheId, niches.id))
-    .leftJoin(offers, eq(videos.offerId, offers.id))
+    .leftJoin(affiliatePrograms, eq(videos.offerId, affiliatePrograms.id))
     .where(eq(videos.id, id))
     .limit(1);
   if (!row) return null;

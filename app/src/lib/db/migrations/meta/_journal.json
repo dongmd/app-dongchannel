@@ -64,6 +64,13 @@
       "when": 1787053464559,
       "tag": "0008_confused_mystique",
       "breakpoints": true
+    },
+    {
+      "idx": 9,
+      "version": "7",
+      "when": 1787054998962,
+      "tag": "0009_absent_wilson_fisk",
+      "breakpoints": true
     }
   ]
 }

@@ -137,7 +137,7 @@ async function searchOffers(q: string, limit: number): Promise<SearchItem[]> {
     SELECT id, name, network, status::text AS status,
       ts_headline('simple', coalesce(name,'') || ' ' || coalesce(notes,''), plainto_tsquery('simple', ${q}), ${HEADLINE_OPTIONS}) AS snippet,
       ts_rank(to_tsvector('simple', coalesce(name,'') || ' ' || coalesce(notes,'')), plainto_tsquery('simple', ${q})) AS score
-    FROM offers
+    FROM affiliate_programs
     WHERE to_tsvector('simple', coalesce(name,'') || ' ' || coalesce(notes,'')) @@ plainto_tsquery('simple', ${q})
     ORDER BY score DESC, updated_at DESC
     LIMIT ${limit}

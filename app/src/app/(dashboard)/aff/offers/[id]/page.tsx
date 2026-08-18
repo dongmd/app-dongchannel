@@ -36,22 +36,22 @@ export default async function OfferDetailPage({
         <div className="flex flex-wrap items-center gap-3">
           <OfferStatusBadge status={offer.status} />
           <ConfidenceBadge confidence={offer.confidence} stale={isStale(offer.lastVerifiedAt)} />
-          {offer.network ? (
-            <span className="text-xs text-muted-foreground">Network: {offer.network}</span>
+          {offer.networkName ? (
+            <span className="text-xs text-muted-foreground">Network: {offer.networkName}</span>
           ) : null}
           {offer.marketName ? (
             <span className="text-xs text-muted-foreground">Market: {offer.marketName}</span>
           ) : null}
         </div>
         <h1 className="text-2xl font-semibold">{offer.name}</h1>
-        {offer.websiteUrl ? (
+        {offer.programUrl ? (
           <a
-            href={offer.websiteUrl}
+            href={offer.programUrl}
             target="_blank"
             rel="noopener noreferrer"
             className="inline-flex items-center gap-1 text-sm text-primary hover:underline"
           >
-            {offer.websiteUrl}
+            {offer.programUrl}
             <ExternalLink className="h-3 w-3" aria-hidden="true" />
           </a>
         ) : null}
@@ -69,14 +69,14 @@ export default async function OfferDetailPage({
         <div>
           <div className="text-xs uppercase tracking-wide text-muted-foreground">Commission</div>
           <div className="mt-1 font-mono text-xs">
-            {offer.commissionType}
-            {offer.commissionValue ? ` · ${offer.commissionValue}${offer.commissionUnit === "percent" ? "%" : offer.commissionUnit ?? ""}` : ""}
+            {offer.payoutType}
+            {offer.payoutValue ? ` · ${offer.payoutValue}${offer.payoutUnit === "percent" ? "%" : offer.payoutUnit ?? ""}` : ""}
           </div>
         </div>
         <div>
           <div className="text-xs uppercase tracking-wide text-muted-foreground">Cookie</div>
           <div className="mt-1 font-mono text-xs">
-            {offer.cookieDays ? `${offer.cookieDays} ngày` : "—"}
+            {offer.cookieDurationDays ? `${offer.cookieDurationDays} ngày` : "—"}
           </div>
         </div>
         <div>
@@ -86,10 +86,12 @@ export default async function OfferDetailPage({
           </div>
         </div>
         <div>
-          <div className="text-xs uppercase tracking-wide text-muted-foreground">Countries</div>
-          <div className="mt-1 font-mono text-xs">
-            {offer.countries?.length ? offer.countries.join(", ") : "—"}
-          </div>
+          {/* GEOs move to affiliate_program_geos in M3, where each carries its
+              own payout and permission overrides. Until then there is nothing
+              to read -- showing an empty dash is honest, inventing a value is
+              not. */}
+          <div className="text-xs uppercase tracking-wide text-muted-foreground">GEOs</div>
+          <div className="mt-1 font-mono text-xs">—</div>
         </div>
         <div>
           <div className="text-xs uppercase tracking-wide text-muted-foreground">Verified lúc</div>

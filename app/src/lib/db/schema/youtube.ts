@@ -1,6 +1,6 @@
 import { bigint, integer, jsonb, pgEnum, pgTable, real, text, timestamp, uniqueIndex, uuid } from "drizzle-orm/pg-core";
 import { sql } from "drizzle-orm";
-import { offers, angles } from "./aff";
+import { affiliatePrograms, angles } from "./aff";
 
 // Pipeline theo PRD FR-04:
 //   IDEA → VALIDATING → APPROVED → SCRIPTING → PRODUCING → SCHEDULED → PUBLISHED → REVIEWED
@@ -63,7 +63,10 @@ export const videos = pgTable("videos", {
   nicheId: uuid("niche_id").references(() => niches.id, { onDelete: "set null" }),
   pillarId: uuid("pillar_id").references(() => contentPillars.id, { onDelete: "set null" }),
   // Cross-ref DC-011 AFF: video có thể liên kết offer + angle nguồn (PRD 10.2 handoff)
-  offerId: uuid("offer_id").references(() => offers.id, { onDelete: "set null" }),
+  // M2b: repointed from `offers` to `affiliate_programs`. The YouTube domain
+  // itself is unchanged -- only the reference target moves, because `offers`
+  // is being retired and a FK cannot outlive its parent.
+  offerId: uuid("offer_id").references(() => affiliatePrograms.id, { onDelete: "set null" }),
   angleId: uuid("angle_id").references(() => angles.id, { onDelete: "set null" }),
   workingTitle: text("working_title").notNull(),
   title: text("title"), // final title (khi PUBLISHED)
