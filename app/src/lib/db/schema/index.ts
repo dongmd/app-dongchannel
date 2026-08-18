@@ -8,3 +8,4 @@ export * from "./memory";
 export * from "./aff";
 export * from "./youtube";
 export * from "./notifications";
+export * from "./opportunity";

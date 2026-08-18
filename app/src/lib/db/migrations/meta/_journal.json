@@ -85,6 +85,13 @@
       "when": 1787058759666,
       "tag": "0011_wide_human_fly",
       "breakpoints": true
+    },
+    {
+      "idx": 12,
+      "version": "7",
+      "when": 1787059576386,
+      "tag": "0012_regular_nightmare",
+      "breakpoints": true
     }
   ]
 }
