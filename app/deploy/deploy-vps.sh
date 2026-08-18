@@ -79,6 +79,18 @@ load_env() {
 
 cd "$APP_DIR"
 
+# ─── 0. Re-exec from a stable copy ──────────────────────────────
+# Step 1 does `git reset --hard`, which rewrites this very file while bash is
+# still reading it. Bash reads scripts lazily by byte offset, so after the file
+# changes underneath it the remaining commands come from the new file at the
+# old offset -- which is how a fixed script kept running its own old logic.
+# Re-exec once from a copy outside the working tree.
+if [ "${DEPLOY_REEXEC:-0}" != "1" ]; then
+  __copy="$(mktemp /tmp/deploy-vps.XXXXXX.sh)"
+  cp "$0" "$__copy"
+  DEPLOY_REEXEC=1 exec bash "$__copy" "$@"
+fi
+
 # ─── 1. Pull latest code ────────────────────────────────────────
 if [ -d .git ]; then
   echo "→ git pull"
@@ -123,18 +135,33 @@ pnpm db:seed || true  # non-fatal nếu đã seeded
 echo "→ next build standalone"
 NEXT_STANDALONE=1 NODE_ENV=production pnpm build
 
-# ─── 6. Restart CloudPanel Node.js service ──────────────────────
-# CloudPanel tự setup systemd unit tên `<siteUser>-nodejs` khi site:add:nodejs.
-echo "→ restart opssite-nodejs.service"
-sudo systemctl restart opssite-nodejs.service || {
-  echo "!! systemctl restart failed — check unit name:"
-  systemctl list-units --type=service | grep -i "opssite\|nodejs" || true
+# ─── 6. Restart the app ─────────────────────────────────────────
+# The original restarted `opssite-nodejs.service`, a CloudPanel unit that does
+# not exist on this host -- only `pm2-opssite.service` does. The app is a PM2
+# process, so PM2 is what restarts it. No sudo, so this works as the site user.
+echo "→ restart PM2 app: $PM2_APP_NAME"
+pm2 restart "$PM2_APP_NAME" --update-env || {
+  echo "!! pm2 restart failed. Known processes:"
+  pm2 list || true
   exit 1
 }
 
 # ─── 7. Verify ──────────────────────────────────────────────────
 sleep 3
-echo "→ health check"
-curl -sSf -o /dev/null -w "HTTP %{http_code}\n" http://127.0.0.1:3000/api/health
+echo "→ health check on 127.0.0.1:$APP_PORT"
+
+# The original checked port 3000, which belongs to a *different* application on
+# this host (vocapro-web). A deploy that reports success after health-checking
+# someone else's service is worse than one that fails outright.
+health="$(curl -sS --max-time 15 "http://127.0.0.1:$APP_PORT/api/health" || true)"
+
+case "$health" in
+  *'"status":"ok"'*) echo "   health ok" ;;
+  *)
+    echo "!! health check did not return status ok"
+    echo "   response: $health"
+    exit 1
+    ;;
+esac
 
 echo "✓ Deploy done. Verify https://app.dongchannel.com/"
