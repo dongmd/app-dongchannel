@@ -38,6 +38,69 @@ export const offerCommissionTypeEnum = pgEnum("offer_commission_type", [
   "UNKNOWN",
 ]);
 
+// ─── Merchants ────────────────────────────────────────────────────
+// P1-R03 / M1. The company that owns an affiliate programme.
+//
+// Deliberately NOT the same thing as `markets`. A market is a vertical
+// ("SEO tools"); a merchant is a company ("Semrush"). Confirmed against the
+// code before this was added: `markets` is only ever used as a classification
+// label on an offer, and carries demand/competition/policy-risk scores, which
+// are properties of a vertical and meaningless for a company.
+export const merchantStatusEnum = pgEnum("merchant_status", ["ACTIVE", "INACTIVE", "ARCHIVED"]);
+
+export const merchants = pgTable(
+  "merchants",
+  {
+    id: uuid("id").primaryKey().default(sql`gen_random_uuid()`),
+    name: text("name").notNull(),
+    websiteUrl: text("website_url"),
+    // Normalised host, e.g. "semrush.com". The dedup key FINAL section 8.2 asks
+    // for: merchant names vary by source, registrable domains do not.
+    canonicalDomain: text("canonical_domain"),
+    status: merchantStatusEnum("status").notNull().default("ACTIVE"),
+    notes: text("notes"),
+    metadata: jsonb("metadata"),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => ({
+    nameUq: uniqueIndex("merchants_name_uq").on(t.name),
+    domainUq: uniqueIndex("merchants_canonical_domain_uq").on(t.canonicalDomain),
+  }),
+);
+
+// ─── Affiliate networks ───────────────────────────────────────────
+// P1-R03 / M1. Impact is the first connector (FINAL section 10.2), but nothing
+// here is Impact-shaped: FINAL is explicit that provider concepts must not be
+// hard-coded into the canonical model.
+export const affiliateNetworkStatusEnum = pgEnum("affiliate_network_status", [
+  "ACTIVE",
+  "INACTIVE",
+  "ARCHIVED",
+]);
+
+export const affiliateNetworks = pgTable(
+  "affiliate_networks",
+  {
+    id: uuid("id").primaryKey().default(sql`gen_random_uuid()`),
+    // Stable machine key, e.g. "impact". Connectors reference this, not the
+    // display name, so renaming a network cannot break an integration.
+    key: text("key").notNull(),
+    name: text("name").notNull(),
+    websiteUrl: text("website_url"),
+    status: affiliateNetworkStatusEnum("status").notNull().default("ACTIVE"),
+    // Whether the owner holds an account. Drives what a connector may fetch.
+    ownerAccountStatus: text("owner_account_status"),
+    notes: text("notes"),
+    metadata: jsonb("metadata"),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => ({
+    keyUq: uniqueIndex("affiliate_networks_key_uq").on(t.key),
+  }),
+);
+
 // ─── Markets ──────────────────────────────────────────────────────
 export const markets = pgTable(
   "markets",
@@ -165,3 +228,8 @@ export type AffiliateResultRow = typeof affiliateResults.$inferSelect;
 export type OfferStatus = (typeof offerStatusEnum.enumValues)[number];
 export type OfferConfidence = (typeof offerConfidenceEnum.enumValues)[number];
 export type OfferCommissionType = (typeof offerCommissionTypeEnum.enumValues)[number];
+
+export type MerchantRow = typeof merchants.$inferSelect;
+export type NewMerchantRow = typeof merchants.$inferInsert;
+export type AffiliateNetworkRow = typeof affiliateNetworks.$inferSelect;
+export type NewAffiliateNetworkRow = typeof affiliateNetworks.$inferInsert;
