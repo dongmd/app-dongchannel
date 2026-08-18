@@ -13,7 +13,7 @@
 
 set -euo pipefail
 
-APP_DIR="/home/opssite/htdocs/app.dongchannel.com"
+APP_DIR="${APP_DIR:-/home/opssite/htdocs/app.dongchannel.com}"
 REPO_URL="https://github.com/dongmd/app-dongchannel.git"
 BRANCH="main"
 
@@ -22,6 +22,27 @@ BRANCH="main"
 # notes at each step.
 PM2_APP_NAME="${PM2_APP_NAME:-dongchannel-app}"
 APP_PORT="${APP_PORT:-3010}"
+PUBLIC_URL="${PUBLIC_URL:-https://app.dongchannel.com}"
+
+# Every externally-visible step runs through a variable. Defaults are the real
+# commands; the guard regression suite (deploy/test-deploy-guards.sh) overrides
+# them with fakes so it can prove that a failing gate really does stop the
+# pipeline before any database mutation -- without deploying anything.
+CMD_LINT="${CMD_LINT:-pnpm lint}"
+CMD_TYPECHECK="${CMD_TYPECHECK:-pnpm typecheck}"
+CMD_TEST="${CMD_TEST:-pnpm test}"
+CMD_BUILD="${CMD_BUILD:-NEXT_STANDALONE=1 NODE_ENV=production pnpm build}"
+CMD_BACKUP="${CMD_BACKUP:-sudo -u postgres pg_dump -Fc -d dongchannel_ops -f}"
+CMD_MIGRATE="${CMD_MIGRATE:-pnpm db:migrate}"
+CMD_SEED="${CMD_SEED:-pnpm db:seed}"
+CMD_RESTART="${CMD_RESTART:-pm2 restart $PM2_APP_NAME --update-env}"
+SKIP_PULL="${SKIP_PULL:-0}"
+SKIP_INSTALL="${SKIP_INSTALL:-0}"
+
+fail() {
+  echo "!! DEPLOY FAILED: $*" >&2
+  exit 1
+}
 
 # ─── Environment loading ─────────────────────────────────────────
 # Replaces `set -o allexport; source .env`.
@@ -92,7 +113,9 @@ if [ "${DEPLOY_REEXEC:-0}" != "1" ]; then
 fi
 
 # ─── 1. Pull latest code ────────────────────────────────────────
-if [ -d .git ]; then
+if [ "$SKIP_PULL" = "1" ]; then
+  echo "→ skip pull (SKIP_PULL=1)"
+elif [ -d .git ]; then
   echo "→ git pull"
   git fetch origin "$BRANCH"
   git reset --hard "origin/$BRANCH"
@@ -109,71 +132,118 @@ fi
 
 # ─── 2. Install deps ─────────────────────────────────────────────
 cd "$APP_DIR/app"
-echo "→ pnpm install"
-if command -v pnpm >/dev/null 2>&1; then
+if [ "$SKIP_INSTALL" = "1" ]; then
+  echo "→ skip install (SKIP_INSTALL=1)"
+elif command -v pnpm >/dev/null 2>&1; then
+  echo "→ pnpm install"
   pnpm install --frozen-lockfile --prod=false
 else
+  echo "→ npm install"
   npm install --no-audit --no-fund
 fi
 
-# ─── 3. Migrate DB ───────────────────────────────────────────────
-# .env symlink từ /home/opssite/.env (CloudPanel convention)
+# ─── 3. Load environment ────────────────────────────────────────
+# Not a mutation. The build needs it, so it happens before the gates.
 if [ ! -f .env ] && [ -f /home/opssite/.env ]; then
   ln -sf /home/opssite/.env .env
 fi
 echo "→ load environment"
-load_env .env
+load_env .env || fail "could not load .env"
 
-echo "→ drizzle migrate"
-pnpm db:migrate
-
-# ─── 4. Seed allowlist (bootstrap only, opt-in) ─────────────────
-# The seed is idempotent -- it inserts with ON CONFLICT DO NOTHING and never
-# updates or deletes -- but it is a *bootstrap* step, and it grants OWNER to
-# whichever address sits first in AUTH_EMAIL_ALLOWLIST. Running it on every
-# production deploy means an env edit silently becomes an access-control
-# change on the next deploy, which is not something a deploy should do by
-# default.
+# ─── 4. QUALITY GATES — nothing may touch the database above this line ──
 #
-# It also ran behind `|| true`, so a genuine failure was invisible.
+# TD-18. The previous order migrated first and built second, so a compile
+# error left the database ahead of the running application. Everything that
+# can fail on its own now fails *before* the first mutation.
+echo "→ gate 1/4: lint"
+eval "$CMD_LINT" || fail "lint failed -- database untouched"
+
+echo "→ gate 2/4: typecheck"
+eval "$CMD_TYPECHECK" || fail "typecheck failed -- database untouched"
+
+echo "→ gate 3/4: test"
+eval "$CMD_TEST" || fail "tests failed -- database untouched"
+
+echo "→ gate 4/4: production build"
+eval "$CMD_BUILD" || fail "build failed -- database untouched"
+
+echo "✓ all gates passed"
+
+# ═══ Everything below may change state ═══════════════════════════
+
+# ─── 5. Fresh backup ────────────────────────────────────────────
+echo "→ backup database"
+__stamp="$(date -u +%Y%m%d-%H%M%S)"
+__dump="/var/backups/dongchannel/dongchannel_ops-deploy-${__stamp}.dump"
+eval "$CMD_BACKUP \"$__dump\"" || fail "backup failed -- refusing to migrate without one"
+echo "   $__dump"
+
+# ─── 6. Pending migrations ──────────────────────────────────────
+# Printed before applying so the deploy log records what was about to run.
+echo "→ pending migrations"
+ls -1 src/lib/db/migrations/*.sql 2>/dev/null | tail -3 | sed 's/^/   /' || true
+
+# ─── 7. Migrate ─────────────────────────────────────────────────
+echo "→ drizzle migrate"
+eval "$CMD_MIGRATE" || fail "migration failed -- app NOT restarted, still serving the previous version"
+
+# ─── 8. Seed (bootstrap only, opt-in) ───────────────────────────
 if [ "${DEPLOY_RUN_SEED:-0}" = "1" ]; then
   echo "→ seed allowlist (DEPLOY_RUN_SEED=1)"
-  pnpm db:seed
+  eval "$CMD_SEED" || fail "seed failed"
 else
   echo "→ skip seed (set DEPLOY_RUN_SEED=1 to bootstrap the allowlist)"
 fi
 
-# ─── 5. Build standalone ────────────────────────────────────────
-echo "→ next build standalone"
-NEXT_STANDALONE=1 NODE_ENV=production pnpm build
-
-# ─── 6. Restart the app ─────────────────────────────────────────
-# The original restarted `opssite-nodejs.service`, a CloudPanel unit that does
-# not exist on this host -- only `pm2-opssite.service` does. The app is a PM2
-# process, so PM2 is what restarts it. No sudo, so this works as the site user.
+# ─── 9. Restart on the artifact that just passed every gate ─────
 echo "→ restart PM2 app: $PM2_APP_NAME"
-pm2 restart "$PM2_APP_NAME" --update-env || {
-  echo "!! pm2 restart failed. Known processes:"
+eval "$CMD_RESTART" || {
+  echo "!! pm2 restart failed. Known processes:" >&2
   pm2 list || true
-  exit 1
+  fail "restart failed"
 }
 
-# ─── 7. Verify ──────────────────────────────────────────────────
+# ─── 10. Verify ─────────────────────────────────────────────────
 sleep 3
+
+if [ "${SKIP_HEALTH:-0}" = "1" ]; then
+  # Guard-suite control path only. Never set in a real deploy.
+  echo "→ skip health checks (SKIP_HEALTH=1)"
+  __root="skipped"
+else
 echo "→ health check on 127.0.0.1:$APP_PORT"
-
-# The original checked port 3000, which belongs to a *different* application on
-# this host (vocapro-web). A deploy that reports success after health-checking
-# someone else's service is worse than one that fails outright.
-health="$(curl -sS --max-time 15 "http://127.0.0.1:$APP_PORT/api/health" || true)"
-
-case "$health" in
-  *'"status":"ok"'*) echo "   health ok" ;;
-  *)
-    echo "!! health check did not return status ok"
-    echo "   response: $health"
-    exit 1
-    ;;
+# Port 3000 belongs to a different application on this host, so the port is
+# explicit and the body is asserted rather than the status code trusted.
+__local="$(curl -sS --max-time 15 "http://127.0.0.1:$APP_PORT/api/health" || true)"
+case "$__local" in
+  *'"status":"ok"'*) echo "   local health ok" ;;
+  *) echo "   response: $__local" >&2; fail "local health check did not return status ok" ;;
 esac
 
-echo "✓ Deploy done. Verify https://app.dongchannel.com/"
+echo "→ external health check"
+__ext="$(curl -sS --max-time 20 "$PUBLIC_URL/api/health" || true)"
+case "$__ext" in
+  *'"status":"ok"'*) echo "   external health ok" ;;
+  *) echo "   response: $__ext" >&2; fail "external health check did not return status ok" ;;
+esac
+
+echo "→ root response"
+__root="$(curl -sS -o /dev/null -w '%{http_code}' --max-time 20 "$PUBLIC_URL" || true)"
+case "$__root" in
+  2*|3*) echo "   root $__root" ;;
+  *) fail "root returned $__root" ;;
+esac
+fi
+
+# ─── 11. Deploy evidence ────────────────────────────────────────
+echo "→ deploy evidence"
+{
+  echo "deployed_at   $(date -u +%FT%TZ)"
+  echo "commit        $(git -C "$APP_DIR" rev-parse --short HEAD 2>/dev/null || echo unknown)"
+  echo "backup        $__dump"
+  echo "local_health  ok"
+  echo "external      ok"
+  echo "root          $__root"
+} | tee -a "$APP_DIR/deploy-evidence.log" | sed 's/^/   /'
+
+echo "✓ Deploy done. Verify $PUBLIC_URL"

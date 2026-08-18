@@ -1,0 +1,138 @@
+#!/bin/bash
+# Regression suite for the deploy pipeline's guards (TD-18).
+#
+# It proves the properties by *observation*: every step of deploy-vps.sh is
+# overridden with a fake that appends its name to a trace file, so each
+# assertion is "did this step actually run" rather than "does the script look
+# right".
+#
+#   1. build fails               → migration never runs
+#   2. lint/typecheck/test fail  → migration never runs
+#   3. migration fails           → PM2 is not restarted
+#   4. health fails              → non-zero exit and no "Deploy done"
+#
+# The CONTROL case is not optional. Without it, every case below could be
+# passing because the script died on its first line -- and a suite that passes
+# for the wrong reason is worse than no suite. That is exactly what the first
+# version of this file did: seven green checks, empty traces, nothing executed.
+#
+# Nothing here touches the real database, app or repository: SKIP_PULL and
+# SKIP_INSTALL are set, APP_DIR points at a sandbox, and every mutating command
+# is a fake.
+#
+#   bash deploy/test-deploy-guards.sh
+
+set -uo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+DEPLOY="$SCRIPT_DIR/deploy-vps.sh"
+PASS=0
+FAIL=0
+
+# The deploy script cds into $APP_DIR/app, mirroring the repo layout.
+SANDBOX="$(mktemp -d)"
+mkdir -p "$SANDBOX/app/src/lib/db/migrations"
+printf 'DEPLOY_TEST=1\n' > "$SANDBOX/app/.env"
+trap 'rm -rf "$SANDBOX"' EXIT
+
+# Fakes. Each records that it ran; `false` makes the step fail.
+ok()  { echo "echo $1 >> \$TRACE"; }
+bad() { echo "echo $1 >> \$TRACE; false"; }
+
+run_case() {
+  # run_case <name> <ok|fail> "<steps that must NOT run>" -- <env assignments...>
+  local name="$1"; shift
+  local expect="$1"; shift
+  local forbidden="$1"; shift
+  shift # the literal --
+
+  TRACE="$(mktemp)"
+  export TRACE
+
+  local out rc
+  out="$(env DEPLOY_REEXEC=1 SKIP_PULL=1 SKIP_INSTALL=1 APP_DIR="$SANDBOX" "$@" bash "$DEPLOY" 2>&1)"
+  rc=$?
+
+  local good=1
+  local why=""
+
+  if [ "$expect" = "fail" ]; then
+    [ "$rc" -eq 0 ] && { good=0; why="$why expected non-zero exit;"; }
+    grep -q "Deploy done" <<<"$out" && { good=0; why="$why printed 'Deploy done' on a failed deploy;"; }
+  else
+    [ "$rc" -ne 0 ] && { good=0; why="$why expected success, got exit $rc;"; }
+    grep -q "Deploy done" <<<"$out" || { good=0; why="$why expected 'Deploy done';"; }
+  fi
+
+  local step
+  for step in $forbidden; do
+    grep -qx "$step" "$TRACE" 2>/dev/null && { good=0; why="$why '$step' ran but must not have;"; }
+  done
+
+  if [ "$good" = "1" ]; then
+    echo "  PASS  $name"
+    PASS=$((PASS + 1))
+  else
+    echo "  FAIL  $name -- $why"
+    echo "        trace: $(tr '\n' ' ' < "$TRACE")"
+    echo "        tail:  $(tail -2 <<<"$out" | tr '\n' ' ')"
+    FAIL=$((FAIL + 1))
+  fi
+  rm -f "$TRACE"
+}
+
+echo "Deploy guard regression suite"
+echo
+
+run_case "CONTROL: all gates green → whole pipeline runs" ok "" -- \
+  SKIP_HEALTH=1 \
+  CMD_LINT="$(ok LINT)" CMD_TYPECHECK="$(ok TYPECHECK)" CMD_TEST="$(ok TEST)" \
+  CMD_BUILD="$(ok BUILD)" CMD_BACKUP="$(ok BACKUP)" CMD_MIGRATE="$(ok MIGRATE)" \
+  CMD_RESTART="$(ok RESTART)"
+
+run_case "build fails → no backup, no migration, no restart" fail "BACKUP MIGRATE RESTART" -- \
+  SKIP_HEALTH=1 \
+  CMD_LINT="$(ok LINT)" CMD_TYPECHECK="$(ok TYPECHECK)" CMD_TEST="$(ok TEST)" \
+  CMD_BUILD="$(bad BUILD)" CMD_BACKUP="$(ok BACKUP)" CMD_MIGRATE="$(ok MIGRATE)" \
+  CMD_RESTART="$(ok RESTART)"
+
+run_case "lint fails → migration never runs" fail "BACKUP MIGRATE RESTART" -- \
+  SKIP_HEALTH=1 \
+  CMD_LINT="$(bad LINT)" CMD_TYPECHECK="$(ok TYPECHECK)" CMD_TEST="$(ok TEST)" \
+  CMD_BUILD="$(ok BUILD)" CMD_BACKUP="$(ok BACKUP)" CMD_MIGRATE="$(ok MIGRATE)" \
+  CMD_RESTART="$(ok RESTART)"
+
+run_case "typecheck fails → migration never runs" fail "BACKUP MIGRATE RESTART" -- \
+  SKIP_HEALTH=1 \
+  CMD_LINT="$(ok LINT)" CMD_TYPECHECK="$(bad TYPECHECK)" CMD_TEST="$(ok TEST)" \
+  CMD_BUILD="$(ok BUILD)" CMD_BACKUP="$(ok BACKUP)" CMD_MIGRATE="$(ok MIGRATE)" \
+  CMD_RESTART="$(ok RESTART)"
+
+run_case "tests fail → migration never runs" fail "BACKUP MIGRATE RESTART" -- \
+  SKIP_HEALTH=1 \
+  CMD_LINT="$(ok LINT)" CMD_TYPECHECK="$(ok TYPECHECK)" CMD_TEST="$(bad TEST)" \
+  CMD_BUILD="$(ok BUILD)" CMD_BACKUP="$(ok BACKUP)" CMD_MIGRATE="$(ok MIGRATE)" \
+  CMD_RESTART="$(ok RESTART)"
+
+run_case "backup fails → migration never runs" fail "MIGRATE RESTART" -- \
+  SKIP_HEALTH=1 \
+  CMD_LINT="$(ok LINT)" CMD_TYPECHECK="$(ok TYPECHECK)" CMD_TEST="$(ok TEST)" \
+  CMD_BUILD="$(ok BUILD)" CMD_BACKUP="$(bad BACKUP)" CMD_MIGRATE="$(ok MIGRATE)" \
+  CMD_RESTART="$(ok RESTART)"
+
+run_case "migration fails → PM2 not restarted" fail "RESTART" -- \
+  SKIP_HEALTH=1 \
+  CMD_LINT="$(ok LINT)" CMD_TYPECHECK="$(ok TYPECHECK)" CMD_TEST="$(ok TEST)" \
+  CMD_BUILD="$(ok BUILD)" CMD_BACKUP="$(ok BACKUP)" CMD_MIGRATE="$(bad MIGRATE)" \
+  CMD_RESTART="$(ok RESTART)"
+
+# Health checks run for real here, against a closed port.
+run_case "health fails → failure exit, no 'Deploy done'" fail "" -- \
+  APP_PORT=9 PUBLIC_URL="http://127.0.0.1:9" \
+  CMD_LINT="$(ok LINT)" CMD_TYPECHECK="$(ok TYPECHECK)" CMD_TEST="$(ok TEST)" \
+  CMD_BUILD="$(ok BUILD)" CMD_BACKUP="$(ok BACKUP)" CMD_MIGRATE="$(ok MIGRATE)" \
+  CMD_RESTART="$(ok RESTART)"
+
+echo
+echo "  $PASS passed, $FAIL failed"
+[ "$FAIL" -eq 0 ] || exit 1
