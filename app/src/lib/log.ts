@@ -1,5 +1,7 @@
 import "server-only";
 
+import { redact } from "./log-redact";
+
 // AC03 — structured logger, không dep. Non-PII fields only (email/token redacted).
 // Route/handler tự truyền request_id qua context.
 
@@ -15,32 +17,6 @@ interface LogFields {
   status?: number;
   duration_ms?: number;
   [key: string]: unknown;
-}
-
-// Redact common secret patterns (defensive — không thay thế review code).
-const SECRET_PATTERNS: [RegExp, string][] = [
-  [/GOCSPX-[A-Za-z0-9_-]{20,}/g, "GOCSPX-<REDACTED>"],
-  [/sk-[A-Za-z0-9_-]{20,}/g, "sk-<REDACTED>"],
-  [/Bearer\s+[A-Za-z0-9._-]+/gi, "Bearer <REDACTED>"],
-  [/Basic\s+[A-Za-z0-9+/=]+/g, "Basic <REDACTED>"],
-];
-
-function redact(value: unknown): unknown {
-  if (typeof value === "string") {
-    let out = value;
-    for (const [pattern, replacement] of SECRET_PATTERNS) {
-      out = out.replace(pattern, replacement);
-    }
-    return out;
-  }
-  if (value && typeof value === "object" && !(value instanceof Date)) {
-    const arr = Array.isArray(value) ? [...value] : { ...value };
-    for (const key of Object.keys(arr as Record<string, unknown>)) {
-      (arr as Record<string, unknown>)[key] = redact((arr as Record<string, unknown>)[key]);
-    }
-    return arr;
-  }
-  return value;
 }
 
 function write(level: Level, message: string, fields: LogFields = {}): void {

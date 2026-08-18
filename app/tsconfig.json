@@ -12,6 +12,10 @@
     "esModuleInterop": true,
     "module": "esnext",
     "moduleResolution": "bundler",
+    // Test files import with an explicit .ts extension so Node's built-in
+    // runner can resolve them. Safe with noEmit: nothing is compiled, so
+    // there is no emitted path to rewrite.
+    "allowImportingTsExtensions": true,
     "resolveJsonModule": true,
     "isolatedModules": true,
     "jsx": "preserve",
