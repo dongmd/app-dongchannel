@@ -32,7 +32,8 @@ CMD_LINT="${CMD_LINT:-pnpm lint}"
 CMD_TYPECHECK="${CMD_TYPECHECK:-pnpm typecheck}"
 CMD_TEST="${CMD_TEST:-pnpm test}"
 CMD_BUILD="${CMD_BUILD:-NEXT_STANDALONE=1 NODE_ENV=production pnpm build}"
-CMD_BACKUP="${CMD_BACKUP:-sudo -u postgres pg_dump -Fc -d dongchannel_ops -f}"
+CMD_BACKUP="${CMD_BACKUP:-dump_database}"
+BACKUP_DIR="${BACKUP_DIR:-/home/opssite/backups}"
 CMD_MIGRATE="${CMD_MIGRATE:-pnpm db:migrate}"
 CMD_SEED="${CMD_SEED:-pnpm db:seed}"
 CMD_RESTART="${CMD_RESTART:-pm2 restart $PM2_APP_NAME --update-env}"
@@ -42,6 +43,41 @@ SKIP_INSTALL="${SKIP_INSTALL:-0}"
 fail() {
   echo "!! DEPLOY FAILED: $*" >&2
   exit 1
+}
+
+# pg_dump as the site user, using the app's own DATABASE_URL.
+#
+# The site user cannot sudo, and /var/backups is root-owned, so the previous
+# `sudo -u postgres pg_dump` could never have worked from here.
+#
+# The connection URI is NOT passed as an argument: argv is world-readable via
+# ps on a shared host, and the URI carries the password. The parts are exported
+# as PG* variables instead, which are readable only by this user.
+dump_database() {
+  local target="$1"
+  [ -n "${DATABASE_URL:-}" ] || { echo "DATABASE_URL not set" >&2; return 1; }
+
+  local rest cred hostpart
+  rest="${DATABASE_URL#*://}"
+  cred="${rest%%@*}"
+  hostpart="${rest#*@}"
+
+  PGUSER="${cred%%:*}"
+  PGPASSWORD="${cred#*:}"
+  PGDATABASE="${hostpart#*/}"
+  PGDATABASE="${PGDATABASE%%\?*}"
+  local hostport="${hostpart%%/*}"
+  PGHOST="${hostport%%:*}"
+  PGPORT="${hostport#*:}"
+  [ "$PGPORT" = "$PGHOST" ] && PGPORT=5432
+  export PGUSER PGPASSWORD PGDATABASE PGHOST PGPORT
+
+  mkdir -p "$(dirname "$target")" && chmod 700 "$(dirname "$target")"
+  pg_dump -Fc -f "$target"
+  local rc=$?
+  unset PGPASSWORD
+  [ $rc -eq 0 ] && chmod 600 "$target"
+  return $rc
 }
 
 # ─── Environment loading ─────────────────────────────────────────
@@ -174,7 +210,7 @@ echo "✓ all gates passed"
 # ─── 5. Fresh backup ────────────────────────────────────────────
 echo "→ backup database"
 __stamp="$(date -u +%Y%m%d-%H%M%S)"
-__dump="/var/backups/dongchannel/dongchannel_ops-deploy-${__stamp}.dump"
+__dump="$BACKUP_DIR/dongchannel_ops-deploy-${__stamp}.dump"
 eval "$CMD_BACKUP \"$__dump\"" || fail "backup failed -- refusing to migrate without one"
 echo "   $__dump"
 
