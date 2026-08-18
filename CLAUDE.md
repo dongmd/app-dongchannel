@@ -2,6 +2,47 @@
 
 Dashboard vận hành **AFF Research Bot** và **YouTube Global Bot**. Kết nối với Hermes Agent qua REST/SSE, deploy tại `https://app.dongchannel.com`.
 
+> ## ⛔ ĐỌC `docs/00_SOURCE_OF_TRUTH.md` TRƯỚC
+>
+> **Governance của codebase này KHÔNG nằm ở repo này.** Requirement ID,
+> acceptance criteria, status và evidence đều nằm ở **Repository A**:
+> `https://github.com/dongmd/dongchannel-website.git`
+> (local: `D:\Project\update-my-website\dongchannel-dot-com`)
+>
+> - MASTER PRD/TDD: `docs/v3/*_DongChannel_AI_Money_OS_FINAL.md`
+> - ACTIVE EXECUTION: `docs/v2/PRD_V2.md`, `TDD_V2.md`, `IMPLEMENTATION_PLAN.md`, `IMPLEMENTATION_TRACEABILITY.md`
+>
+> **`docs/PRD.md` và `docs/TDD.md` trong repo này là SUPERSEDED.** Chúng mô tả một
+> "Operations Hub" hẹp hơn, viết trước khi dự án thành AI Money OS. Chúng mạch lạc
+> và tự tin — nên nguy hiểm hơn một khoảng trống rõ ràng.
+>
+> **Nếu không đọc được governance của Repository A: FAIL CLOSED.** Không suy ra
+> scope từ tài liệu legacy ở đây, không bắt đầu requirement mới, báo thiếu
+> governance source rồi dừng.
+>
+> ### Ràng buộc kiến trúc
+>
+> - `dongchannel-ops-hub` là **canonical source duy nhất** của `app.dongchannel.com`.
+>   Không tạo runtime hay application thứ hai.
+> - PostgreSQL **`dongchannel_ops` là System of Record** của AI Money OS. Một
+>   database, **một chuỗi migration Drizzle** (`app/src/lib/db/migrations`). Không
+>   tạo schema owner thứ hai, migration tool thứ hai, hay canonical database thứ hai.
+> - **Hermes là agent runtime, không phải System of Record.** Output quan trọng
+>   phải normalise vào PostgreSQL; Hermes memory chỉ là ngữ cảnh bổ trợ.
+> - **WordPress MySQL và PostgreSQL không truy cập trực tiếp lẫn nhau.** Tích hợp
+>   qua REST API có xác thực, cả hai chiều.
+> - **n8n là orchestration layer**, không sở hữu entity, không chứa business logic.
+>
+> ### Deploy
+>
+> Claude Code deploy, **owner không deploy**. Owner review/approve decision,
+> content, security, scope khi requirement yêu cầu.
+>
+> `bash app/deploy/deploy-vps.sh` — thứ tự gate **không được đổi**:
+> `lint → typecheck → test → build → backup → migrate → seed(opt-in) → restart → health`.
+> Chạy `app/deploy/test-deploy-guards.sh` sau mỗi thay đổi deploy script.
+
+
 > QUAN TRỌNG: KHÔNG dùng cú pháp `@file` trong file này. Chỉ ghi đường dẫn để AI tự đọc khi cần, tránh auto-load tốn context.
 
 ## Tài liệu dự án (đọc khi cần, không phải mỗi lần)
