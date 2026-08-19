@@ -6,11 +6,10 @@ import {
   wordpressProductSync,
   wordpressSyncJobs,
   type ProductRow,
-  type WordpressProductSyncRow,
   type WordpressSyncJobRow,
 } from "@/lib/db/schema/wordpress";
 import { auditEvents } from "@/lib/db/schema/audit";
-import { WordpressClient, WordpressError, wordpressClientFromEnv } from "./client";
+import { WordpressError, wordpressClientFromEnv, type WordpressClient } from "./client";
 import { buildFacts, idempotencyKeyFor } from "./field-map";
 import { backoffMs, MAX_ATTEMPTS } from "./retry-policy";
 
