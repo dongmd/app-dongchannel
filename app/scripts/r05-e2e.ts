@@ -9,6 +9,8 @@
  *   - an assertion prints what it compared, so a pass is legible as evidence.
  */
 
+import "dotenv/config";
+
 import { and, eq } from "drizzle-orm";
 import { db } from "../src/lib/db";
 import {
