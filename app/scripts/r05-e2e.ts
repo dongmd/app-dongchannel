@@ -82,6 +82,7 @@ async function main() {
       sourceVersion: 1,
     })
     .returning();
+  if (!product) throw new Error("failed to create fixture product");
   productId = product.id;
 
   await db.insert(wordpressProductSync).values({ productId, wpPostId, status: "PENDING" });
@@ -97,7 +98,7 @@ async function main() {
   // ── D · valid sync ────────────────────────────────────────────
   await enqueueProductSync(productId, 1);
   const job1 = await takeJob(1);
-  const r1 = await runSyncJob(job1, client);
+  const r1 = await runSyncJob(job1!, client);
   assertEq("AC-05", "applied", r1.result, "CONTROL first sync applies");
   if (r1.result !== "applied") controlFailed += 1;
 
@@ -106,12 +107,12 @@ async function main() {
   assertEq("AC-05c", "USD", after1.facts.dc_price_currency, "read-back currency via API");
 
   const [state1] = await db.select().from(wordpressProductSync).where(eq(wordpressProductSync.productId, productId));
-  assertEq("AC-03b", "SYNCED", state1.status, "sync state recorded");
-  assertEq("AC-03c", 1, state1.syncedSourceVersion, "synced version recorded");
+  assertEq("AC-03b", "SYNCED", state1!.status, "sync state recorded");
+  assertEq("AC-03c", 1, state1!.syncedSourceVersion, "synced version recorded");
 
   // ── E · idempotency ───────────────────────────────────────────
   const modifiedBefore = after1.postModifiedGmt;
-  await db.update(wordpressSyncJobs).set({ state: "QUEUED" }).where(eq(wordpressSyncJobs.id, job1.id));
+  await db.update(wordpressSyncJobs).set({ state: "QUEUED" }).where(eq(wordpressSyncJobs.id, job1!.id));
   const job1again = await takeJob(1);
   const r2 = await runSyncJob(job1again!, client);
   const after2 = await client.getProduct(wpPostId, `r05-e2e-${RUN}-rb2`);
