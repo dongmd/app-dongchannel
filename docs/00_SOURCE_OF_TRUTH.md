@@ -89,6 +89,14 @@ Two behaviours worth knowing before mistaking them for bugs:
 
 ---
 
+## Working protocol
+
+Repository A's `docs/WORKING_PROTOCOL.md` governs **how batches are paced and
+handed back** in every Claude Code session, on this repository too: propose the
+next batch and ask before starting it; once approved, run the whole batch
+without asking about each ordinary step; stop only for a hard blocker or a
+decision that is the owner's. It changes no requirement and no architecture.
+
 ## Status report header
 
 Every status report starts with these five lines:
