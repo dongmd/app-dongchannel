@@ -18,7 +18,8 @@ import {
   wordpressProductSync,
   wordpressSyncJobs,
 } from "../src/lib/db/schema/wordpress";
-import { WordpressError, wordpressClientFromEnv } from "../src/lib/wordpress/client";
+import type { WordpressError } from "../src/lib/wordpress/client";
+import { wordpressClientFromEnv } from "../src/lib/wordpress/client";
 import { enqueueProductSync, runSyncJob } from "../src/lib/wordpress/sync-worker";
 import { buildFacts, idempotencyKeyFor, isForbiddenField, MANAGED_FIELD_KEYS } from "../src/lib/wordpress/field-map";
 
@@ -97,6 +98,16 @@ async function main() {
   assertEq("AC-06b", true, MANAGED_FIELD_KEYS.includes("dc_price_amount"), "price is a managed field");
   assertEq("AC-08a", false, MANAGED_FIELD_KEYS.includes("dc_aff_url"), "affiliate url is not managed");
 
+  // The key is a pure function of (product, version): a retry of the same
+  // version reproduces it exactly, which is what makes the replay above work.
+  assertEq("AC-12", idempotencyKeyFor(productId, 1), idempotencyKeyFor(productId, 1), "key is deterministic");
+  if (idempotencyKeyFor(productId, 1) === idempotencyKeyFor(productId, 2)) {
+    bad("AC-12b", "two versions share one idempotency key");
+    controlFailed += 1;
+  } else {
+    ok("AC-12b", "a new version gets a new key");
+  }
+
   // ── D · valid sync ────────────────────────────────────────────
   await enqueueProductSync(productId, 1);
   const job1 = await takeJob(1);
@@ -113,13 +124,17 @@ async function main() {
   assertEq("AC-03c", 1, state1!.syncedSourceVersion, "synced version recorded");
 
   // ── E · idempotency ───────────────────────────────────────────
-  const modifiedBefore = after1.postModifiedGmt;
+  // post_modified is NOT a write oracle here. dc/v1 writes facts with
+  // update_post_meta() and never calls wp_update_post(), so post_modified is
+  // identical whether or not a write happened — an assertion on it passes for
+  // the wrong reason. The authoritative signal is meta.idempotent_replay,
+  // which WordPress sets only when it short-circuits ahead of the write loop.
   await db.update(wordpressSyncJobs).set({ state: "QUEUED" }).where(eq(wordpressSyncJobs.id, job1!.id));
   const job1again = await takeJob(1);
   const r2 = await runSyncJob(job1again!, client);
+  assertEq("AC-11", "replayed", r2.result, "same key + same payload replays, never rewrites");
   const after2 = await client.getProduct(wpPostId, `r05-e2e-${RUN}-rb2`);
-  ok("AC-11", `replay result=${r2.result}`);
-  assertEq("AC-11b", modifiedBefore, after2.postModifiedGmt, "post_modified identical: no second write");
+  assertEq("AC-11b", after1.facts.dc_price_amount, after2.facts.dc_price_amount, "facts unchanged across the replay");
 
   // ── F · stale version is refused ──────────────────────────────
   await db.update(products).set({ sourceVersion: 5, priceAmount: "49.00" }).where(eq(products.id, productId));
@@ -188,18 +203,26 @@ async function main() {
     assertEq("AC-14b", false, e.retryable, "a 412 is never retried");
   }
 
-  // ── I · cache freshness (R07 R-4 still holds through this client)
+  // ── I · cache freshness (R07 R-4 still holds through this client) ──
+  // The proof is that a value written through the sync is observable on the
+  // next plain GET, with no cache-buster. Again this cannot lean on
+  // post_modified, which a meta-only write never moves.
   const fresh1 = await client.getProduct(wpPostId, `r05-e2e-${RUN}-c1`);
-  await db.update(products).set({ sourceVersion: 6, moneyback: `r05-${RUN}` }).where(eq(products.id, productId));
+  const moneyback = `r05-${RUN}`;
+  await db.update(products).set({ sourceVersion: 6, moneyback }).where(eq(products.id, productId));
   await enqueueProductSync(productId, 6);
   const job6 = await takeJob(6);
-  await runSyncJob(job6!, client);
+  const r6 = await runSyncJob(job6!, client);
+  assertEq("AC-15", "applied", r6.result, "CONTROL the freshness probe actually wrote");
+  if (r6.result !== "applied") controlFailed += 1;
+
   const fresh2 = await client.getProduct(wpPostId, `r05-e2e-${RUN}-c2`);
-  if (fresh1.postModifiedGmt !== fresh2.postModifiedGmt || fresh2.facts.dc_moneyback === fresh1.facts.dc_moneyback) {
-    ok("AC-15", `change observable without a cache-buster (moneyback=${fresh2.facts.dc_moneyback})`);
-  } else {
-    bad("AC-15", "API served a stale projection after a successful sync");
+  assertEq("AC-15b", moneyback, fresh2.facts.dc_moneyback, "new value served without a cache-buster");
+  if (fresh1.facts.dc_moneyback === fresh2.facts.dc_moneyback) {
+    bad("AC-15c", "API served a stale projection after a successful sync");
     controlFailed += 1;
+  } else {
+    ok("AC-15c", `projection moved (${fresh1.facts.dc_moneyback ?? "null"} -> ${fresh2.facts.dc_moneyback})`);
   }
 }
 
