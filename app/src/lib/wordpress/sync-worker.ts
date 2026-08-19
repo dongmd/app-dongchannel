@@ -12,6 +12,7 @@ import {
 import { auditEvents } from "@/lib/db/schema/audit";
 import { WordpressClient, WordpressError, wordpressClientFromEnv } from "./client";
 import { buildFacts, idempotencyKeyFor } from "./field-map";
+import { backoffMs, MAX_ATTEMPTS } from "./retry-policy";
 
 // P1-R05 — the worker that carries app facts to WordPress.
 //
@@ -19,17 +20,7 @@ import { buildFacts, idempotencyKeyFor } from "./field-map";
 // WP-Cron is not an option; it fires on visitor requests and this site has
 // almost none.
 
-/** Bounded, and bounded deliberately. Six attempts over roughly ten minutes. */
-export const MAX_ATTEMPTS = 6;
-const BASE_BACKOFF_MS = 5_000;
-
-function backoffMs(attempts: number, retryAfterSeconds?: number): number {
-  if (retryAfterSeconds && retryAfterSeconds > 0) return retryAfterSeconds * 1000;
-  // Exponential with jitter. Jitter matters here because a queue drained after
-  // an outage would otherwise re-hit WordPress in lockstep.
-  const exp = BASE_BACKOFF_MS * 2 ** Math.min(attempts, 6);
-  return exp + Math.floor(Math.random() * 1000);
-}
+export { MAX_ATTEMPTS } from "./retry-policy";
 
 export interface SyncOutcome {
   jobId: string;

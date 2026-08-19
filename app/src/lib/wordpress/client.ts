@@ -58,20 +58,9 @@ export interface PatchResult {
  * that needs a human, and hammering it would turn one stale baseline into a
  * loop that never resolves.
  */
-export type WordpressErrorKind =
-  | "TRANSPORT"        // retryable: connection reset, DNS, TLS
-  | "TIMEOUT"          // retryable
-  | "SERVER"           // retryable: 5xx
-  | "RATE_LIMITED"     // retryable, honour Retry-After
-  | "IN_FLIGHT"        // retryable: 409 REQUEST_IN_FLIGHT, another worker owns it
-  | "CONFLICT"         // NOT retryable: 412 precondition -- WordPress changed
-  | "KEY_REUSED"       // NOT retryable: 409 IDEMPOTENCY_KEY_REUSED, a client bug
-  | "VALIDATION"       // NOT retryable: 400
-  | "FORBIDDEN"        // NOT retryable: 403 -- includes affiliate/verification refusals
-  | "UNAUTHENTICATED"  // NOT retryable: 401 -- credential problem, not a blip
-  | "NOT_FOUND"        // NOT retryable: 404
-  | "DISABLED"         // retryable: 503, the namespace kill switch is off
-  | "UNKNOWN";
+import { classifyWordpressError, isRetryableKind, type WordpressErrorKind } from "./retry-policy";
+
+export type { WordpressErrorKind } from "./retry-policy";
 
 export class WordpressError extends Error {
   constructor(
@@ -86,47 +75,10 @@ export class WordpressError extends Error {
   }
 
   get retryable(): boolean {
-    switch (this.kind) {
-      case "TRANSPORT":
-      case "TIMEOUT":
-      case "SERVER":
-      case "RATE_LIMITED":
-      case "IN_FLIGHT":
-      case "DISABLED":
-        return true;
-      default:
-        return false;
-    }
+    return isRetryableKind(this.kind);
   }
 }
 
-const RETRYABLE_CODES = new Set(["REQUEST_IN_FLIGHT", "RATE_LIMITED", "NAMESPACE_DISABLED", "WRITES_DISABLED"]);
-
-function classify(status: number, code: string): WordpressErrorKind {
-  if (code === "REQUEST_IN_FLIGHT") return "IN_FLIGHT";
-  if (code === "IDEMPOTENCY_KEY_REUSED") return "KEY_REUSED";
-  if (code === "NAMESPACE_DISABLED" || code === "WRITES_DISABLED") return "DISABLED";
-
-  switch (status) {
-    case 400:
-    case 415:
-      return "VALIDATION";
-    case 401:
-      return "UNAUTHENTICATED";
-    case 403:
-      return "FORBIDDEN";
-    case 404:
-      return "NOT_FOUND";
-    case 409:
-      return RETRYABLE_CODES.has(code) ? "IN_FLIGHT" : "KEY_REUSED";
-    case 412:
-      return "CONFLICT";
-    case 429:
-      return "RATE_LIMITED";
-    default:
-      return status >= 500 ? "SERVER" : "UNKNOWN";
-  }
-}
 
 interface Envelope<T> {
   data: T | null;
@@ -202,7 +154,7 @@ export class WordpressClient {
       const code = envelope?.error?.code ?? `HTTP_${response.status}`;
       const retryAfter = Number(response.headers.get("retry-after") ?? "") || undefined;
       throw new WordpressError(
-        classify(response.status, code),
+        classifyWordpressError(response.status, code),
         code,
         envelope?.error?.message ?? `WordPress returned ${response.status}`,
         response.status,

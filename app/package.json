@@ -16,7 +16,7 @@
     "db:migrate": "drizzle-kit migrate",
     "db:studio": "drizzle-kit studio",
     "db:seed": "tsx scripts/seed-allowlist.ts",
-    "test": "tsx --test src/lib/log-redact.test.ts src/lib/claims/visibility.test.ts src/lib/claims/public-payload.test.ts src/lib/auth/privilege.test.ts"
+    "test": "tsx --test src/lib/log-redact.test.ts src/lib/claims/visibility.test.ts src/lib/claims/public-payload.test.ts src/lib/auth/privilege.test.ts src/lib/wordpress/retry-policy.test.ts"
   },
   "dependencies": {
     "@auth/drizzle-adapter": "^1.7.4",

@@ -100,12 +100,12 @@ async function main() {
 
   // The key is a pure function of (product, version): a retry of the same
   // version reproduces it exactly, which is what makes the replay above work.
-  assertEq("AC-12", idempotencyKeyFor(productId, 1), idempotencyKeyFor(productId, 1), "key is deterministic");
+  assertEq("AC-11c", idempotencyKeyFor(productId, 1), idempotencyKeyFor(productId, 1), "key is deterministic");
   if (idempotencyKeyFor(productId, 1) === idempotencyKeyFor(productId, 2)) {
-    bad("AC-12b", "two versions share one idempotency key");
+    bad("AC-11d", "two versions share one idempotency key");
     controlFailed += 1;
   } else {
-    ok("AC-12b", "a new version gets a new key");
+    ok("AC-11d", "a new version gets a new key");
   }
 
   // ── D · valid sync ────────────────────────────────────────────
