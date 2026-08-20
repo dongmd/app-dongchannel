@@ -192,3 +192,66 @@ export const wordpressSyncJobs = pgTable(
 
 export type WordpressSyncJobRow = typeof wordpressSyncJobs.$inferSelect;
 export type NewWordpressSyncJobRow = typeof wordpressSyncJobs.$inferInsert;
+
+// ─── P1-R06 · article sync state (G-58, PROPOSED §7A) ─────────────
+//
+// WordPress wins for article prose after publication, because that is where the
+// owner edits it. This table holds the baseline the guard compares against, and
+// it exists so that "has a human touched this?" has an answer other than a
+// guess.
+//
+// There is no `articles` table to reference: the app does not own article prose
+// and will not until a much later phase. The key is therefore the WordPress
+// post id, which is the only identity both sides agree on today.
+export const wpArticleSyncStateEnum = pgEnum("wp_article_sync_state", [
+  "BASELINE_SET", //  a clean baseline; the guard may compare against it
+  "CONFLICT", //      WordPress diverged; refused until explicitly resolved
+]);
+
+export const wordpressArticleSync = pgTable(
+  "wordpress_article_sync",
+  {
+    id: uuid("id").primaryKey().default(sql`gen_random_uuid()`),
+
+    wpPostId: integer("wp_post_id").notNull(),
+
+    state: wpArticleSyncStateEnum("state").notNull().default("BASELINE_SET"),
+
+    // ---- The baseline. All three are captured from one read, never assembled
+    // from separate ones: a hash from one moment and a timestamp from another
+    // describe a post that never existed.
+    //
+    // Both are nullable in the *column* sense only because a row is written
+    // before it is validated. The guard refuses on null -- AC-09. Null means
+    // "WordPress could not tell us", which is not "unchanged".
+    wpContentHash: text("wp_content_hash"),
+    wpPostModifiedGmt: text("wp_post_modified_gmt"),
+    wpPostStatus: text("wp_post_status"),
+
+    // The hash format the baseline was taken under. Stored so a later contract
+    // change is a refusal (AC-10) rather than a silent comparison of two
+    // incomparable strings.
+    hashContractVersion: text("hash_contract_version"),
+
+    wpLastSyncedAt: timestamp("wp_last_synced_at", { withTimezone: true }),
+
+    // ---- Conflict context (§7A step 5). Enough to reconstruct the divergence
+    // without going back to WordPress, because by then it may have moved again.
+    conflictDetectedAt: timestamp("conflict_detected_at", { withTimezone: true }),
+    conflictReason: text("conflict_reason"),
+    conflictBaselineHash: text("conflict_baseline_hash"),
+    conflictObservedHash: text("conflict_observed_hash"),
+    conflictBaselineModifiedGmt: text("conflict_baseline_modified_gmt"),
+    conflictObservedModifiedGmt: text("conflict_observed_modified_gmt"),
+
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => ({
+    postUq: uniqueIndex("wp_article_sync_post_uq").on(t.wpPostId),
+    stateIdx: index("wp_article_sync_state_idx").on(t.state),
+  }),
+);
+
+export type WordpressArticleSyncRow = typeof wordpressArticleSync.$inferSelect;
+export type NewWordpressArticleSyncRow = typeof wordpressArticleSync.$inferInsert;

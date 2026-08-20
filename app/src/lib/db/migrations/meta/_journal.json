@@ -113,6 +113,13 @@
       "when": 1787153338848,
       "tag": "0015_equal_ender_wiggin",
       "breakpoints": true
+    },
+    {
+      "idx": 16,
+      "version": "7",
+      "when": 1787187703989,
+      "tag": "0016_bumpy_switch",
+      "breakpoints": true
     }
   ]
 }

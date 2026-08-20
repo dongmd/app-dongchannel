@@ -40,6 +40,17 @@ export interface ProductProjection {
   facts: Record<string, unknown>;
 }
 
+/** P1-R06 — the read half of the §1B guard, exactly as R07 returns it. */
+export interface ArticleSyncState {
+  id: number;
+  postType: string;
+  postStatus: string;
+  /** Nullable by contract. Null is "WordPress cannot date this", never "unchanged". */
+  postModifiedGmt: string | null;
+  wpContentHash: string;
+  dcVerified: boolean;
+}
+
 export interface PatchResult {
   id: number;
   applied: string[];
@@ -262,6 +273,33 @@ export class WordpressClient {
       postModifiedGmt: data.post_modified_gmt,
       wpContentHash: data.wp_content_hash,
       idempotentReplay: replay,
+    };
+  }
+
+  /**
+   * P1-R06 — read the comparison input for one article.
+   *
+   * Returns what WordPress says right now. It makes no judgement: deciding
+   * whether that agrees with a baseline is the guard's job, and keeping the two
+   * apart is what lets the guard be tested without a network.
+   */
+  async getArticleSyncState(wpPostId: number, correlationId?: string): Promise<ArticleSyncState> {
+    const { data } = await this.request<{
+      id: number;
+      post_type: string;
+      post_status: string;
+      post_modified_gmt: string | null;
+      wp_content_hash: string;
+      dc_verified: boolean;
+    }>("GET", `/articles/${wpPostId}/sync-state`, { correlationId });
+
+    return {
+      id: data.id,
+      postType: data.post_type,
+      postStatus: data.post_status,
+      postModifiedGmt: data.post_modified_gmt,
+      wpContentHash: data.wp_content_hash,
+      dcVerified: data.dc_verified === true,
     };
   }
 }
