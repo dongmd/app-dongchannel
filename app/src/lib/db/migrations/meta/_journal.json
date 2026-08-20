@@ -127,6 +127,13 @@
       "when": 1787227809760,
       "tag": "0017_mute_iron_monger",
       "breakpoints": true
+    },
+    {
+      "idx": 18,
+      "version": "7",
+      "when": 1787241193893,
+      "tag": "0018_little_orphan",
+      "breakpoints": true
     }
   ]
 }

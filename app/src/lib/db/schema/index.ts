@@ -12,3 +12,4 @@ export * from "./opportunity";
 export * from "./evidence";
 export * from "./wordpress";
 export * from "./content";
+export * from "./opportunity-content";
