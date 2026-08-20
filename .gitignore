@@ -33,3 +33,12 @@ docs/*.docx
 app/node_modules/
 app/.next/
 app/tsconfig.tsbuildinfo
+
+# ---- Local secrets notebook ----
+# PROJECT-SECRETS.local.md lives at the PARENT of both repos, outside any
+# repository, so it cannot be committed by construction. These entries are the
+# second layer: if the file is ever copied in here, git must refuse to see it.
+PROJECT-SECRETS*
+*.local.md
+*.secrets.md
+secrets.md
