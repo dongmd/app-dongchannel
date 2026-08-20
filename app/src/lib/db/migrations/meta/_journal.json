@@ -134,6 +134,20 @@
       "when": 1787241193893,
       "tag": "0018_little_orphan",
       "breakpoints": true
+    },
+    {
+      "idx": 19,
+      "version": "7",
+      "when": 1787242378300,
+      "tag": "0019_p2r02_drop_signal_judgement",
+      "breakpoints": true
+    },
+    {
+      "idx": 20,
+      "version": "7",
+      "when": 1787242513846,
+      "tag": "0020_p2r02_signal_provenance",
+      "breakpoints": true
     }
   ]
 }

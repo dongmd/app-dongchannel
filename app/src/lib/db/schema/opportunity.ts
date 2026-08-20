@@ -10,6 +10,7 @@ import {
   timestamp,
   uniqueIndex,
   uuid,
+  type AnyPgColumn,
 } from "drizzle-orm/pg-core";
 import { sql } from "drizzle-orm";
 
@@ -184,16 +185,21 @@ export const signalOriginModeEnum = pgEnum("signal_origin_mode", [
   "REVERIFY",
 ]);
 
+// P2-R02. Four INTAKE states, not nine editorial ones.
+//
+// The states this replaces -- RESEARCHING, NEEDS_EVIDENCE, READY_FOR_DECISION,
+// WATCHLIST, APPROVED, REJECTED, ARCHIVED -- are the lifecycle of a DECISION,
+// and decisions now live on `content_opportunities` (P2-R01) and on routes.
+// A signal is an observation: it was captured, it was routed, it turned out to
+// duplicate another, or it could not be normalised. Nothing else happens to it.
+//
+// WATCHLIST in particular already exists as a ROUTE type, which is where a
+// "keep an eye on this" decision belongs.
 export const signalStatusEnum = pgEnum("signal_status", [
-  "NEW",
-  "RESEARCHING",
-  "NEEDS_EVIDENCE",
-  "READY_FOR_DECISION",
-  "WATCHLIST",
-  "APPROVED",
-  "REJECTED",
-  "ROUTED",
-  "ARCHIVED",
+  "NEW", //        captured, not yet routed
+  "ROUTED", //     routing decisions exist for it, including NO_ACTION
+  "DUPLICATE", //  collapsed into another signal; duplicate_of_signal_id says which
+  "DISCARDED", //  could not be normalised into the common shape
 ]);
 
 export const signalConfidenceEnum = pgEnum("signal_confidence", [
@@ -207,20 +213,31 @@ export const opportunitySignals = pgTable(
   "opportunity_signals",
   {
     id: uuid("id").primaryKey().default(sql`gen_random_uuid()`),
-    // Normalised dedup key across sources -- the same programme found via
-    // Impact and via search should collapse to one signal.
-    canonicalKey: text("canonical_key"),
+    // AC-07. Deterministic dedup key: the same programme found via Impact and
+    // via search collapses to one signal. NOT NULL as of P2-R02 -- Postgres
+    // treats NULLs as distinct, so a nullable unique key silently permits
+    // unlimited duplicates, which is the opposite of what the index promises.
+    canonicalKey: text("canonical_key").notNull(),
 
     kind: signalKindEnum("kind").notNull(),
     originMode: signalOriginModeEnum("origin_mode").notNull(),
 
-    // Provenance. Nullable because an owner seed typed into Telegram has no
-    // source item behind it.
+    // ---- Provenance. AC-06: mandatory, but it takes two forms.
+    //
+    // A connector signal has a source. An owner seed typed into Telegram does
+    // not -- it has a person. Requiring `source_id` outright would make owner
+    // seeds unrepresentable; requiring nothing would let a signal exist with no
+    // account of where it came from. The CHECK below requires ONE of the two,
+    // so every signal can answer "who or what observed this".
     sourceId: uuid("source_id").references(() => sources.id, { onDelete: "set null" }),
     sourceItemId: uuid("source_item_id").references(() => sourceItems.id, {
       onDelete: "set null",
     }),
     ownerSeedText: text("owner_seed_text"),
+    // The actor, when a person is the provenance. Owner directive, 2026-08-20:
+    // an OWNER_SEED may skip the signal layer entirely, but never the record of
+    // who seeded it and when.
+    capturedBy: text("captured_by"),
 
     title: text("title").notNull(),
     summary: text("summary"),
@@ -229,16 +246,42 @@ export const opportunitySignals = pgTable(
 
     status: signalStatusEnum("status").notNull().default("NEW"),
 
-    // NULL until something actually scores it. Never defaulted.
-    overallScore: real("overall_score"),
-    scoringVersion: text("scoring_version"),
-    // Explainability: FINAL section 10 requires the components, not a number.
-    scoreBreakdown: jsonb("score_breakdown"),
+    // AC-07. Which signal this collapsed into. A duplicate is kept rather than
+    // discarded, so the second sighting still counts as evidence that something
+    // is being noticed repeatedly -- and so re-reading a feed is idempotent
+    // rather than silently additive.
+    duplicateOfSignalId: uuid("duplicate_of_signal_id").references(
+      (): AnyPgColumn => opportunitySignals.id,
+      { onDelete: "set null" },
+    ),
 
+    // ---- AC-10. THE SCORE IS GONE.
+    //
+    // `overall_score`, `scoring_version` and `score_breakdown` were removed in
+    // P2-R02 (owner decision Q30). They were editorial judgement sitting on the
+    // observation layer, which is precisely the collapse P2 exists to undo.
+    // Scoring belongs to `content_opportunities`, and is P2-R03's to build.
+    //
+    // They were dropped rather than left read-only: the tables held zero rows,
+    // no migration had reached production, and no code referenced them. Keeping
+    // them would have been permanent debt protecting nothing.
+    //
+    // `confidence` STAYS, and the distinction is deliberate. It answers "how
+    // reliable is this observation" -- an evidence property, inherited from the
+    // source's trust tier. It does not answer "is this worth writing about",
+    // which is the judgement AC-10 forbids on this layer.
     confidence: signalConfidenceEnum("confidence").notNull().default("UNKNOWN"),
 
+    // AC-06's "captured-at". Kept as `discovered_at`: the column already means
+    // exactly this -- the moment the observation entered the system -- and it is
+    // NOT NULL, which is what the criterion requires. Renaming it would have
+    // been cosmetic, and it would have made this migration ambiguous to
+    // generate for no gain. The criterion is about the fact being mandatory,
+    // not about the column's spelling.
     discoveredAt: timestamp("discovered_at", { withTimezone: true }).notNull().defaultNow(),
-    lastResearchedAt: timestamp("last_researched_at", { withTimezone: true }),
+    // `last_researched_at` went with the scores. Research is something done to
+    // an OPPORTUNITY. An observation is not researched, it is re-checked --
+    // which is what `last_verified_at` records.
     lastVerifiedAt: timestamp("last_verified_at", { withTimezone: true }),
 
     // No FK yet: agent runs are a later requirement, and a FK to a table that
@@ -256,10 +299,24 @@ export const opportunitySignals = pgTable(
     kindIdx: index("opportunity_signals_kind_idx").on(t.kind),
     discoveredIdx: index("opportunity_signals_discovered_idx").on(t.discoveredAt),
     sourceIdx: index("opportunity_signals_source_idx").on(t.sourceId),
-    // A score, when present, is 0-100 (FINAL section 10).
-    scoreRange: check(
-      "opportunity_signals_score_range",
-      sql`${t.overallScore} IS NULL OR (${t.overallScore} >= 0 AND ${t.overallScore} <= 100)`,
+    dupIdx: index("opportunity_signals_duplicate_of_idx").on(t.duplicateOfSignalId),
+
+    // AC-06. Provenance is mandatory in one of its two forms. A signal that can
+    // name neither a source nor a person is an assertion, not an observation.
+    provenanceRequired: check(
+      "opportunity_signals_provenance_required",
+      sql`${t.sourceId} IS NOT NULL
+          OR (${t.capturedBy} IS NOT NULL AND length(btrim(${t.capturedBy})) > 0)`,
+    ),
+    // AC-07. A duplicate must say what it duplicates, or the dedup record is
+    // just a discard with a friendlier name.
+    duplicateNeedsTarget: check(
+      "opportunity_signals_duplicate_needs_target",
+      sql`${t.status} <> 'DUPLICATE' OR ${t.duplicateOfSignalId} IS NOT NULL`,
+    ),
+    duplicateNotSelf: check(
+      "opportunity_signals_duplicate_not_self",
+      sql`${t.duplicateOfSignalId} IS NULL OR ${t.duplicateOfSignalId} <> ${t.id}`,
     ),
   }),
 );
@@ -293,9 +350,26 @@ export const opportunityRoutes = pgTable(
   "opportunity_routes",
   {
     id: uuid("id").primaryKey().default(sql`gen_random_uuid()`),
-    opportunityId: uuid("opportunity_id")
+    // P2-R02: renamed from `opportunity_id`. The column always referenced
+    // `opportunity_signals.id`; the NAME said opportunity, which was true only
+    // while a signal was treated as an opportunity. It is not, and a column
+    // whose name contradicts its foreign key is a trap for the next reader.
+    signalId: uuid("signal_id")
       .notNull()
       .references(() => opportunitySignals.id, { onDelete: "cascade" }),
+
+    // AC-02. When a CONTENT_OPPORTUNITY route is accepted, this names what it
+    // actually produced. Nullable, because a route is a decision that something
+    // is worth pursuing -- the opportunity may not exist yet, and for
+    // NO_ACTION, WATCHLIST or AFFILIATE_PROJECT it never will.
+    //
+    // NO foreign key, deliberately: `content_opportunities` already imports
+    // `opportunitySignals` from this file, so a FK the other way would make the
+    // two schema modules circular. The CHECK below still refuses the states
+    // that would be wrong, and the alternative -- moving one table into the
+    // other's file -- would put the opportunity model somewhere nobody looks
+    // for it. Same trade-off as `created_by_agent_run_id` above.
+    contentOpportunityId: uuid("content_opportunity_id"),
 
     routeType: routeTypeEnum("route_type").notNull(),
     // NULL until scored. Same reasoning as overall_score.
@@ -317,12 +391,30 @@ export const opportunityRoutes = pgTable(
   },
   (t) => ({
     // One row per (signal, route type): multiple engines yes, duplicates no.
-    opportunityRouteUq: uniqueIndex("opportunity_routes_opportunity_route_uq").on(
-      t.opportunityId,
+    signalRouteUq: uniqueIndex("opportunity_routes_signal_route_uq").on(
+      t.signalId,
       t.routeType,
     ),
     statusIdx: index("opportunity_routes_status_idx").on(t.status),
     typeIdx: index("opportunity_routes_type_idx").on(t.routeType),
+    contentOppIdx: index("opportunity_routes_content_opportunity_idx").on(t.contentOpportunityId),
+
+    // AC-03. "Nothing" is a first-class outcome, and a first-class outcome with
+    // no reason is indistinguishable from an oversight. A radar that rejects
+    // everything and one that rejects nothing must be told apart from the
+    // record, and that is only possible if the record says why.
+    declineNeedsReason: check(
+      "opportunity_routes_decline_needs_reason",
+      sql`(${t.routeType} <> 'NO_ACTION' AND ${t.status} <> 'REJECTED')
+          OR (${t.reason} IS NOT NULL AND length(btrim(${t.reason})) > 0)`,
+    ),
+    // A route that claims to have produced an opportunity must be the kind of
+    // route that can, and must have been accepted.
+    contentOppOnlyWhenAccepted: check(
+      "opportunity_routes_content_opportunity_valid",
+      sql`${t.contentOpportunityId} IS NULL
+          OR (${t.routeType} = 'CONTENT_OPPORTUNITY' AND ${t.status} = 'ACCEPTED')`,
+    ),
     fitRange: check(
       "opportunity_routes_fit_score_range",
       sql`${t.fitScore} IS NULL OR (${t.fitScore} >= 0 AND ${t.fitScore} <= 100)`,
