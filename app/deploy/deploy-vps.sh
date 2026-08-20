@@ -218,27 +218,39 @@ eval "$CMD_BUILD" || fail "build failed -- database untouched"
 #
 # Verified by asset, not by exit code: a copy that silently produced zero files
 # would leave the site just as broken.
-echo "→ copy static assets into the standalone tree"
-rm -rf .next/standalone/.next/static
-mkdir -p .next/standalone/.next
-cp -r .next/static .next/standalone/.next/static || fail "could not copy .next/static into standalone"
+# The condition is the presence of standalone output, not the build command.
+# CMD_BUILD is overridable and the guard suite stubs it, so keying on "did a
+# standalone build happen" is the only honest test -- and it keeps the copy
+# mandatory exactly when it matters.
+if [ -d .next/standalone ]; then
+	echo "→ copy static assets into the standalone tree"
 
-__built="$(find .next/static -type f | wc -l)"
-__copied="$(find .next/standalone/.next/static -type f | wc -l)"
+	[ -d .next/static ] || fail "standalone build produced no .next/static -- the server would 404 every asset"
 
-if [ "$__copied" -ne "$__built" ] || [ "$__built" -eq 0 ]; then
-	fail "static copy mismatch: built=$__built copied=$__copied"
+	rm -rf .next/standalone/.next/static
+	mkdir -p .next/standalone/.next
+	cp -r .next/static .next/standalone/.next/static || fail "could not copy .next/static into standalone"
+
+	__built="$(find .next/static -type f | wc -l)"
+	__copied="$(find .next/standalone/.next/static -type f | wc -l)"
+
+	if [ "$__copied" -ne "$__built" ] || [ "$__built" -eq 0 ]; then
+		fail "static copy mismatch: built=$__built copied=$__copied"
+	fi
+
+	echo "   $__copied static files in place"
+
+	# `public/` is optional -- this app has none today, but a future one would
+	# be served from the same cwd and would fail the same way.
+	if [ -d public ]; then
+		rm -rf .next/standalone/public
+		cp -r public .next/standalone/public || fail "could not copy public/ into standalone"
+		echo "   public/ copied"
+	fi
+else
+	echo "→ no standalone output; skipping the static copy"
 fi
 
-echo "   $__copied static files in place"
-
-# `public/` is optional -- this app has none today, but a future one would be
-# served from the same cwd and would fail the same way.
-if [ -d public ]; then
-	rm -rf .next/standalone/public
-	cp -r public .next/standalone/public || fail "could not copy public/ into standalone"
-	echo "   public/ copied"
-fi
 
 echo "✓ all gates passed"
 
