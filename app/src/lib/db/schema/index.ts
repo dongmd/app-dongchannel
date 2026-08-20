@@ -11,3 +11,4 @@ export * from "./notifications";
 export * from "./opportunity";
 export * from "./evidence";
 export * from "./wordpress";
+export * from "./content";

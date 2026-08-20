@@ -12,6 +12,7 @@ import {
 } from "@/lib/db/schema/aff";
 import { auditEvents } from "@/lib/db/schema/audit";
 import { allowedTransitionsGraph, nextStatuses, OFFER_STATUS_LABELS } from "./labels";
+import { claimTtlDays } from "@/lib/content/content-mode-policy";
 
 // Re-export labels + nextStatuses cho server callers (backwards compat).
 // Client components import trực tiếp từ ./labels.
@@ -236,7 +237,22 @@ export async function transitionOffer(input: TransitionInput): Promise<Transitio
   });
 }
 
-export function isStale(lastVerifiedAt: Date | null): boolean {
+/**
+ * P2-R05 / G-21 — the second hard-coded TTL in the codebase.
+ *
+ * This used to be `30 * 24 * 60 * 60 * 1000` written inline. The number is
+ * unchanged; what changed is where it comes from. An offer's freshness is a
+ * *claim* TTL — a payout figure goes stale on the payout figure's schedule, not
+ * on a constant that happens to live in this file — so it now reads from
+ * `claimTtlDays`, alongside every other claim type.
+ *
+ * `now` is a parameter so this is testable without waiting or mocking a clock.
+ */
+export function isStale(lastVerifiedAt: Date | null, now: Date = new Date()): boolean {
+  // Never verified is not fresh. It is also not "stale" in the sense of
+  // "was true, has aged" — but for a badge that means "do not rely on this",
+  // failing closed is the only safe direction.
   if (!lastVerifiedAt) return true;
-  return Date.now() - lastVerifiedAt.getTime() > 30 * 24 * 60 * 60 * 1000;
+  const ttlMs = claimTtlDays("payout_value") * 24 * 60 * 60 * 1000;
+  return now.getTime() - lastVerifiedAt.getTime() > ttlMs;
 }
