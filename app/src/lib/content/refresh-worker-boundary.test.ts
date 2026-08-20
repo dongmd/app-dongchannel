@@ -3,6 +3,8 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { test } from "node:test";
 
+import { claimTtlDays } from "./content-mode-policy";
+
 // P2-R05 AC-04 — "expiry never unpublishes and never edits", proven
 // structurally rather than promised in a comment.
 //
@@ -116,6 +118,54 @@ test("AC-09: the policy module imports nothing at all", () => {
     [],
     "the policy module must stay dependency-free so it is testable without a database",
   );
+});
+
+// ─── Freshness semantics: two surfaces, neither a bypass ──────────
+//
+// Owner clarification requested after P2-R05, and worth pinning because the two
+// numbers look interchangeable and are not:
+//
+//   offers.ts isStale()        30 days — an OFFER's payout figure going stale.
+//                              Now reads claimTtlDays("payout_value"), so it is
+//                              INSIDE the P2-R05 policy, not beside it.
+//
+//   dc_product::is_stale()     90 days — a WordPress PRODUCT's dc_last_verified
+//                              going stale. A separate surface in Repo A that
+//                              deliberately does not call the app, because an
+//                              admin list column must not depend on a second
+//                              host being reachable. It resolves through
+//                              dc_core_ttl_days(), so it is configurable too.
+//
+// Neither bypasses TTL configuration. The risk being guarded against is a later
+// reader assuming they do, and reintroducing a literal.
+
+test("freshness: offers.isStale reads the claim TTL and hard-codes no duration", () => {
+  const source = code(readFileSync(join(process.cwd(), "src/lib/aff/offers.ts"), "utf8"));
+
+  const fn = source.slice(source.indexOf("export function isStale"));
+  const body = fn.slice(0, fn.indexOf("\n}") + 2);
+
+  assert.ok(body.includes("claimTtlDays"), "isStale must resolve its window from the claim TTL");
+
+  // The literal that used to be here: `30 * 24 * 60 * 60 * 1000`. Any bare
+  // day-count multiplied into milliseconds is the shape being banned.
+  assert.equal(
+    /\b\d{2,}\s*\*\s*24\s*\*\s*60/.test(body),
+    false,
+    "isStale hard-codes a duration again; it must come from claimTtlDays",
+  );
+});
+
+test("freshness: the two thresholds are different values on purpose", () => {
+  // If someone ever "tidies" these into one number, the distinction between an
+  // offer's payout figure and a product's verification date is lost silently.
+  assert.equal(claimTtlDays("payout_value"), 30);
+  assert.notEqual(claimTtlDays("payout_value"), 90);
+
+  // 90 is the WordPress product default and lives in Repo A
+  // (includes/freshness.php, dc_core_default_ttl_days). It is asserted there,
+  // not here — this test only pins that the app side is not 90, so a future
+  // merge of the two surfaces cannot happen quietly.
 });
 
 test("CONTROL: stripping comments does not blind the capability scan", () => {
