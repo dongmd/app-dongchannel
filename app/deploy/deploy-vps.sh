@@ -203,6 +203,43 @@ eval "$CMD_TEST" || fail "tests failed -- database untouched"
 echo "→ gate 4/4: production build"
 eval "$CMD_BUILD" || fail "build failed -- database untouched"
 
+# ─── 4b. Standalone needs its own copy of the static assets ─────
+#
+# `next build` with output:standalone emits a self-contained server at
+# .next/standalone/server.js and PM2 runs it with that directory as cwd. The
+# server resolves /_next/static from <cwd>/.next/static -- which the build does
+# NOT populate. Next's own docs say to copy it, and nothing here was doing so.
+#
+# The failure is quiet and total: every /_next/static/* request 404s, so the
+# HTML still returns 200 and /api/health still passes while the app renders as
+# unstyled markup, and any client-rendered page -- including the login screen --
+# comes back blank. Found on 2026-08-20, after a deploy regenerated
+# .next/standalone and removed a copy someone had made by hand.
+#
+# Verified by asset, not by exit code: a copy that silently produced zero files
+# would leave the site just as broken.
+echo "→ copy static assets into the standalone tree"
+rm -rf .next/standalone/.next/static
+mkdir -p .next/standalone/.next
+cp -r .next/static .next/standalone/.next/static || fail "could not copy .next/static into standalone"
+
+__built="$(find .next/static -type f | wc -l)"
+__copied="$(find .next/standalone/.next/static -type f | wc -l)"
+
+if [ "$__copied" -ne "$__built" ] || [ "$__built" -eq 0 ]; then
+	fail "static copy mismatch: built=$__built copied=$__copied"
+fi
+
+echo "   $__copied static files in place"
+
+# `public/` is optional -- this app has none today, but a future one would be
+# served from the same cwd and would fail the same way.
+if [ -d public ]; then
+	rm -rf .next/standalone/public
+	cp -r public .next/standalone/public || fail "could not copy public/ into standalone"
+	echo "   public/ copied"
+fi
+
 echo "✓ all gates passed"
 
 # ═══ Everything below may change state ═══════════════════════════
