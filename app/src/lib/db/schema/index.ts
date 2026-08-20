@@ -13,3 +13,4 @@ export * from "./evidence";
 export * from "./wordpress";
 export * from "./content";
 export * from "./opportunity-content";
+export * from "./opportunity-scoring";

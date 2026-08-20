@@ -1,0 +1,1 @@
+ALTER TABLE "opportunity_signals" ADD CONSTRAINT "opportunity_signals_duplicate_target_only_when_duplicate" CHECK ("opportunity_signals"."duplicate_of_signal_id" IS NULL OR "opportunity_signals"."status" = 'DUPLICATE');

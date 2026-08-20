@@ -148,6 +148,20 @@
       "when": 1787242513846,
       "tag": "0020_p2r02_signal_provenance",
       "breakpoints": true
+    },
+    {
+      "idx": 21,
+      "version": "7",
+      "when": 1787243350578,
+      "tag": "0021_p2r02_duplicate_biconditional",
+      "breakpoints": true
+    },
+    {
+      "idx": 22,
+      "version": "7",
+      "when": 1787243560382,
+      "tag": "0022_p2r03_opportunity_scores",
+      "breakpoints": true
     }
   ]
 }

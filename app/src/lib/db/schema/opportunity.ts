@@ -314,6 +314,17 @@ export const opportunitySignals = pgTable(
       "opportunity_signals_duplicate_needs_target",
       sql`${t.status} <> 'DUPLICATE' OR ${t.duplicateOfSignalId} IS NOT NULL`,
     ),
+    // The other direction, added on owner instruction 2026-08-20. The pair is a
+    // BICONDITIONAL: DUPLICATE implies a target, and a target implies DUPLICATE.
+    // Only one half was enforced before, which left a real hole -- a signal
+    // could point at another while claiming to be NEW, and the dedup sweep
+    // would treat it as an independent observation while the pointer said
+    // otherwise. Two records of the same fact that can disagree is one record
+    // too many.
+    duplicateOnlyWhenDuplicate: check(
+      "opportunity_signals_duplicate_target_only_when_duplicate",
+      sql`${t.duplicateOfSignalId} IS NULL OR ${t.status} = 'DUPLICATE'`,
+    ),
     duplicateNotSelf: check(
       "opportunity_signals_duplicate_not_self",
       sql`${t.duplicateOfSignalId} IS NULL OR ${t.duplicateOfSignalId} <> ${t.id}`,
