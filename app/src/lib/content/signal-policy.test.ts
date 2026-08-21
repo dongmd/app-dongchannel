@@ -11,6 +11,8 @@ import {
   checkRouting,
   isDuplicateKey,
   normalise,
+  observationKeyFor,
+  isoWeekKey,
   producedNothing,
   type RouteDecision,
 } from "./signal-policy";
@@ -102,6 +104,53 @@ test("AC-07: different observations do not collide", () => {
 
 test("AC-07: the key is idempotent — computing it twice is the same key", () => {
   assert.equal(canonicalKeyFor("TREND", "x y"), canonicalKeyFor("TREND", "x y"));
+});
+
+// ─── Observation identity vs entity identity ──────────────────────
+//
+// Owner invariant, 2026-08-20. It caught a real defect: keying a point-in-time
+// observation on its subject alone collapses every future sighting into the
+// first one, so a scheduled radar goes quiet after its first pass and looks
+// healthy doing it.
+
+test("INV: retrying the SAME observation yields the same key — no duplicate", () => {
+  const a = observationKeyFor("TREND", "AI  Tools", "2026-W34");
+  const b = observationKeyFor("TREND", "ai tools", "2026-W34");
+  assert.equal(a, b, "a retry or replay must deduplicate");
+});
+
+test("INV: a genuinely NEW observation in a new window is NOT collapsed", () => {
+  const august = observationKeyFor("TREND", "ai tools", "2026-W34");
+  const december = observationKeyFor("TREND", "ai tools", "2026-W50");
+  assert.notEqual(
+    august, december,
+    "a trend re-emerging months later must be able to enter the queue again",
+  );
+});
+
+test("INV: entity-like signals stay window-free — a programme is one programme", () => {
+  // The distinction is what the signal is ABOUT. An affiliate programme seen in
+  // August and December is the same programme, and a second sighting SHOULD
+  // collapse. A measurement taken twice is two measurements.
+  const a = canonicalKeyFor("AFFILIATE_PROGRAM", "Systeme.io");
+  const b = canonicalKeyFor("AFFILIATE_PROGRAM", "systeme.io");
+  assert.equal(a, b);
+  assert.equal(a.includes("@"), false, "an entity key carries no window");
+});
+
+test("INV: an observation without a window is refused, not silently keyed", () => {
+  // Defaulting to "no window" would reintroduce the collapse quietly.
+  assert.throws(() => observationKeyFor("TREND", "ai tools", "  "));
+});
+
+test("INV: the ISO week bucket is deterministic and actually buckets", () => {
+  const mon = new Date("2026-08-17T00:00:00Z");
+  const sun = new Date("2026-08-23T23:59:59Z");
+  const nextMon = new Date("2026-08-24T00:00:00Z");
+  assert.equal(isoWeekKey(mon), isoWeekKey(sun), "a week is one bucket");
+  assert.notEqual(isoWeekKey(sun), isoWeekKey(nextMon), "the next week is a new bucket");
+  assert.equal(isoWeekKey(mon), isoWeekKey(new Date("2026-08-17T12:00:00Z")));
+  assert.match(isoWeekKey(mon), /^\d{4}-W\d{2}$/);
 });
 
 // ─── AC-02 / AC-03 — four outcomes, and nothing is one of them ────

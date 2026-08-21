@@ -134,6 +134,60 @@ export function isDuplicateKey(a: string, b: string): boolean {
   return a === b;
 }
 
+// ─── Two kinds of identity, and conflating them loses data ────────
+//
+// Owner invariant, 2026-08-20, and it caught a real defect.
+//
+// `canonicalKeyFor` keys on (kind, subject) alone. That is exactly right for a
+// signal about a THING -- an affiliate programme is the same programme in August
+// and in December, and a second sighting of it should collapse.
+//
+// It is exactly WRONG for a point-in-time OBSERVATION. A trend measured in
+// August and the same trend measured in December are two observations, and
+// keying them identically means the December one is silently deduplicated
+// against the August one and never enters the queue again. A trend radar that
+// runs on a schedule would go quiet after its first pass and look healthy.
+//
+// So identity splits by what the signal is ABOUT:
+//
+//   entity-like    AFFILIATE_PROGRAM, PRODUCT — the subject persists.
+//                  canonicalKeyFor(kind, subject)
+//   observation    TREND, KEYWORD volume — the subject is a measurement taken
+//                  at a time. observationKeyFor(kind, subject, window)
+//
+// The window is supplied by the caller -- a scheduled run knows its own window,
+// and inventing a granularity here would be a constant nobody chose.
+
+/**
+ * A deterministic ISO-week bucket, for callers that want the common case.
+ *
+ * Weeks rather than days because a trend that persists for a fortnight is one
+ * story, not fourteen; and rather than months because a month is long enough
+ * for a trend to rise and die inside one bucket.
+ */
+export function isoWeekKey(d: Date): string {
+  const t = new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate()));
+  // ISO weeks run Monday-Sunday and belong to the year containing their Thursday.
+  const day = t.getUTCDay() || 7;
+  t.setUTCDate(t.getUTCDate() + 4 - day);
+  const yearStart = new Date(Date.UTC(t.getUTCFullYear(), 0, 1));
+  const week = Math.ceil(((t.getTime() - yearStart.getTime()) / 86400000 + 1) / 7);
+  return `${t.getUTCFullYear()}-W${String(week).padStart(2, "0")}`;
+}
+
+/**
+ * Identity for a point-in-time observation.
+ *
+ * Retrying or replaying the SAME observation yields the same key, so a retry
+ * cannot create a duplicate. A genuinely new observation in a new window yields
+ * a different key, so a re-emerging trend is not lost.
+ */
+export function observationKeyFor(kind: string, identity: string, windowKey: string): string {
+  const w = windowKey.trim();
+  if (!w) throw new Error("observationKeyFor requires a window: an observation without a time is not an observation");
+  return `${canonicalKeyFor(kind, identity)}@${w}`;
+}
+
 // ─── Routing ──────────────────────────────────────────────────────
 
 /**

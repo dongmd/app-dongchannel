@@ -20,7 +20,7 @@ import {
   type AllowlistEntry,
   type EmitVerdict,
 } from "./trend-radar-policy";
-import { canonicalKeyFor } from "./signal-policy";
+import { isoWeekKey, observationKeyFor } from "./signal-policy";
 import { claimTtlDays } from "./content-mode-policy";
 
 // P2-R06 AC-01 … AC-09, plus the owner's additional invariants.
@@ -158,10 +158,29 @@ test("the dedup key is P2-R02's, not a second scheme", () => {
   // A radar that keyed its own way would duplicate every signal another source
   // had already produced.
   const v = emitSignal({ subject: "seo audits", sourceId: "s", capturedAt: T0 }, list("seo"), OK);
-  assert.equal(v.ok && v.signal.canonicalKey, canonicalKeyFor("TREND", "seo audits"));
+  assert.equal(
+    v.ok && v.signal.canonicalKey,
+    observationKeyFor("TREND", "seo audits", isoWeekKey(T0)),
+  );
 });
 
-test("a retry cannot produce a second signal: the key does not depend on the attempt", () => {
+test("a trend re-emerging in a later window is a NEW signal, not a duplicate", () => {
+  // The defect this fixed: keying on the subject alone meant a December sighting
+  // was deduplicated against an August one and never entered the queue again --
+  // a scheduled radar going quiet after its first pass and looking healthy.
+  const august = emitSignal({ subject: "ai tools", sourceId: "s", capturedAt: T0 }, list("ai tools"), OK);
+  const december = emitSignal(
+    { subject: "ai tools", sourceId: "s", capturedAt: new Date("2026-12-10T00:00:00Z") },
+    list("ai tools"),
+    OK,
+  );
+  assert.ok(august.ok && december.ok);
+  assert.notEqual(august.ok && august.signal.canonicalKey, december.ok && december.signal.canonicalKey);
+});
+
+test("a retry cannot produce a second signal: same window, same key", () => {
+  // A retry happens minutes later, inside the same observation window, so the
+  // key is unchanged and the emission deduplicates.
   const first = emitSignal({ subject: "hosting deals", sourceId: "s", capturedAt: T0 }, list("hosting"), OK);
   const afterRetry = emitSignal(
     { subject: "hosting deals", sourceId: "s", capturedAt: new Date(T0.getTime() + 60_000) },
@@ -169,6 +188,12 @@ test("a retry cannot produce a second signal: the key does not depend on the att
     OK,
   );
   assert.equal(first.ok && first.signal.canonicalKey, afterRetry.ok && afterRetry.signal.canonicalKey);
+});
+
+test("an explicit window overrides the default, so a run controls its own bucket", () => {
+  const a = emitSignal({ subject: "saas", sourceId: "s", capturedAt: T0, windowKey: "run-1" }, list("saas"), OK);
+  const b = emitSignal({ subject: "saas", sourceId: "s", capturedAt: T0, windowKey: "run-2" }, list("saas"), OK);
+  assert.notEqual(a.ok && a.signal.canonicalKey, b.ok && b.signal.canonicalKey);
 });
 
 // ─── AC-03 — rejections are countable ─────────────────────────────

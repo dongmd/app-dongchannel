@@ -1,5 +1,5 @@
 import { claimTtlDays } from "./content-mode-policy";
-import { canonicalKeyFor } from "./signal-policy";
+import { isoWeekKey, observationKeyFor } from "./signal-policy";
 import { decideRetry, type RetryDecision } from "../wordpress/retry-policy";
 
 /**
@@ -168,6 +168,15 @@ export interface TrendObservation {
   readonly sourceId: string;
   readonly capturedAt: Date;
   readonly measuredValue?: number | null;
+  /**
+   * The observation window this measurement belongs to. Defaults to the ISO
+   * week of `capturedAt`.
+   *
+   * This exists because keying a trend on its subject alone collapses every
+   * future sighting of it into the first one -- a radar that goes quiet after
+   * its first pass and looks healthy doing it.
+   */
+  readonly windowKey?: string;
 }
 
 export type EmitVerdict =
@@ -216,7 +225,11 @@ export function emitSignal(
   return {
     ok: true,
     signal: {
-      canonicalKey: canonicalKeyFor("TREND", observation.subject),
+      canonicalKey: observationKeyFor(
+        "TREND",
+        observation.subject,
+        observation.windowKey ?? isoWeekKey(observation.capturedAt),
+      ),
       kind: "TREND",
       originMode: "SCHEDULED_DISCOVERY",
       sourceId: observation.sourceId,
