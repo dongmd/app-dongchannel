@@ -17,3 +17,4 @@ export * from "./opportunity-scoring";
 export * from "./topic-cluster";
 export * from "./trend-radar";
 export * from "./discovery-candidate";
+export * from "./content-family";
