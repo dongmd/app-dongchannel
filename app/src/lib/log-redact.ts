@@ -22,6 +22,21 @@ const SECRET_PATTERNS: [RegExp, string][] = [
   // fails. Username and host survive so the line is still debuggable.
   [/(\b[a-z][a-z0-9+.-]*:\/\/[^:/\s@]+:)([^@\s]+)(@)/gi, `$1${REDACTED}$3`],
 
+  // Telegram bot token — `<bot_id>:<35-char secret>` (P3-R01 AC-06).
+  //
+  // None of the patterns above catch it. It carries no scheme, so the DSN rule
+  // misses it; and it leaks BARE, not as `token=...`, because that is exactly
+  // how it appears inside an API URL — https://api.telegram.org/bot<TOKEN>/...
+  // A failed request quoting its own URL would otherwise print the credential
+  // in full. Anchored on the colon-separated shape rather than on a key name,
+  // since there is no key name to key on.
+  // Two patterns, not one clever one. In the API URL the token is preceded by
+  // the literal `bot`, and `\b` does NOT fire between `t` and a digit — both are
+  // word characters — so a single bare-token rule silently missed the exact
+  // place the credential actually appears.
+  [/\bbot\d{6,12}:[A-Za-z0-9_-]{30,}/g, `bot<TELEGRAM_TOKEN_${REDACTED}>`],
+  [/\b\d{6,12}:[A-Za-z0-9_-]{30,}\b/g, `<TELEGRAM_TOKEN_${REDACTED}>`],
+
   // password=... / "token": "..." / api_key: '...'
   [
     /((?:password|passwd|secret|token|api[_-]?key)["'\s]*[:=]["'\s]*)([^\s"',;&}]+)/gi,
