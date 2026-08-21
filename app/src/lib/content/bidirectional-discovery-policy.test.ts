@@ -12,6 +12,7 @@ import {
   TRISTATE,
   VERIFIABLE_FACTS,
   candidateKeyFor,
+  contentOpportunityKeyFor,
   checkFact,
   isExplainable,
   outcomeFor,
@@ -33,7 +34,7 @@ const SEEN = { observedUrl: "https://vendor.test/affiliates", observedAt: T0 };
 
 function draft(over: Partial<AffiliateCandidateDraft> = {}): AffiliateCandidateDraft {
   return {
-    vendorKey: "systeme-io",
+    identity: { advertiserDomain: "systeme.io", networkKey: "direct", programmeRef: "main" },
     vendorName: "Systeme.io",
     programmeExists: { value: true, state: "YES", ...SEEN },
     facts: {},
@@ -88,7 +89,7 @@ test("B: a programme with topical scope and an angle routes to a content opportu
   const v = routeProgrammeToContent({
     programmeId: "prog-1",
     vendorName: "Systeme.io",
-    inTopicScope: true,
+    angle: "review", inTopicScope: true,
     hasAngle: true,
     supportingSignalIds: ["sig-1"],
   });
@@ -101,7 +102,7 @@ test("B: 'this vendor pays a commission' is not an article", () => {
   // Routing every programme into content is how an affiliate site ends up with
   // a page per merchant and nothing anyone wants to read.
   const v = routeProgrammeToContent({
-    programmeId: "prog-1", vendorName: "X", inTopicScope: true, hasAngle: false,
+    programmeId: "prog-1", vendorName: "X", angle: "review", inTopicScope: true, hasAngle: false,
     supportingSignalIds: ["s"],
   });
   assert.equal(v.ok === false && v.reason, "NO_ANGLE");
@@ -109,7 +110,7 @@ test("B: 'this vendor pays a commission' is not an article", () => {
 
 test("B: an out-of-scope programme does not become content", () => {
   const v = routeProgrammeToContent({
-    programmeId: "prog-1", vendorName: "X", inTopicScope: false, hasAngle: true,
+    programmeId: "prog-1", vendorName: "X", angle: "review", inTopicScope: false, hasAngle: true,
     supportingSignalIds: ["s"],
   });
   assert.equal(v.ok === false && v.reason, "OUT_OF_TOPIC_SCOPE");
@@ -117,7 +118,7 @@ test("B: an out-of-scope programme does not become content", () => {
 
 test("B: the opportunity carries CLAIMS TO CHECK, never checked claims", () => {
   const v = routeProgrammeToContent({
-    programmeId: "p", vendorName: "X", inTopicScope: true, hasAngle: true, supportingSignalIds: ["s"],
+    programmeId: "p", vendorName: "X", angle: "review", inTopicScope: true, hasAngle: true, supportingSignalIds: ["s"],
   });
   assert.ok(v.ok);
   if (!v.ok) return;
@@ -131,7 +132,7 @@ test("B: the opportunity carries CLAIMS TO CHECK, never checked claims", () => {
 test("BOTH directions exist — one of them alone is not bidirectional", () => {
   const a = proposeAffiliateCandidate(draft());
   const b = routeProgrammeToContent({
-    programmeId: "p", vendorName: "X", inTopicScope: true, hasAngle: true, supportingSignalIds: ["s"],
+    programmeId: "p", vendorName: "X", angle: "review", inTopicScope: true, hasAngle: true, supportingSignalIds: ["s"],
   });
   assert.equal(a.ok, true, "Direction A must produce an affiliate candidate");
   assert.equal(b.ok, true, "Direction B must produce a content opportunity");
@@ -298,11 +299,17 @@ test("AC-03: the layer cannot reach any article write path", () => {
 // ─── Idempotency and provenance ───────────────────────────────────
 
 test("re-running research on the same vendor yields the same candidate key", () => {
-  assert.equal(candidateKeyFor("Systeme.io"), candidateKeyFor("  systeme.io "));
+  assert.equal(
+    candidateKeyFor({ advertiserDomain: "Systeme.io", networkKey: "direct", programmeRef: "main" }),
+    candidateKeyFor({ advertiserDomain: "  systeme.io ", networkKey: "DIRECT", programmeRef: " MAIN " }),
+  );
 });
 
 test("different vendors do not collide", () => {
-  assert.notEqual(candidateKeyFor("systeme-io"), candidateKeyFor("convertkit"));
+  assert.notEqual(
+    candidateKeyFor({ advertiserDomain: "systeme.io", programmeRef: "main" }),
+    candidateKeyFor({ advertiserDomain: "convertkit.com", programmeRef: "main" }),
+  );
 });
 
 test("the candidate key is UNIQUE in the database, not merely indexed", () => {
@@ -327,6 +334,121 @@ test("many signals may support ONE candidate without losing provenance", () => {
 test("a candidate accepts several supporting signals", () => {
   const v = proposeAffiliateCandidate(draft({ supportingSignalIds: ["a", "b", "c"] }));
   assert.equal(v.ok, true);
+});
+
+// ─── Identity: the three invariants the owner set ─────────────────
+
+const ID = { advertiserDomain: "systeme.io", networkKey: "direct", programmeRef: "main" };
+
+test("ID-1: the same programme, researched again, is the SAME candidate", () => {
+  assert.equal(candidateKeyFor(ID), candidateKeyFor({ ...ID }));
+  const a = proposeAffiliateCandidate(draft({ identity: ID }));
+  const b = proposeAffiliateCandidate(draft({ identity: ID }));
+  assert.equal(a.ok && a.candidateKey, b.ok && b.candidateKey);
+});
+
+test("ID-2: more evidence for the same programme does NOT make a new candidate", () => {
+  // Evidence appends through the link table; identity does not touch it.
+  const one = proposeAffiliateCandidate(draft({ identity: ID, supportingSignalIds: ["s1"] }));
+  const three = proposeAffiliateCandidate(
+    draft({ identity: ID, supportingSignalIds: ["s1", "s2", "s3"] }),
+  );
+  assert.equal(one.ok && one.candidateKey, three.ok && three.candidateKey);
+});
+
+test("ID-3: one vendor with DISTINCT programmes is NOT collapsed", () => {
+  // A merchant routinely runs several: a direct programme and an Impact
+  // listing, a US one and an EU one, a main tier and a partner tier -- with
+  // different payouts, GEOs and terms. Collapsing them loses every distinction
+  // that matters for deciding whether to join.
+  const direct = candidateKeyFor({ advertiserDomain: "systeme.io", networkKey: "direct", programmeRef: "main" });
+  const viaImpact = candidateKeyFor({ advertiserDomain: "systeme.io", networkKey: "impact", programmeRef: "12345" });
+  const partnerTier = candidateKeyFor({ advertiserDomain: "systeme.io", networkKey: "direct", programmeRef: "partner-tier" });
+
+  assert.equal(new Set([direct, viaImpact, partnerTier]).size, 3);
+});
+
+test("ID-4: a retried or replayed failure does not duplicate", () => {
+  // Identity is derived from the business, never from the run that found it.
+  const first = proposeAffiliateCandidate(draft({ identity: ID }));
+  const afterRetry = proposeAffiliateCandidate(draft({ identity: ID, supportingSignalIds: ["s9"] }));
+  assert.equal(first.ok && first.candidateKey, afterRetry.ok && afterRetry.candidateKey);
+});
+
+test("ID-5: identity comes from the canonical model, not from a display name", () => {
+  // merchants.canonical_domain outlives a display name; "Systeme.io" could be
+  // renamed tomorrow and the candidate must stay the same candidate.
+  const byDomain = candidateKeyFor({ advertiserDomain: "systeme.io", programmeRef: "main" });
+  assert.ok(byDomain.includes("systeme.io"));
+  assert.ok(byDomain.includes("direct"), "no network means direct, stated rather than blank");
+});
+
+test("ID-6: an identity missing its advertiser or programme is refused", () => {
+  assert.throws(() => candidateKeyFor({ advertiserDomain: "", programmeRef: "main" }));
+  assert.throws(() => candidateKeyFor({ advertiserDomain: "x.com", programmeRef: "  " }));
+});
+
+// ─── Direction B identity: one programme, several angles ──────────
+
+test("ID-7: the same programme + the same angle, rerun, is idempotent", () => {
+  const a = routeProgrammeToContent({
+    programmeId: "prog-1", vendorName: "X", angle: "Review", inTopicScope: true,
+    hasAngle: true, supportingSignalIds: ["s"],
+  });
+  const b = routeProgrammeToContent({
+    programmeId: "prog-1", vendorName: "X", angle: "  review  ", inTopicScope: true,
+    hasAngle: true, supportingSignalIds: ["s2"],
+  });
+  assert.ok(a.ok && b.ok);
+  assert.equal(a.ok && a.opportunityKey, b.ok && b.opportunityKey);
+});
+
+test("ID-8: the same programme with DIFFERENT legitimate angles gives separate records", () => {
+  // Without the angle in identity, the system could hold "write about
+  // Systeme.io" but never "write about Systeme.io versus ConvertKit" -- which
+  // is the more useful of the two.
+  const review = routeProgrammeToContent({
+    programmeId: "prog-1", vendorName: "X", angle: "review", inTopicScope: true,
+    hasAngle: true, supportingSignalIds: ["s"],
+  });
+  const versus = routeProgrammeToContent({
+    programmeId: "prog-1", vendorName: "X", angle: "vs convertkit", inTopicScope: true,
+    hasAngle: true, supportingSignalIds: ["s"],
+  });
+  const migration = routeProgrammeToContent({
+    programmeId: "prog-1", vendorName: "X", angle: "migration guide", inTopicScope: true,
+    hasAngle: true, supportingSignalIds: ["s"],
+  });
+  assert.ok(review.ok && versus.ok && migration.ok);
+  const keys = new Set([
+    review.ok && review.opportunityKey,
+    versus.ok && versus.opportunityKey,
+    migration.ok && migration.opportunityKey,
+  ]);
+  assert.equal(keys.size, 3, "one programme must support several angles");
+});
+
+test("ID-9: different programmes with the same angle do not collide", () => {
+  assert.notEqual(
+    contentOpportunityKeyFor("prog-1", "review"),
+    contentOpportunityKeyFor("prog-2", "review"),
+  );
+});
+
+test("ID-10: an angle-less opportunity cannot be identified, so it is refused", () => {
+  assert.throws(() => contentOpportunityKeyFor("prog-1", "   "));
+  const v = routeProgrammeToContent({
+    programmeId: "p", vendorName: "X", angle: "  ", inTopicScope: true,
+    hasAngle: true, supportingSignalIds: ["s"],
+  });
+  assert.equal(v.ok === false && v.reason, "NO_ANGLE");
+});
+
+test("ID-11: every candidate still keeps its evidence links", () => {
+  const v = proposeAffiliateCandidate(draft({ identity: ID, supportingSignalIds: ["a", "b"] }));
+  assert.equal(v.ok, true);
+  const outcome = outcomeFor("A_RESEARCH_TO_AFFILIATE", v, ["a", "b"]);
+  assert.deepEqual([...outcome.supportingSignalIds], ["a", "b"]);
 });
 
 // ─── Boundaries: what this layer may not do ───────────────────────
@@ -404,7 +526,7 @@ test("CONTROL: the happy paths pass, so every refusal above means something", ()
   assert.equal(proposeAffiliateCandidate(draft()).ok, true);
   assert.equal(
     routeProgrammeToContent({
-      programmeId: "p", vendorName: "X", inTopicScope: true, hasAngle: true, supportingSignalIds: ["s"],
+      programmeId: "p", vendorName: "X", angle: "review", inTopicScope: true, hasAngle: true, supportingSignalIds: ["s"],
     }).ok,
     true,
   );
@@ -414,7 +536,7 @@ test("CONTROL: the happy paths pass, so every refusal above means something", ()
 test("CONTROL: the candidate checker distinguishes its four refusals", () => {
   const reasons = new Set(
     [
-      proposeAffiliateCandidate(draft({ vendorKey: "" })),
+      proposeAffiliateCandidate(draft({ identity: { advertiserDomain: "", programmeRef: "" } })),
       proposeAffiliateCandidate(draft({ supportingSignalIds: [] })),
       proposeAffiliateCandidate(draft({ programmeExists: unknownFact<boolean>() })),
       proposeAffiliateCandidate(draft({ facts: { epc: { value: 1, state: "UNKNOWN" } } })),

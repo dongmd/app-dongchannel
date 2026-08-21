@@ -160,7 +160,7 @@ test("the dedup key is P2-R02's, not a second scheme", () => {
   const v = emitSignal({ subject: "seo audits", sourceId: "s", capturedAt: T0 }, list("seo"), OK);
   assert.equal(
     v.ok && v.signal.canonicalKey,
-    observationKeyFor("TREND", "seo audits", isoWeekKey(T0)),
+    observationKeyFor("TREND", "seo audits", isoWeekKey(T0), "s"),
   );
 });
 
@@ -188,6 +188,17 @@ test("a retry cannot produce a second signal: same window, same key", () => {
     OK,
   );
   assert.equal(first.ok && first.signal.canonicalKey, afterRetry.ok && afterRetry.signal.canonicalKey);
+});
+
+test("two providers seeing the same trend in one week are two signals", () => {
+  const a = emitSignal({ subject: "saas", sourceId: "gsc", capturedAt: T0 }, list("saas"), OK);
+  const b = emitSignal({ subject: "saas", sourceId: "google-trends", capturedAt: T0 }, list("saas"), OK);
+  assert.ok(a.ok && b.ok);
+  assert.notEqual(
+    a.ok && a.signal.canonicalKey,
+    b.ok && b.signal.canonicalKey,
+    "collapsing them would discard the second provider's evidence",
+  );
 });
 
 test("an explicit window overrides the default, so a run controls its own bucket", () => {

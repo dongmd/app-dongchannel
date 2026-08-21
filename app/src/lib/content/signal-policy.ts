@@ -178,14 +178,43 @@ export function isoWeekKey(d: Date): string {
 /**
  * Identity for a point-in-time observation.
  *
- * Retrying or replaying the SAME observation yields the same key, so a retry
- * cannot create a duplicate. A genuinely new observation in a new window yields
- * a different key, so a re-emerging trend is not lost.
+ * Three dimensions, and each one is a distinct fact:
+ *
+ *   subject   what was observed
+ *   window    when it was observed
+ *   source    WHO observed it
+ *
+ * Retrying or replaying the same observation from the same source, in the same
+ * window, yields the same key -- so a retry cannot duplicate. A new window
+ * yields a different key, so a re-emerging trend is not lost.
+ *
+ * **And a different SOURCE yields a different key**, which is the dimension the
+ * first version missed. Two providers reporting the same trend in the same week
+ * are two independent observations: a signal is defined as an ATOMIC,
+ * EVIDENCE-BEARING observation, so collapsing them would silently discard the
+ * second provider's evidence and its provenance along with it. If the two ever
+ * should be merged, that is an aggregation decision made above this layer, by
+ * something that can record *why* -- not a side effect of how a key was built.
+ *
+ * `sourceKey` is an opaque identifier the caller supplies. Nothing here knows
+ * about any particular provider, and no provider-specific branching belongs in
+ * a generic key.
  */
-export function observationKeyFor(kind: string, identity: string, windowKey: string): string {
+export function observationKeyFor(
+  kind: string,
+  identity: string,
+  windowKey: string,
+  sourceKey: string,
+): string {
   const w = windowKey.trim();
-  if (!w) throw new Error("observationKeyFor requires a window: an observation without a time is not an observation");
-  return `${canonicalKeyFor(kind, identity)}@${w}`;
+  if (!w) {
+    throw new Error("observationKeyFor requires a window: an observation without a time is not an observation");
+  }
+  const s = sourceKey.trim().toLowerCase();
+  if (!s) {
+    throw new Error("observationKeyFor requires a source: an observation with no observer is not an observation");
+  }
+  return `${canonicalKeyFor(kind, identity)}@${w}#${s}`;
 }
 
 // ─── Routing ──────────────────────────────────────────────────────

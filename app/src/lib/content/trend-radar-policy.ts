@@ -229,6 +229,7 @@ export function emitSignal(
         "TREND",
         observation.subject,
         observation.windowKey ?? isoWeekKey(observation.capturedAt),
+        observation.sourceId,
       ),
       kind: "TREND",
       originMode: "SCHEDULED_DISCOVERY",

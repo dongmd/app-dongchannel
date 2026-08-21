@@ -7,6 +7,7 @@ import {
   primaryKey,
   text,
   timestamp,
+  uniqueIndex,
   uuid,
 } from "drizzle-orm/pg-core";
 import { sql } from "drizzle-orm";
@@ -86,6 +87,16 @@ export const contentOpportunities = pgTable(
     // fails loudly rather than quietly becoming COMMERCIAL.
     contentMode: contentModeEnum("content_mode").notNull(),
 
+    // P2-R07 identity. Two opportunities are the same opportunity when they
+    // share an origin AND an angle -- so a rerun is idempotent, while one
+    // affiliate programme can still support a review, a comparison and a
+    // migration guide as three separate records.
+    //
+    // Nullable because an OWNER_SEED typed into Telegram has no derived key
+    // yet; the unique index treats NULLs as distinct, which is correct here --
+    // two owner ideas are two ideas.
+    opportunityKey: text("opportunity_key"),
+
     title: text("title").notNull(),
     // Why this is worth doing. Prose about the DECISION, not the article.
     rationale: text("rationale"),
@@ -122,6 +133,9 @@ export const contentOpportunities = pgTable(
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
   },
   (t) => ({
+    // Idempotency as a constraint. Without it, re-running Direction B inserts a
+    // second row for work already queued.
+    keyUq: uniqueIndex("content_opportunities_key_uq").on(t.opportunityKey),
     statusIdx: index("content_opportunities_status_idx").on(t.status),
     modeIdx: index("content_opportunities_mode_idx").on(t.contentMode),
     originIdx: index("content_opportunities_origin_idx").on(t.originType),

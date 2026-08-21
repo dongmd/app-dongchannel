@@ -1,0 +1,2 @@
+ALTER TABLE "content_opportunities" ADD COLUMN "opportunity_key" text;--> statement-breakpoint
+CREATE UNIQUE INDEX "content_opportunities_key_uq" ON "content_opportunities" USING btree ("opportunity_key");

@@ -114,18 +114,43 @@ test("AC-07: the key is idempotent — computing it twice is the same key", () =
 // healthy doing it.
 
 test("INV: retrying the SAME observation yields the same key — no duplicate", () => {
-  const a = observationKeyFor("TREND", "AI  Tools", "2026-W34");
-  const b = observationKeyFor("TREND", "ai tools", "2026-W34");
+  const a = observationKeyFor("TREND", "AI  Tools", "2026-W34", "gsc");
+  const b = observationKeyFor("TREND", "ai tools", "2026-W34", "gsc");
   assert.equal(a, b, "a retry or replay must deduplicate");
 });
 
 test("INV: a genuinely NEW observation in a new window is NOT collapsed", () => {
-  const august = observationKeyFor("TREND", "ai tools", "2026-W34");
-  const december = observationKeyFor("TREND", "ai tools", "2026-W50");
+  const august = observationKeyFor("TREND", "ai tools", "2026-W34", "gsc");
+  const december = observationKeyFor("TREND", "ai tools", "2026-W50", "gsc");
   assert.notEqual(
     august, december,
     "a trend re-emerging months later must be able to enter the queue again",
   );
+});
+
+test("INV: the SAME source retried in the same window deduplicates", () => {
+  const a = observationKeyFor("TREND", "ai tools", "2026-W34", "gsc");
+  const b = observationKeyFor("TREND", "AI Tools", "2026-W34", "GSC");
+  assert.equal(a, b, "a replay from the same provider must not duplicate");
+});
+
+test("INV: TWO PROVIDERS in the same window are TWO observations", () => {
+  // The dimension the first version missed. A signal is defined as an atomic,
+  // evidence-bearing observation, so collapsing two providers would silently
+  // discard the second one's evidence and its provenance with it.
+  const gsc = observationKeyFor("TREND", "ai tools", "2026-W34", "gsc");
+  const trends = observationKeyFor("TREND", "ai tools", "2026-W34", "google-trends");
+  assert.notEqual(gsc, trends);
+  // Merging them, if it is ever right, is an aggregation decision made above
+  // this layer by something that can record WHY -- not a side effect of how a
+  // key was built.
+});
+
+test("INV: the key knows nothing about any particular provider", () => {
+  // No provider-specific branching belongs in a generic key. The source is an
+  // opaque identifier, so an unknown provider works exactly like a known one.
+  const made_up = observationKeyFor("TREND", "x", "2026-W01", "a-provider-nobody-has-written-yet");
+  assert.ok(made_up.endsWith("#a-provider-nobody-has-written-yet"));
 });
 
 test("INV: entity-like signals stay window-free — a programme is one programme", () => {
@@ -140,7 +165,9 @@ test("INV: entity-like signals stay window-free — a programme is one programme
 
 test("INV: an observation without a window is refused, not silently keyed", () => {
   // Defaulting to "no window" would reintroduce the collapse quietly.
-  assert.throws(() => observationKeyFor("TREND", "ai tools", "  "));
+  assert.throws(() => observationKeyFor("TREND", "ai tools", "  ", "gsc"));
+  // And an observation with no observer is not an observation either.
+  assert.throws(() => observationKeyFor("TREND", "ai tools", "2026-W34", "  "));
 });
 
 test("INV: the ISO week bucket is deterministic and actually buckets", () => {

@@ -169,7 +169,7 @@ export const CANDIDATE_STATUSES = ["PROPOSED", "TRIAGED", "ACCEPTED", "REJECTED"
 export type CandidateStatus = (typeof CANDIDATE_STATUSES)[number];
 
 export interface AffiliateCandidateDraft {
-  readonly vendorKey: string;
+  readonly identity: ProgrammeIdentity;
   readonly vendorName: string;
   readonly programmeExists: FactValue<boolean>;
   readonly facts: Partial<Record<VerifiableFact, FactValue<unknown>>>;
@@ -198,7 +198,10 @@ export type CandidateVerdict =
  * it is a hunch, and the queue would fill with vendors nobody checked.
  */
 export function proposeAffiliateCandidate(draft: AffiliateCandidateDraft): CandidateVerdict {
-  if (!draft.vendorKey.trim() || !draft.vendorName.trim()) {
+  if (!draft.identity?.advertiserDomain?.trim() || !draft.identity?.programmeRef?.trim()) {
+    return { ok: false, reason: "NO_VENDOR" };
+  }
+  if (!draft.vendorName.trim()) {
     return { ok: false, reason: "NO_VENDOR" };
   }
   if (draft.supportingSignalIds.length === 0) {
@@ -223,19 +226,52 @@ export function proposeAffiliateCandidate(draft: AffiliateCandidateDraft): Candi
     if (!vis.ok) return { ok: false, reason: "FACT_INVALID", detail: `${fact}:${vis.reason}` };
   }
 
-  return { ok: true, candidateKey: candidateKeyFor(draft.vendorKey), status: "PROPOSED" };
+  return { ok: true, candidateKey: candidateKeyFor(draft.identity), status: "PROPOSED" };
 }
 
 /**
- * Idempotency: the candidate key is the vendor, not the run.
+ * Identity for an affiliate-project candidate.
  *
- * Re-running research on the same vendor must not produce a second candidate,
- * and several different signals must be able to support one candidate without
- * any of them being lost — which is why the evidence link is a table and the
- * key is not derived from it.
+ * **Vendor alone is not identity.** One merchant routinely runs several
+ * programmes — a direct one and an Impact listing, a US programme and an EU
+ * one, a main programme and a partner tier — with different payouts, GEOs and
+ * terms. Keying on the vendor would collapse them into one candidate and lose
+ * every distinction that matters for deciding whether to join.
+ *
+ * The identity is therefore derived from the **canonical affiliate model**
+ * already in the schema, not invented for this requirement:
+ *
+ *   advertiser   `merchants.canonical_domain` — the stable business identity of
+ *                the company. A domain outlives a display name.
+ *   network      `affiliate_networks.key`, or `direct` when there is none.
+ *   programme    `affiliate_programs.network_external_ref` when the network
+ *                gives one, falling back to the programme name.
+ *
+ * Nothing here is derived from the run that found it: a research rerun must
+ * produce the same key, and several signals must be able to support one
+ * candidate. That is why evidence is a link table and the key does not touch it.
  */
-export function candidateKeyFor(vendorKey: string): string {
-  return `AFFILIATE_CANDIDATE:${vendorKey.trim().toLowerCase().replace(/\s+/g, "-")}`;
+export interface ProgrammeIdentity {
+  /** merchants.canonical_domain — stable business identity of the advertiser. */
+  readonly advertiserDomain: string;
+  /** affiliate_networks.key, or `direct` for a self-run programme. */
+  readonly networkKey?: string | null;
+  /** affiliate_programs.network_external_ref, else the programme name. */
+  readonly programmeRef: string;
+}
+
+function slug(s: string): string {
+  return s.trim().toLowerCase().replace(/\s+/g, "-");
+}
+
+export function candidateKeyFor(identity: ProgrammeIdentity): string {
+  const advertiser = slug(identity.advertiserDomain);
+  const network = slug(identity.networkKey ?? "direct") || "direct";
+  const programme = slug(identity.programmeRef);
+  if (!advertiser || !programme) {
+    throw new Error("a candidate needs an advertiser and a programme to be identified by");
+  }
+  return `AFFILIATE_CANDIDATE:${advertiser}|${network}|${programme}`;
 }
 
 // ─── Direction B: affiliate programme → content opportunity ───────
@@ -243,6 +279,16 @@ export function candidateKeyFor(vendorKey: string): string {
 export interface ProgrammeContext {
   readonly programmeId: string;
   readonly vendorName: string;
+  /**
+   * The editorial angle. One programme legitimately supports several: a review,
+   * a comparison against a rival, a migration guide, a pricing explainer.
+   *
+   * It is part of the opportunity's identity because leaving it out would
+   * collapse every angle for a programme into one record -- the system could
+   * then hold "write about Systeme.io" but never "write about Systeme.io versus
+   * ConvertKit", which is the more useful of the two.
+   */
+  readonly angle: string;
   /** Whether the topic is in editorial scope at all. */
   readonly inTopicScope: boolean;
   /** Whether there is something to say beyond "this exists". */
@@ -255,9 +301,28 @@ export type ContentRoutingVerdict =
       readonly ok: true;
       readonly originType: OpportunityOriginType;
       readonly originId: string;
+      /** Identity: same programme + same normalised angle = same opportunity. */
+      readonly opportunityKey: string;
+      readonly angle: string;
       readonly claimsToCheck: readonly string[];
     }
-  | { readonly ok: false; readonly reason: "OUT_OF_TOPIC_SCOPE" | "NO_ANGLE"; readonly detail: string };
+  | {
+      readonly ok: false;
+      readonly reason: "OUT_OF_TOPIC_SCOPE" | "NO_ANGLE";
+      readonly detail: string;
+    };
+
+/**
+ * Identity for a content opportunity derived from a programme.
+ *
+ * Normalised so that "Systeme.io  vs ConvertKit" and "systeme.io vs convertkit"
+ * are one angle rather than two, and a rerun is idempotent.
+ */
+export function contentOpportunityKeyFor(programmeId: string, angle: string): string {
+  const a = angle.trim().toLowerCase().replace(/\s+/g, " ");
+  if (!a) throw new Error("a content opportunity needs an angle to be identified by");
+  return `AFFILIATE_OFFER:${programmeId.trim()}|${a}`;
+}
 
 /**
  * Direction B. A programme becomes a **ContentOpportunity candidate** when
@@ -277,7 +342,7 @@ export function routeProgrammeToContent(ctx: ProgrammeContext): ContentRoutingVe
   if (!ctx.inTopicScope) {
     return { ok: false, reason: "OUT_OF_TOPIC_SCOPE", detail: ctx.vendorName };
   }
-  if (!ctx.hasAngle) {
+  if (!ctx.hasAngle || !ctx.angle?.trim()) {
     return { ok: false, reason: "NO_ANGLE", detail: ctx.vendorName };
   }
 
@@ -290,6 +355,8 @@ export function routeProgrammeToContent(ctx: ProgrammeContext): ContentRoutingVe
     ok: true,
     originType,
     originId: ctx.programmeId,
+    opportunityKey: contentOpportunityKeyFor(ctx.programmeId, ctx.angle),
+    angle: ctx.angle.trim(),
     // Questions, not answers. P2-R01 AC-12: an opportunity may record a claim
     // to check, never a checked claim.
     claimsToCheck: [
