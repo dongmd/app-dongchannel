@@ -326,6 +326,6 @@ test("AC-09: the chat an update arrives on has no influence on the decision", ()
     chat: { id: 42 },    // ignored
   };
 
-  assert.equal(authorize(update as GatewayUpdate, ALLOWLIST, NOW).outcome, "DENY_NOT_ALLOWLISTED");
+  assert.equal(authorize(update as unknown as GatewayUpdate, ALLOWLIST, NOW).outcome, "DENY_NOT_ALLOWLISTED");
   assert.equal(shape.includes("chatId"), false, "the update shape grew a chat field to trust");
 });
