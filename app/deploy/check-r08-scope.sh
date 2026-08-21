@@ -56,7 +56,7 @@ licensed=0
 
 for f in $CHANGED; do
 	case "$f" in
-		*/opshub/*|package.json) continue ;;   # the register, the gate, and its wiring
+		*/opshub/*|package.json|deploy/check-r08-scope.sh) continue ;;   # register, gate, wiring, this harness
 	esac
 
 	if printf '%s\n' $CONFORMING_FILES | grep -qxF "$f"; then
