@@ -240,12 +240,23 @@ export function parseAllowlist(raw: unknown): readonly TelegramUserId[] {
  * Ids and outcomes only. No message text, no callback data, no token, no
  * argument string — a denied caller's message body is exactly the kind of thing
  * that ends up in a log nobody meant to keep.
+ *
+ * Shaped as `P3-R06`'s `AuditInput` rather than as a type of its own. The two
+ * were separate until R06 landed, and separate shapes agreeing by inspection is
+ * how they stop agreeing later; the gateway test now feeds this straight into
+ * `buildAuditRecord` and asserts the canonical writer accepts it.
+ *
+ * The type is structural on purpose — importing R06 here would drag the schema
+ * into a module whose whole value is that it imports nothing.
  */
 export interface GatewayAuditRecord {
-  readonly action: "telegram.gateway";
-  readonly outcome: GatewayOutcome;
+  readonly actorType: "user";
+  readonly action: "telegram.gateway.allow" | "telegram.gateway.deny";
   readonly actorId: TelegramUserId | null;
-  readonly command: Command | null;
+  readonly result: "OK" | "REFUSED";
+  /** The gateway outcome, kept as the queryable detail of a refusal. */
+  readonly entityType: "telegram_update";
+  readonly entityId: GatewayOutcome;
   readonly at: string;
 }
 
@@ -253,11 +264,16 @@ export function auditRecordFor(
   decision: GatewayDecision,
   now: Date,
 ): GatewayAuditRecord {
+  const allowed = decision.outcome === "ALLOW";
   return {
-    action: "telegram.gateway",
-    outcome: decision.outcome,
+    actorType: "user",
+    action: allowed ? "telegram.gateway.allow" : "telegram.gateway.deny",
+    // A denied caller's id is NOT recorded as a verified actor: nothing about
+    // that update was authenticated by us.
     actorId: decision.actorId ?? null,
-    command: decision.command ?? null,
+    result: allowed ? "OK" : "REFUSED",
+    entityType: "telegram_update",
+    entityId: decision.outcome,
     at: now.toISOString(),
   };
 }

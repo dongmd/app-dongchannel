@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 
 import { redact, scrub } from "../log-redact";
+import { buildAuditRecord } from "../audit/audit-policy";
 import {
   COMMANDS,
   GATEWAY_OUTCOMES,
@@ -238,27 +239,57 @@ test("AC-06: a token in a structured field is redacted whatever the key looks li
 
 test("AC-08: the audit record carries ids and outcomes -- never text or payload", () => {
   const allowed = auditRecordFor(authorize(cmd("/project 41", OWNER), ALLOWLIST, NOW), NOW);
-  assert.deepEqual(allowed, {
-    action: "telegram.gateway",
-    outcome: "ALLOW",
-    actorId: OWNER,
-    command: "project",
-    at: NOW.toISOString(),
-  });
+  assert.equal(allowed.action, "telegram.gateway.allow");
+  assert.equal(allowed.result, "OK");
+  assert.equal(allowed.actorId, OWNER);
   // The argument the owner typed is not in the record.
   assert.equal(JSON.stringify(allowed).includes("41"), false);
 
   const denied = auditRecordFor(authorize(cmd("/project 41", OTHER), ALLOWLIST, NOW), NOW);
-  assert.equal(denied.outcome, "DENY_NOT_ALLOWLISTED");
+  assert.equal(denied.action, "telegram.gateway.deny");
+  assert.equal(denied.result, "REFUSED");
+  assert.equal(denied.entityId, "DENY_NOT_ALLOWLISTED");
   assert.equal(denied.actorId, null, "a denied caller's id was recorded as if verified");
-  assert.equal(denied.command, null);
+  assert.equal(JSON.stringify(denied).includes("41"), false);
+});
+
+test("AC-08: the canonical P3-R06 writer ACCEPTS what the gateway produces", () => {
+  // The half that matters and that inspection cannot give you. Two modules
+  // agreeing by eye is how they stop agreeing later, so the gateway's record is
+  // fed to the canonical builder and the verdict is asserted.
+  for (const update of [
+    cmd("/status", OWNER),
+    cmd("/status", OTHER),
+    cmd("/nope", OWNER),
+    cb("act_1", OWNER),
+    cmd("/status", OWNER),
+  ]) {
+    const rec = auditRecordFor(authorize(update, ALLOWLIST, NOW), NOW);
+    const verdict = buildAuditRecord({ ...rec, actorId: rec.actorId }, NOW);
+    assert.equal(
+      verdict.ok,
+      true,
+      `P3-R06 refused a gateway record: ${verdict.ok === false ? verdict.detail : ""}`,
+    );
+  }
+});
+
+test("AC-08: a gateway record never carries anything P3-R06 would refuse", () => {
+  // Belt and braces: even a hostile update must not produce a record the
+  // canonical writer rejects, because AC-09 makes a refused audit write FAIL
+  // THE OPERATION -- a gateway that could emit an unwritable record would be a
+  // denial of service on itself.
+  const hostile = cmd(`/status ${"8123456789:AAHdqTcvCH1vGWJxfSeofSAs0K5PALDsaw1"}`, OWNER);
+  const rec = auditRecordFor(authorize(hostile, ALLOWLIST, NOW), NOW);
+  assert.equal(JSON.stringify(rec).includes("AAHdqTcv"), false, "the token reached the record");
+  assert.equal(buildAuditRecord({ ...rec }, NOW).ok, true);
 });
 
 test("AC-08: a denial is recorded, not swallowed", () => {
   // A refusal that leaves no trace is indistinguishable from an attack that
   // never happened.
   const r = auditRecordFor(authorize(cmd("/status", OTHER), ALLOWLIST, NOW), NOW);
-  assert.equal(r.action, "telegram.gateway");
+  assert.equal(r.action, "telegram.gateway.deny");
   assert.ok(r.at);
 });
 
