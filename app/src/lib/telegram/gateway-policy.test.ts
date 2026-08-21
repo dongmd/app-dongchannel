@@ -306,3 +306,26 @@ test("AC-10 CONTROL: the suite proves the allowlist can DENY", () => {
     assert.ok((GATEWAY_OUTCOMES as readonly string[]).includes(o), `${o} is outside the vocabulary`);
   }
 });
+
+// ─────────────────────────────────────────────────────────────────
+// AC-09 — chat context confers nothing
+// ─────────────────────────────────────────────────────────────────
+
+test("AC-09: the chat an update arrives on has no influence on the decision", () => {
+  // An allowlisted id is authorised on its own merits wherever it appears, and
+  // an unallowlisted id gains nothing from arriving in the "right" chat. The
+  // decision function cannot see a chat at all, which is the strongest form of
+  // this: there is no field to trust. Asserted rather than assumed, because the
+  // obvious "fix" for a future bug is to start passing one in.
+  const shape = Object.keys({ kind: "", fromId: 0, text: "", callbackData: "" });
+  const update: Record<string, unknown> = {
+    kind: "command",
+    text: "/status",
+    fromId: OTHER,
+    chatId: 42,          // ignored: not part of GatewayUpdate
+    chat: { id: 42 },    // ignored
+  };
+
+  assert.equal(authorize(update as GatewayUpdate, ALLOWLIST, NOW).outcome, "DENY_NOT_ALLOWLISTED");
+  assert.equal(shape.includes("chatId"), false, "the update shape grew a chat field to trust");
+});
