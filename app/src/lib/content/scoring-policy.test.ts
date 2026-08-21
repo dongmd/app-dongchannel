@@ -128,6 +128,26 @@ test("Q29.3: a weight set that leans commercial is REFUSED, not merely noted", (
   assert.ok(v.ok === false && v.reason.startsWith("COMMERCIAL_SHARE_EXCEEDED"));
 });
 
+test("Q29.3: the guardrail is a CEILING — zero commercial weight is legal", () => {
+  // Owner clarification 2026-08-20: 70/30 is not an exact split. There is no
+  // floor, and weights must not be inflated toward 30 merely to reach it.
+  const none = reweight("no-commercial", {
+    affiliate_potential: -6,
+    business_relevance: -8,
+    audience_usefulness: +14,
+  });
+  assert.equal(weightGroups(none).commercial, 0);
+  assert.equal(validateConfig(none).ok, true, "a config with no commercial weight must be legal");
+
+  // And exactly at the ceiling is still legal -- the rule is "must not exceed".
+  const atCeiling = reweight("at-ceiling", {
+    affiliate_potential: +16,
+    audience_usefulness: -16,
+  });
+  assert.equal(weightGroups(atCeiling).commercial, 30);
+  assert.equal(validateConfig(atCeiling).ok, true, "30 is the ceiling, not the first illegal value");
+});
+
 test("Q29.3: the commercial group is exactly the dimensions that need a product", () => {
   assert.deepEqual([...COMMERCIAL_DIMENSIONS].sort(), ["affiliate_potential", "business_relevance"]);
 });

@@ -58,12 +58,21 @@ export const ALL_DIMENSIONS: readonly Dimension[] = [
 ];
 
 /**
- * The 70/30 grouping, made mechanical.
+ * The 70/30 rule, made mechanical — and it is a **CEILING, not an exact split**.
  *
- * The project's stated content mix is roughly 70% with no product attached.
- * A scorer whose weights lean commercial will produce a queue that leans
- * commercial however the mix is described elsewhere, so the discipline has to
- * live in the weights.
+ * Owner clarification, 2026-08-20:
+ *
+ *   * commercial contribution MUST NOT exceed 30% of the positive budget;
+ *   * at least 70% stays available to non-commercial / evidence / quality
+ *     factors;
+ *   * the current 14/100 is valid, and weights must **not** be inflated toward
+ *     30 merely to reach the number.
+ *
+ * There is no floor: a configuration with zero commercial weight is legal. The
+ * project's content mix is roughly 70% with no product attached, and a scorer
+ * whose weights lean commercial produces a queue that leans commercial however
+ * the mix is described elsewhere — so the discipline lives in the weights, as a
+ * limit rather than a target.
  *
  * `COMMERCIAL_DIMENSIONS` is the set whose value depends on there being
  * something to sell. `validateConfig` refuses a weight set where that group
@@ -74,7 +83,7 @@ export const COMMERCIAL_DIMENSIONS: ReadonlySet<PositiveDimension> = new Set([
   "affiliate_potential",
 ]);
 
-/** The commercial group may never exceed 30% of the positive weight budget. */
+/** Ceiling. The commercial group may never EXCEED this share; it need not reach it. */
 export const MAX_COMMERCIAL_SHARE = 0.3;
 
 // ─── Configuration ────────────────────────────────────────────────

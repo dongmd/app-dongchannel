@@ -14,3 +14,4 @@ export * from "./wordpress";
 export * from "./content";
 export * from "./opportunity-content";
 export * from "./opportunity-scoring";
+export * from "./topic-cluster";
