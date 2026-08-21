@@ -4,7 +4,7 @@
 #
 # Before P2's migrations are applied to production, BOTH of these must pass:
 #
-#   1. production-like baseline -> 0017 -> 0018 -> 0019 -> 0020 -> 0021 -> 0022
+#   1. production-like baseline -> 0017 ... 0027 -> latest schema
 #   2. fresh database          -> the full chain from 0000 -> latest
 #
 # They are different failures. (1) catches a migration that assumes state the
@@ -58,7 +58,20 @@ if [ "$MODE" = "baseline" ]; then
   [ -f "$BASELINE_DUMP" ] || fail "dump not found: $BASELINE_DUMP"
 fi
 
-command -v psql >/dev/null 2>&1 || fail "psql is required"
+# `psql` may not be on PATH -- on a Windows workstation the scratch database is
+# most naturally an ephemeral container. PSQL_CMD lets the caller supply the
+# runner without this script knowing anything about how it is hosted.
+#
+#   PSQL_CMD="docker exec -i dc-scratch-pg psql" bash deploy/test-migration-chain.sh ...
+PSQL="${PSQL_CMD:-psql}"
+$PSQL --version >/dev/null 2>&1 || fail "no working psql: set PSQL_CMD if it is not on PATH"
+
+# The URL psql uses may differ from the one the migrator uses. Running psql
+# inside a container means its 127.0.0.1 is the CONTAINER's loopback, not the
+# host's mapped port -- the first run of this gate failed on exactly that, and
+# reported it as "0 migrations recorded", which sent the reader looking at the
+# migrator instead of at the connection.
+PSQL_TARGET="${PSQL_URL:-$SCRATCH_URL}"
 
 echo "Migration chain gate — mode: $MODE"
 echo "==================================="
@@ -74,7 +87,7 @@ echo "migrations on disk: $EXPECTED"
 # ---- Prepare the scratch database -------------------------------------------
 if [ "$MODE" = "baseline" ]; then
   echo "loading baseline: $BASELINE_DUMP"
-  psql "$SCRATCH_URL" -v ON_ERROR_STOP=1 -q -f "$BASELINE_DUMP" || fail "baseline load failed"
+  $PSQL "$PSQL_TARGET" -v ON_ERROR_STOP=1 -q -f "$BASELINE_DUMP" || fail "baseline load failed"
 fi
 
 # ---- Apply the chain ---------------------------------------------------------
@@ -87,7 +100,7 @@ fi
 #
 # `drizzle-kit migrate` exiting 0 means it ran, not that the schema is right.
 # M-04 in this project's history is exactly that mistake, on a different tool.
-APPLIED="$(psql "$SCRATCH_URL" -tAc \
+APPLIED="$($PSQL "$PSQL_TARGET" -tAc \
   "select count(*) from drizzle.__drizzle_migrations" 2>/dev/null || echo 0)"
 echo "migrations recorded in the scratch database: $APPLIED"
 
@@ -99,7 +112,7 @@ fi
 # still not produce what the schema files describe.
 for t in content_opportunities content_opportunity_signals content_opportunity_scores \
          article_content_modes content_mode_policies; do
-  n="$(psql "$SCRATCH_URL" -tAc \
+  n="$($PSQL "$PSQL_TARGET" -tAc \
     "select count(*) from information_schema.tables where table_name='$t'")"
   [ "$n" = "1" ] || fail "table missing after the chain: $t"
 done
@@ -107,18 +120,18 @@ done
 # And the columns P2-R02 removed must be GONE -- proving 0019 really ran, not
 # just that it was recorded.
 for c in overall_score scoring_version score_breakdown last_researched_at; do
-  n="$(psql "$SCRATCH_URL" -tAc \
+  n="$($PSQL "$PSQL_TARGET" -tAc \
     "select count(*) from information_schema.columns
      where table_name='opportunity_signals' and column_name='$c'")"
   [ "$n" = "0" ] || fail "column should have been dropped by 0019 but still exists: $c"
 done
 
 # The renamed one, both directions.
-n="$(psql "$SCRATCH_URL" -tAc \
+n="$($PSQL "$PSQL_TARGET" -tAc \
   "select count(*) from information_schema.columns
    where table_name='opportunity_routes' and column_name='signal_id'")"
 [ "$n" = "1" ] || fail "opportunity_routes.signal_id missing"
-n="$(psql "$SCRATCH_URL" -tAc \
+n="$($PSQL "$PSQL_TARGET" -tAc \
   "select count(*) from information_schema.columns
    where table_name='opportunity_routes' and column_name='opportunity_id'")"
 [ "$n" = "0" ] || fail "opportunity_routes.opportunity_id should be gone"
