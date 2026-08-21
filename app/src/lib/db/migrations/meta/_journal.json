@@ -169,6 +169,13 @@
       "when": 1787274007150,
       "tag": "0023_p2r04_topic_clusters",
       "breakpoints": true
+    },
+    {
+      "idx": 24,
+      "version": "7",
+      "when": 1787276130526,
+      "tag": "0024_p2r06_trend_allowlist",
+      "breakpoints": true
     }
   ]
 }

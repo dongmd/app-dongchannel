@@ -123,6 +123,11 @@ export const topicClusterProjections = pgTable(
     // When the term in WordPress does not match what we projected, we record
     // what we saw rather than overwriting -- the same refusal discipline as
     // P1-R06's article guard.
+    // Owner invariant 2, 2026-08-20: the moment this projection is live,
+    // `wp_term_slug` is a PUBLIC URL. `activated_at` is what makes "is this key
+    // still free to rename?" a fact rather than a memory.
+    activatedAt: timestamp("activated_at", { withTimezone: true }),
+
     divergenceReason: text("divergence_reason"),
     divergenceObservedAt: timestamp("divergence_observed_at", { withTimezone: true }),
 

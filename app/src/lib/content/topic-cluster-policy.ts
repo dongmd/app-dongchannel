@@ -234,3 +234,81 @@ export function internalLinkValueFor(state: ClusterState): number | "UNKNOWN" {
       return "UNKNOWN";
   }
 }
+
+// ─── After activation, the key is a PUBLIC SLUG ───────────────────
+//
+// Owner invariant, 2026-08-20. Before activation a cluster key is an internal
+// identifier and renaming it costs nothing. **The moment `/topics/{key}/` is
+// live, the key is a public URL**, and renaming it silently breaks every link
+// and every crawl of it.
+//
+// So renaming an activated key is not an edit. It is an SEO migration, and it
+// has to be declared as one.
+
+export type RenameVerdict =
+  | { readonly ok: true; readonly requiresRedirect: boolean }
+  | { readonly ok: false; readonly reason: "ACTIVATED_KEY_IS_PUBLIC" | "INVALID_NEW_KEY" };
+
+export function checkKeyRename(input: {
+  readonly oldKey: string;
+  readonly newKey: string;
+  readonly activated: boolean;
+  /** An explicit SEO migration, declared by a human, with a redirect. */
+  readonly seoMigrationApproved?: boolean;
+}): RenameVerdict {
+  if (!input.newKey || clusterKey(input.newKey) !== input.newKey) {
+    return { ok: false, reason: "INVALID_NEW_KEY" };
+  }
+  if (!input.activated) {
+    // Never public, so nothing can break. No redirect is owed.
+    return { ok: true, requiresRedirect: false };
+  }
+  if (!input.seoMigrationApproved) {
+    return { ok: false, reason: "ACTIVATED_KEY_IS_PUBLIC" };
+  }
+  return { ok: true, requiresRedirect: true };
+}
+
+// ─── Reconciling a projection whose term has gone ─────────────────
+//
+// Owner invariant, 2026-08-20: `wp_term_id` is a projection REFERENCE, not a
+// source of truth, and reconciliation must cope with a stored id that no longer
+// exists in WordPress -- without cross-database coupling.
+//
+// The observation is a PARAMETER. This function never looks anything up: the
+// caller reads WordPress over `dc/v1` and passes what it saw. That is what
+// keeps the coupling out.
+
+export type ReconcileOutcome =
+  | { readonly outcome: "IN_SYNC" }
+  | { readonly outcome: "TERM_MISSING"; readonly action: "REPROJECT" }
+  | { readonly outcome: "SLUG_DIVERGED"; readonly action: "REFUSE"; readonly reason: string }
+  | { readonly outcome: "NEVER_PROJECTED"; readonly action: "PROJECT" };
+
+export function reconcileProjection(input: {
+  readonly storedTermId: number | null;
+  readonly storedSlug: string;
+  /** What WordPress actually returned. `null` means the term is not there. */
+  readonly observed: { readonly termId: number; readonly slug: string } | null;
+}): ReconcileOutcome {
+  if (input.storedTermId === null) {
+    return { outcome: "NEVER_PROJECTED", action: "PROJECT" };
+  }
+  if (input.observed === null) {
+    // The term was deleted in WordPress. The CLUSTER is unaffected -- its
+    // identity never depended on the term -- so this is a re-projection, not a
+    // data loss and not a conflict.
+    return { outcome: "TERM_MISSING", action: "REPROJECT" };
+  }
+  if (input.observed.slug !== input.storedSlug) {
+    // Someone renamed the term in wp-admin. Refuse rather than overwrite: the
+    // same discipline as P1-R06's article guard. A human changed a public URL,
+    // and silently changing it back is as wrong as silently accepting it.
+    return {
+      outcome: "SLUG_DIVERGED",
+      action: "REFUSE",
+      reason: `stored '${input.storedSlug}' vs observed '${input.observed.slug}'`,
+    };
+  }
+  return { outcome: "IN_SYNC" };
+}

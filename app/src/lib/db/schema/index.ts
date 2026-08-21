@@ -15,3 +15,4 @@ export * from "./content";
 export * from "./opportunity-content";
 export * from "./opportunity-scoring";
 export * from "./topic-cluster";
+export * from "./trend-radar";

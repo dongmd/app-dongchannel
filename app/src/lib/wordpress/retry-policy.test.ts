@@ -1,3 +1,5 @@
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
@@ -10,6 +12,7 @@ import {
   MAX_BACKOFF_EXPONENT,
   MAX_JITTER_MS,
   type WordpressErrorKind,
+  decideRetry,
 } from "./retry-policy";
 
 // P1-R05 AC-12 and AC-13. These are the two criteria the production E2E cannot
@@ -120,4 +123,79 @@ test("AC-12: a nonsensical Retry-After falls back to the computed backoff", () =
 
 test("AC-12: a negative attempt count cannot produce a sub-base delay", () => {
   assert.ok(backoffMs(-5) >= BASE_BACKOFF_MS);
+});
+
+// ─── TD-21 — the state machine's wiring, now reachable ────────────
+//
+// TD-21 was recorded at P1 closure because these branches lived inside
+// `sync-worker.ts` (server-only + a live DATABASE_URL) and could only be
+// exercised against production. `decideRetry` is that decision, extracted.
+
+const T0 = new Date("2026-08-20T00:00:00.000Z");
+
+test("TD-21: a non-retryable error stops immediately, whatever the attempt count", () => {
+  for (const attemptsMade of [1, 3, 99]) {
+    const d = decideRetry({ retryable: false, attemptsMade, now: T0 });
+    assert.equal(d.action, "FAIL_PERMANENT");
+    // The reason matters: "we were never going to try" is a different
+    // operational fact from "we ran out of attempts".
+    assert.equal(d.action === "FAIL_PERMANENT" && d.reason, "NOT_RETRYABLE");
+  }
+});
+
+test("TD-21: attempts are exhausted AT the maximum, not one past it", () => {
+  const last = decideRetry({ retryable: true, attemptsMade: MAX_ATTEMPTS - 1, now: T0 });
+  assert.equal(last.action, "RETRY", "one attempt short of the max must still retry");
+
+  const done = decideRetry({ retryable: true, attemptsMade: MAX_ATTEMPTS, now: T0 });
+  assert.equal(done.action, "FAIL_PERMANENT");
+  assert.equal(done.action === "FAIL_PERMANENT" && done.reason, "ATTEMPTS_EXHAUSTED");
+});
+
+test("TD-21: the next attempt is scheduled forward from the supplied clock", () => {
+  const d = decideRetry({ retryable: true, attemptsMade: 1, now: T0 });
+  assert.equal(d.action, "RETRY");
+  if (d.action !== "RETRY") return;
+  assert.ok(d.nextAttemptAt.getTime() > T0.getTime(), "a retry must be scheduled in the future");
+});
+
+test("TD-21: Retry-After is honoured by the state machine, not just by backoffMs", () => {
+  const withHeader = decideRetry({
+    retryable: true, attemptsMade: 1, retryAfterSeconds: 600, now: T0,
+  });
+  const without = decideRetry({ retryable: true, attemptsMade: 1, now: T0 });
+  assert.ok(withHeader.action === "RETRY" && without.action === "RETRY");
+  if (withHeader.action !== "RETRY" || without.action !== "RETRY") return;
+  assert.ok(
+    withHeader.nextAttemptAt.getTime() > without.nextAttemptAt.getTime(),
+    "a server asking for ten minutes must push the retry further out",
+  );
+});
+
+test("TD-21: retryability is checked BEFORE the attempt count", () => {
+  // A 412 conflict does not become retryable because attempts remain.
+  const d = decideRetry({ retryable: false, attemptsMade: 0, now: T0 });
+  assert.equal(d.action === "FAIL_PERMANENT" && d.reason, "NOT_RETRYABLE");
+});
+
+test("TD-21 CONTROL: the two permanent-failure reasons are distinguishable", () => {
+  const reasons = new Set(
+    [
+      decideRetry({ retryable: false, attemptsMade: 1, now: T0 }),
+      decideRetry({ retryable: true, attemptsMade: MAX_ATTEMPTS, now: T0 }),
+      decideRetry({ retryable: true, attemptsMade: 1, now: T0 }),
+    ].map((d) => (d.action === "RETRY" ? "RETRY" : d.reason)),
+  );
+  assert.deepEqual([...reasons].sort(), ["ATTEMPTS_EXHAUSTED", "NOT_RETRYABLE", "RETRY"]);
+});
+
+test("TD-21: the worker really calls it — the decision is not a parallel copy", () => {
+  const src = readFileSync(join(process.cwd(), "src/lib/wordpress/sync-worker.ts"), "utf8");
+  assert.ok(src.includes("decideRetry("), "the worker must use the extracted decision");
+  // And must not have kept the old inline branch beside it.
+  assert.equal(
+    /job\.attempts \+ 1 < MAX_ATTEMPTS/.test(src),
+    false,
+    "the inline retry branch must be gone, not duplicated",
+  );
 });

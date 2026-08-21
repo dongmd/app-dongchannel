@@ -11,7 +11,7 @@ import {
 import { auditEvents } from "@/lib/db/schema/audit";
 import { WordpressError, wordpressClientFromEnv, type WordpressClient } from "./client";
 import { buildFacts, idempotencyKeyFor } from "./field-map";
-import { backoffMs, MAX_ATTEMPTS } from "./retry-policy";
+import { decideRetry } from "./retry-policy";
 
 // P1-R05 — the worker that carries app facts to WordPress.
 //
@@ -178,8 +178,18 @@ export async function runSyncJob(
       return { jobId: job.id, result: "conflict", detail: err.code };
     }
 
-    if (err.retryable && job.attempts + 1 < MAX_ATTEMPTS) {
-      const next = new Date(Date.now() + backoffMs(job.attempts + 1, err.retryAfterSeconds));
+    // TD-21: the decision now comes from `decideRetry`, a pure function that a
+    // unit test can reach. Behaviour is unchanged -- the branch that used to be
+    // written out here is the same branch, in a place that can be exercised.
+    const decision = decideRetry({
+      retryable: err.retryable,
+      attemptsMade: job.attempts + 1,
+      retryAfterSeconds: err.retryAfterSeconds,
+      now: new Date(),
+    });
+
+    if (decision.action === "RETRY") {
+      const next = decision.nextAttemptAt;
       await db
         .update(wordpressSyncJobs)
         .set({

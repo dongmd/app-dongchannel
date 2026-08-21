@@ -87,3 +87,57 @@ export function backoffMs(attempts: number, retryAfterSeconds?: number): number 
   const exp = BASE_BACKOFF_MS * 2 ** Math.min(Math.max(attempts, 0), MAX_BACKOFF_EXPONENT);
   return exp + Math.floor(Math.random() * MAX_JITTER_MS);
 }
+
+// ─── The state machine, extracted — TD-21 ─────────────────────────
+//
+// TD-21 (recorded at P1 closure, FORMALLY_DEFERRED_TECH_DEBT): "the R05 retry
+// STATE MACHINE has no wiring test. The policy it consults is tested and is the
+// real code path."
+//
+// The gap was real. `backoffMs` and `MAX_ATTEMPTS` were unit-tested, but the
+// decision that USES them --
+//
+//     if (err.retryable && job.attempts + 1 < MAX_ATTEMPTS) { … }
+//
+// -- lived inline inside `sync-worker.ts`, which imports `server-only` and a
+// live `DATABASE_URL`. So the one branch worth testing (retry once more, or
+// give up) could only be exercised against production.
+//
+// Extracting it changes no behaviour. It moves the decision somewhere a test
+// can reach, which is what the debt actually asked for.
+
+export type RetryDecision =
+  | { readonly action: "RETRY"; readonly attemptNumber: number; readonly nextAttemptAt: Date }
+  | { readonly action: "FAIL_PERMANENT"; readonly reason: "NOT_RETRYABLE" | "ATTEMPTS_EXHAUSTED" };
+
+export interface RetryInput {
+  /** Whether the error class permits another attempt at all. */
+  readonly retryable: boolean;
+  /** Attempts ALREADY MADE, including the one that just failed. */
+  readonly attemptsMade: number;
+  /** `Retry-After`, when the server sent one. */
+  readonly retryAfterSeconds?: number | null;
+  readonly now: Date;
+}
+
+/**
+ * Retry, or stop — and say which, and why.
+ *
+ * A non-retryable error is refused BEFORE the attempt count is consulted: a 412
+ * conflict does not become retryable just because attempts remain, and the
+ * distinct `reason` is what lets an operator tell "we gave up" from "we were
+ * never going to try".
+ */
+export function decideRetry(input: RetryInput): RetryDecision {
+  if (!input.retryable) return { action: "FAIL_PERMANENT", reason: "NOT_RETRYABLE" };
+  if (input.attemptsMade >= MAX_ATTEMPTS) {
+    return { action: "FAIL_PERMANENT", reason: "ATTEMPTS_EXHAUSTED" };
+  }
+  return {
+    action: "RETRY",
+    attemptNumber: input.attemptsMade,
+    nextAttemptAt: new Date(
+      input.now.getTime() + backoffMs(input.attemptsMade, input.retryAfterSeconds ?? undefined),
+    ),
+  };
+}

@@ -17,6 +17,8 @@ import {
   shouldFlushRewrites,
   CLUSTER_STATES,
   internalLinkValueFor,
+  checkKeyRename,
+  reconcileProjection,
 } from "./topic-cluster-policy";
 
 // P2-R04 — the eight verification points the owner set, each checked against
@@ -265,6 +267,101 @@ test("AC-03: every cluster state produces a scoring input", () => {
       `${s} produced ${String(v)}, which is not a scoring input`,
     );
   }
+});
+
+// ─── Owner invariants added 2026-08-20 ───────────────────────────
+
+test("INV-1: the cluster's uuid is its identity, and it is generated, not supplied", () => {
+  const cols = columns(topicClusters);
+  assert.equal(cols.id?.columnType, "PgUUID");
+  assert.equal(cols.id?.hasDefault, true, "a uuid nobody has to supply cannot be forgotten");
+  assert.equal(cols.id?.primary, true);
+});
+
+test("INV-2: an ACTIVATED key cannot be renamed silently", () => {
+  // Before activation the key is an internal identifier. After it, /topics/{key}/
+  // is a public URL, and renaming it breaks every link to it.
+  const before = checkKeyRename({ oldKey: "ai-tools", newKey: "ai-tooling", activated: false });
+  assert.equal(before.ok, true);
+  assert.equal(before.ok === true && before.requiresRedirect, false);
+
+  const after = checkKeyRename({ oldKey: "ai-tools", newKey: "ai-tooling", activated: true });
+  assert.equal(after.ok, false);
+  assert.equal(after.ok === false && after.reason, "ACTIVATED_KEY_IS_PUBLIC");
+});
+
+test("INV-2: an approved SEO migration may rename, and OWES a redirect", () => {
+  const v = checkKeyRename({
+    oldKey: "ai-tools", newKey: "ai-tooling", activated: true, seoMigrationApproved: true,
+  });
+  assert.equal(v.ok, true);
+  assert.equal(v.ok === true && v.requiresRedirect, true, "renaming a live URL owes a redirect");
+});
+
+test("INV-2: a malformed new key is refused whether activated or not", () => {
+  for (const activated of [true, false]) {
+    const v = checkKeyRename({ oldKey: "a", newKey: "Not A Key", activated, seoMigrationApproved: true });
+    assert.equal(v.ok === false && v.reason, "INVALID_NEW_KEY");
+  }
+});
+
+test("INV-2: the schema records WHEN a projection went live", () => {
+  const cols = columns(topicClusterProjections);
+  assert.ok(cols.activatedAt, "activated_at makes 'is this key still free?' a fact, not a memory");
+  assert.equal(cols.activatedAt?.notNull, false, "most projections are not live yet");
+});
+
+test("INV-3: a term deleted in WordPress is a RE-PROJECTION, not a data loss", () => {
+  // The cluster's identity never depended on the term, so losing the term loses
+  // nothing about the cluster.
+  const v = reconcileProjection({ storedTermId: 42, storedSlug: "ai-tools", observed: null });
+  assert.equal(v.outcome, "TERM_MISSING");
+  assert.equal(v.outcome === "TERM_MISSING" && v.action, "REPROJECT");
+});
+
+test("INV-3: a term renamed by hand in wp-admin is REFUSED, not overwritten", () => {
+  // Same discipline as P1-R06's article guard: a human changed a public URL,
+  // and silently changing it back is as wrong as silently accepting it.
+  const v = reconcileProjection({
+    storedTermId: 42, storedSlug: "ai-tools", observed: { termId: 42, slug: "ai-tooling" },
+  });
+  assert.equal(v.outcome, "SLUG_DIVERGED");
+  assert.equal(v.outcome === "SLUG_DIVERGED" && v.action, "REFUSE");
+  assert.ok(v.outcome === "SLUG_DIVERGED" && v.reason.includes("ai-tooling"));
+});
+
+test("INV-3: reconciliation never looks anything up — the observation is a parameter", () => {
+  // That is what keeps the cross-database coupling out: the caller reads
+  // WordPress over dc/v1 and passes what it saw.
+  assert.equal(reconcileProjection.length, 1);
+  const src = readFileSync(join(process.cwd(), "src/lib/content/topic-cluster-policy.ts"), "utf8");
+  assert.equal([...src.matchAll(/^\s*import\s/gm)].length, 0, "the policy still imports nothing");
+});
+
+test("INV-3: a never-projected cluster is distinguishable from a broken one", () => {
+  const v = reconcileProjection({ storedTermId: null, storedSlug: "ai-tools", observed: null });
+  assert.equal(v.outcome, "NEVER_PROJECTED");
+  // "we have not done it yet" and "it was there and is gone" call for the same
+  // action but are different facts, and the outcome keeps them apart.
+  assert.notEqual(v.outcome, "TERM_MISSING");
+});
+
+test("INV-4: collisions are still refused rather than suffixed", () => {
+  const taken = new Map([["ai-tools", "cluster-a"]]);
+  const v = checkSlugCollision("ai-tools", taken, "cluster-b");
+  assert.equal(v.ok, false);
+  // And no CODE anywhere generates a numeric suffix. Comments are stripped
+  // first: the policy's own comment explains that it does not suffix, and a
+  // guard that cannot tell prose from code would punish saying so clearly --
+  // the same mistake the P2-R05 boundary test made on the word "unpublish".
+  const code = readFileSync(join(process.cwd(), "src/lib/content/topic-cluster-policy.ts"), "utf8")
+    .replace(/\/\*[\s\S]*?\*\//g, " ")
+    .replace(/(^|[^:])\/\/.*$/gm, "$1");
+  assert.equal(
+    /`\$\{[^}]*\}-\d|suffix|counter\s*\+\+/.test(code),
+    false,
+    "no auto-suffix may creep in",
+  );
 });
 
 // ─── The architectural boundary ───────────────────────────────────
