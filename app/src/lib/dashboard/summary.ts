@@ -9,11 +9,21 @@ import { pingHermesStatus, type HermesStatus } from "@/lib/hermes/status";
 // V1: query thật từ tasks table (DC-006 đã ingest sessions → tasks).
 // Memory/decisions vẫn 0 (DC-010).
 
+/**
+ * A KPI value, or `null` for UNKNOWN.
+ *
+ * P3-R08 AC-09. `null` is not "zero we haven't loaded yet" — it means **no
+ * backing query answered this**, and the tile must say so rather than print a
+ * number nobody measured. Typed at the value rather than at the one tile that
+ * needed it, so the next tile added without a query cannot quietly default to 0.
+ */
+export type KpiValue = number | null;
+
 export interface KpiCounts {
-  pendingReview: number;
-  running: number;
-  alerts: number;
-  activeTests: number;
+  pendingReview: KpiValue;
+  running: KpiValue;
+  alerts: KpiValue;
+  activeTests: KpiValue;
 }
 
 export interface DecisionInboxItem {
@@ -113,7 +123,16 @@ async function queryKpi(scope: ("aff" | "yt")[]): Promise<KpiCounts> {
     pendingReview: pendingReviewRow[0]?.n ?? 0,
     running: runningRow[0]?.n ?? 0,
     alerts: alertsRow[0]?.n ?? 0,
-    activeTests: 0, // AFF offers.status=TESTING + YT videos.status=PUBLISHED — chờ DC-011/012
+    // UNKNOWN, not 0 (P3-R08 AC-09). This tile has never had a backing query.
+    // It shipped as a hard-coded `0` awaiting DC-011/DC-012 — both of which have
+    // since landed — so the Overview has been reporting "Test đang active: 0" as
+    // a measurement for as long as it has been live.
+    //
+    // It stays UNKNOWN rather than being wired up here: the real figure is
+    // `offers.status = TESTING` plus `videos.status = PUBLISHED`, which is
+    // affiliate and YouTube DOMAIN content and belongs to P4-R11. Answering it
+    // here would pull P4 scope into P3 (AC-10).
+    activeTests: null,
   };
 }
 
@@ -199,7 +218,7 @@ function computeNextBestActions(input: {
   profile: ProfileFilter;
   hermes: HermesStatus;
   totalTasks: number;
-  pendingReview: number;
+  pendingReview: KpiValue;
 }): NextBestAction[] {
   const actions: NextBestAction[] = [];
   if (input.hermes.level !== "ok") {
@@ -210,7 +229,10 @@ function computeNextBestActions(input: {
       href: "/admin",
     });
   }
-  if (input.pendingReview > 0) {
+  // UNKNOWN produces no action. `null > 0` is false in JavaScript, so leaving
+  // this as a bare comparison would have "worked" — and that is the problem:
+  // an unmeasured count would silently mean "nothing to review" (P3-R08 AC-09).
+  if (input.pendingReview !== null && input.pendingReview > 0) {
     actions.push({
       id: "review-tasks",
       title: `Duyệt ${input.pendingReview} nhiệm vụ chờ`,
