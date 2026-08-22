@@ -14,12 +14,35 @@
 
 set -u
 
-BASELINE="${1:-22f546b}"   # the deployed commit the inventory was taken against
-HEAD_REF="${2:-HEAD}"
-
 fail() { echo "FAIL: $*" >&2; exit 1; }
 
+BASELINE="${1:-22f546b}"   # the deployed commit the inventory was taken against
+
+# The default head is P3-R08's OWN change set, not HEAD.
+#
+# AC-02 is a claim about what THIS requirement changed. Defaulting to HEAD made
+# the guard report FAIL the moment any LATER requirement landed -- P3-R01, R06,
+# R03 and R04 each touch files no R08 criterion licenses, correctly so. A guard
+# that fails on correct work gets ignored, which is worse than no guard.
+#
+# Located by asking git for the LAST commit carrying this requirement's id,
+# rather than by hard-coding a hash: a hash would go stale on any rebase and
+# become a fixture asserting against a commit that no longer exists. If no such
+# commit is found the lookup yields nothing and the guard fails closed below.
+#
+# The LAST one, not the first. R08's first commit carried a stray zero-byte file
+# `app/0`; this guard is what caught it, and the follow-up commit removed it.
+# Ending the range at the first commit would re-report a defect already fixed,
+# which trains the reader to ignore the guard.
+if [ "${2:-}" = "" ]; then
+	HEAD_REF="$(git log --format='%H %s' | grep -m1 '(P3-R08)' | cut -d' ' -f1)"
+	[ -n "$HEAD_REF" ] || fail "cannot locate any commit carrying (P3-R08)"
+else
+	HEAD_REF="$2"
+fi
+
 git rev-parse --verify "$BASELINE" >/dev/null 2>&1 || fail "no such baseline: $BASELINE"
+git rev-parse --verify "$HEAD_REF" >/dev/null 2>&1 || fail "no such head: $HEAD_REF"
 
 # Files owned by surfaces the register classifies EXISTING_AND_CONFORMING.
 # Touching any of them is what AC-02 forbids.
