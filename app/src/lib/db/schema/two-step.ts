@@ -150,3 +150,60 @@ export const articlePublishIntents = pgTable(
     ),
   }),
 );
+
+/**
+ * P3-R07 — preview links.
+ *
+ * A signed token alone cannot be revoked, and that is the whole difference
+ * between a capability and a bearer credential. `AC-05` requires revocation
+ * before expiry, individually and in bulk for an article, so there has to be
+ * something to revoke.
+ *
+ * The row is **not** the authority. The signature is verified first, before this
+ * table is consulted at all, so an unsigned guess cannot be used to probe which
+ * ids exist. The rules — an immutable scope, one-way revocation, the TTL ceiling,
+ * and the triggers that stop a preview render writing anything — live in
+ * `0033_p3r07_preview_links.sql`.
+ */
+export const articlePreviewLinks = pgTable(
+  "article_preview_links",
+  {
+    id: uuid("id").primaryKey().default(sql`gen_random_uuid()`),
+
+    /** `AC-02`. One article, one revision — signed into the token as well. */
+    articleId: text("article_id").notNull(),
+    revisionId: text("revision_id").notNull(),
+
+    /** `AC-10`/`AC-11`. The hash of exactly what the link will show. */
+    contentHash: text("content_hash").notNull(),
+
+    /** `AC-13`. Which key signed it, so rotation is a stated consequence. */
+    keyVersion: text("key_version").notNull(),
+
+    issuedTo: bigint("issued_to", { mode: "number" }),
+    issuedAt: timestamp("issued_at", { withTimezone: true }).notNull().defaultNow(),
+    expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+
+    /** `AC-05`. A timestamp, not a deletion: the log keeps its shape. */
+    revokedAt: timestamp("revoked_at", { withTimezone: true }),
+  },
+  (t) => ({
+    articleIdx: index("preview_links_article_idx").on(t.articleId),
+    scopeUq: uniqueIndex("preview_links_scope_uq").on(
+      t.articleId,
+      t.revisionId,
+      t.contentHash,
+      t.expiresAt,
+    ),
+    expiryAfterIssue: check("preview_link_expiry_after_issue", sql`${t.expiresAt} > ${t.issuedAt}`),
+    ttlCapped: check(
+      "preview_link_ttl_capped",
+      sql`${t.expiresAt} <= ${t.issuedAt} + interval '1 hour'`,
+    ),
+    revocationAfterIssue: check(
+      "preview_link_revocation_after_issue",
+      sql`${t.revokedAt} IS NULL OR ${t.revokedAt} >= ${t.issuedAt}`,
+    ),
+    hashShape: check("preview_link_hash_shape", sql`${t.contentHash} ~ '^[a-f0-9]{64}$'`),
+  }),
+);

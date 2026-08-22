@@ -83,8 +83,23 @@ export async function middleware(req: NextRequest) {
   });
 }
 
+// Two self-verifying endpoints are excluded, and each carries its own reason.
+//
+// `api/telegram/webhook` (P3-R01 AC-07) authenticates with Telegram's secret
+// token header, not with a session. Left in the matcher it was redirected to
+// /login, so the transport could never have been reached by Telegram at all --
+// a defect found while building the preview route, because the transport probe
+// calls the handler directly and never crosses this file.
+//
+// `preview/` (P3-R07) authenticates with a signed, scoped, revocable capability.
+// Requiring a session there would defeat the requirement outright: the point of
+// Q32 Option A is that reviewing a draft from a phone does not need a login.
+//
+// Neither is unguarded. Each verifies before it acts, refuses without side
+// effects, and audits every decision -- which is more than a session cookie
+// would have told either of them.
 export const config = {
   matcher: [
-    "/((?!login$|api/auth/|api/health$|_next/static/|_next/image|favicon\\.ico$|robots\\.txt$|.*\\.(?:png|jpg|jpeg|svg|gif|webp|ico|css|js|map)$).*)",
+    "/((?!login$|api/auth/|api/health$|api/telegram/webhook$|preview/|_next/static/|_next/image|favicon\\.ico$|robots\\.txt$|.*\\.(?:png|jpg|jpeg|svg|gif|webp|ico|css|js|map)$).*)",
   ],
 };
