@@ -221,8 +221,36 @@ if grep -q '^MIGRATION_DATABASE_URL=' "$ENV_SOURCE" 2>/dev/null; then
        a file read."
 fi
 
-MIGRATION_ENV_FILE="${MIGRATION_ENV_FILE:-/home/opssite/.env.migrate}"
+MIGRATION_ENV_FILE="${MIGRATION_ENV_FILE:-/root/.dongchannel/migrate.env}"
+RUNTIME_USER="${RUNTIME_USER:-opssite}"
+
+# The migration credential must be out of reach of the RUNTIME OS IDENTITY, not
+# only of the runtime database role. The application runs as $RUNTIME_USER, so a
+# secret that user can read is a secret an RCE in the application recovers, and
+# with it the DDL authority Q35 removed.
+#
+# Tested by ATTEMPTING THE READ as that user, not by inspecting mode bits. Mode
+# is a proxy: it misses ACLs, group membership, a permissive parent directory,
+# and a bind mount. The question is whether the read succeeds, so ask that.
 if [ -f "$MIGRATION_ENV_FILE" ]; then
+  if id "$RUNTIME_USER" >/dev/null 2>&1 && [ "$(id -u)" = "0" ]; then
+    if runuser -u "$RUNTIME_USER" -- test -r "$MIGRATION_ENV_FILE" 2>/dev/null; then
+      fail "$RUNTIME_USER can read $MIGRATION_ENV_FILE -- the runtime identity would
+       recover the migrator credential from disk (Q35b). Move it to a root-owned
+       file: deploy/q35b-migration-secret-isolation.sh"
+    fi
+  else
+    # Not root, or no such user: the authoritative test is unavailable, so fall
+    # back to the weaker one rather than skipping. A check that quietly does
+    # nothing is worse than one that is conservative.
+    MODE="$(stat -c '%a' "$MIGRATION_ENV_FILE" 2>/dev/null || echo 777)"
+    MODE="$(printf '%03d' "$((10#${MODE#"${MODE%???}"}))")"
+    G="${MODE:1:1}"; O="${MODE:2:1}"
+    if [ "$(( (G & 4) + (O & 4) ))" -ne 0 ]; then
+      fail "$MIGRATION_ENV_FILE is mode $MODE -- group or other can read the migrator
+       credential (Q35b)"
+    fi
+  fi
   load_env "$MIGRATION_ENV_FILE" || fail "could not load $MIGRATION_ENV_FILE"
 fi
 

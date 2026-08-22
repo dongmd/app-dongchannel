@@ -147,6 +147,18 @@ run_case "MIGRATION_DATABASE_URL inside .env -> refuse to deploy (Q35)" fail "BU
 printf 'DEPLOY_TEST=1
 ' > "$SANDBOX/app/.env"
 
+# Q35b is NOT tested here, deliberately.
+#
+# This harness runs on the developer machine, where the filesystem does not
+# implement unix permissions: `chmod 600` followed by `stat -c %a` reports 644.
+# A case asserting "a world-readable secret is refused" passes there because
+# EVERY file is world-readable, and its 600 control cannot pass at all. That is
+# a vacuous case dressed as coverage, which is worse than no case.
+#
+# The Q35b guard is exercised by deploy/test-secret-isolation.sh, on the VPS,
+# where permissions and unix users are real and the authoritative branch --
+# attempting the read AS the runtime user -- can actually run.
+
 # The credential must not survive as far as the restart. `pm2 --update-env`
 # copies the deploy shell's environment into the application process, and that
 # is how it got there: measured in /proc/<pid>/environ on the running app.
