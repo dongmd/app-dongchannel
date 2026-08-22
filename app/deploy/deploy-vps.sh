@@ -45,6 +45,21 @@ fail() {
   exit 1
 }
 
+# Is a privileged wrapper reachable?
+#
+# NOT `-x`: that tests whether THIS user can execute the file, and the wrappers
+# are root-owned mode 700 precisely so that it cannot. Testing `-x` therefore
+# answered "no" every time and sent the deploy down the direct path, where the
+# credential it needs is unreadable -- a check that measured the opposite of
+# what it meant to.
+#
+# `sudo -n -l` asks the question that actually matters: may I run this, without
+# a password, right now.
+wrapper_available() {
+  [ -n "${1:-}" ] || return 1
+  sudo -n -l "$1" >/dev/null 2>&1
+}
+
 # pg_dump as the site user, using the app's own DATABASE_URL.
 #
 # The site user cannot sudo, and /var/backups is root-owned, so the previous
@@ -222,6 +237,8 @@ if grep -q '^MIGRATION_DATABASE_URL=' "$ENV_SOURCE" 2>/dev/null; then
 fi
 
 MIGRATION_ENV_FILE="${MIGRATION_ENV_FILE:-/root/.dongchannel/migrate.env}"
+MIGRATE_WRAPPER="${MIGRATE_WRAPPER:-/usr/local/sbin/dc-migrate}"
+BACKUP_WRAPPER="${BACKUP_WRAPPER:-/usr/local/sbin/dc-db-backup}"
 RUNTIME_USER="${RUNTIME_USER:-opssite}"
 
 # The migration credential must be out of reach of the RUNTIME OS IDENTITY, not
@@ -232,6 +249,9 @@ RUNTIME_USER="${RUNTIME_USER:-opssite}"
 # Tested by ATTEMPTING THE READ as that user, not by inspecting mode bits. Mode
 # is a proxy: it misses ACLs, group membership, a permissive parent directory,
 # and a bind mount. The question is whether the read succeeds, so ask that.
+# `-f` is false when the containing directory is not traversable, which is the
+# NORMAL state for an unprivileged deploy under Q35b -- this check then correctly
+# does nothing, and the wrapper supplies the credential instead.
 if [ -f "$MIGRATION_ENV_FILE" ]; then
   if id "$RUNTIME_USER" >/dev/null 2>&1 && [ "$(id -u)" = "0" ]; then
     if runuser -u "$RUNTIME_USER" -- test -r "$MIGRATION_ENV_FILE" 2>/dev/null; then
@@ -326,10 +346,31 @@ echo "✓ all gates passed"
 
 # ─── 5. Fresh backup ────────────────────────────────────────────
 echo "→ backup database"
-__stamp="$(date -u +%Y%m%d-%H%M%S)"
-__dump="$BACKUP_DIR/dongchannel_ops-deploy-${__stamp}.dump"
-eval "$CMD_BACKUP \"$__dump\"" || fail "backup failed -- refusing to migrate without one"
-echo "   $__dump"
+
+# Q35b. The dump is taken with the SCHEMA OWNER's credential, which this user
+# cannot read, so it crosses the boundary the same way the migration does.
+#
+# It has to. `pg_dump` can only dump what its role can read, and after Q35 the
+# runtime role lost `USAGE` on the `drizzle` schema -- so a dump taken as the
+# runtime now fails outright, which is exactly how this surfaced mid-deploy.
+#
+# The uncomfortable part is what that revealed about BEFORE. The runtime role
+# happened to own every table, so the dump was complete by accident rather than
+# by design, and would have silently shrunk the first time a table was owned
+# elsewhere. Granting the runtime read access to `drizzle` would have restored
+# the old behaviour and left completeness depending on somebody remembering to
+# grant read access to whatever comes next.
+#
+# The wrapper names its own destination, so nothing here passes a path: a
+# destination argument would let this user have a root process write anywhere.
+if [ "$(id -u)" != "0" ] && wrapper_available "$BACKUP_WRAPPER"; then
+  sudo -n "$BACKUP_WRAPPER" || fail "backup failed -- refusing to migrate without one"
+else
+  __stamp="$(date -u +%Y%m%d-%H%M%S)"
+  __dump="$BACKUP_DIR/dongchannel_ops-deploy-${__stamp}.dump"
+  eval "$CMD_BACKUP \"$__dump\"" || fail "backup failed -- refusing to migrate without one"
+  echo "   $__dump"
+fi
 
 # ─── 6. Pending migrations ──────────────────────────────────────
 # Printed before applying so the deploy log records what was about to run.
@@ -351,11 +392,31 @@ ls -1 src/lib/db/migrations/*.sql 2>/dev/null | tail -3 | sed 's/^/   /' || true
 # separated silently migrates as the runtime role, which is the exact state the
 # gate exists to end -- and it would do so while reporting success.
 echo "→ drizzle migrate"
-if [ -z "${MIGRATION_DATABASE_URL:-}" ]; then
-  fail "MIGRATION_DATABASE_URL is not set -- refusing to migrate as the runtime role (Q35)"
+
+# Q35b. Two ways in, and neither falls back to the runtime role.
+#
+# Unprivileged deploy (the normal case): the credential is root-owned and
+# unreadable here, so the one step that needs it crosses the boundary through a
+# one-shot wrapper that takes NO arguments and has the app directory hard-coded.
+# A wrapper accepting a path would let this user point it at its own migration
+# files and have them run as dc_migrator -- handing back exactly the DDL
+# authority the separation removed.
+#
+# Root deploy: the secret file was loaded above, so migrate directly.
+if [ "$(id -u)" != "0" ] && wrapper_available "$MIGRATE_WRAPPER"; then
+  sudo -n "$MIGRATE_WRAPPER" \
+    || fail "migration failed -- app NOT restarted, still serving the previous version"
+  MIGRATED_VIA_WRAPPER=1
 fi
-DATABASE_URL="$MIGRATION_DATABASE_URL" eval "$CMD_MIGRATE" \
-  || fail "migration failed -- app NOT restarted, still serving the previous version"
+
+if [ "${MIGRATED_VIA_WRAPPER:-0}" != "1" ]; then
+  if [ -z "${MIGRATION_DATABASE_URL:-}" ]; then
+    fail "MIGRATION_DATABASE_URL is not set and $MIGRATE_WRAPPER is not usable --
+       refusing to migrate as the runtime role (Q35)"
+  fi
+  DATABASE_URL="$MIGRATION_DATABASE_URL" eval "$CMD_MIGRATE" \
+    || fail "migration failed -- app NOT restarted, still serving the previous version"
+fi
 
 # The migrator DSN dies with the migration. Nothing after this line needs it,
 # and step 9 restarts PM2 with `--update-env`, which copies THIS SHELL'S

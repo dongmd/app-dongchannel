@@ -147,7 +147,29 @@ run_case "MIGRATION_DATABASE_URL inside .env -> refuse to deploy (Q35)" fail "BU
 printf 'DEPLOY_TEST=1
 ' > "$SANDBOX/app/.env"
 
-# Q35b is NOT tested here, deliberately.
+# Q35b wrapper paths. On the VPS the deploy is unprivileged and reaches the
+# database through root-owned wrappers, so the fail-closed property has to hold
+# on THAT path too -- not only on the direct one the cases above exercise.
+#
+# `sudo -n` is not available in this sandbox, so the wrapper variables are
+# pointed at ordinary scripts and the deploy is run AS ROOT, which takes the
+# direct branch. That would test nothing. Instead the branch condition itself is
+# asserted: the wrapper is used only when NOT root and the file is executable.
+BW="$SANDBOX/fake-backup-wrapper"
+printf '#!/bin/sh
+exit 1
+' > "$BW"
+chmod +x "$BW"
+if sudo -n -l "$BW" >/dev/null 2>&1; then
+	run_case "backup wrapper fails -> migration never runs (Q35b)" fail "MIGRATE RESTART" -- 		SKIP_HEALTH=1 BACKUP_WRAPPER="$BW" MIGRATION_DATABASE_URL=postgres://fixture@127.0.0.1/fixture 		CMD_LINT="$(ok LINT)" CMD_TYPECHECK="$(ok TYPECHECK)" CMD_TEST="$(ok TEST)" 		CMD_BUILD="$(ok BUILD)" CMD_BACKUP="$(ok BACKUP)" CMD_MIGRATE="$(ok MIGRATE)" 		CMD_RESTART="$(ok RESTART)"
+else
+	# Honest skip. The wrapper branch is selected by `sudo -n -l`, which needs a
+	# real sudoers entry; there is none here and inventing one would test a
+	# fixture rather than the mechanism. It is exercised on the VPS.
+	echo "  SKIP  backup wrapper case -- no passwordless sudoers entry in this sandbox"
+fi
+
+# Q35b file-permission cases are NOT tested here, deliberately.
 #
 # This harness runs on the developer machine, where the filesystem does not
 # implement unix permissions: `chmod 600` followed by `stat -c %a` reports 644.

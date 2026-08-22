@@ -1,0 +1,81 @@
+#!/usr/bin/env bash
+#
+# Q35b — the one-shot privileged database backup.
+#
+# Installed at /usr/local/sbin/dc-db-backup, root:root, mode 700, invoked by the
+# deploy through a single NOPASSWD sudoers entry that permits no arguments.
+#
+# ## Why the backup needs privilege at all
+#
+# `pg_dump` can only dump what its role can read. After Q35 separated the roles,
+# `opsdash` lost `USAGE` on the `drizzle` schema, so a dump taken with the
+# runtime credential now fails outright — which is how this surfaced, mid-deploy.
+#
+# The uncomfortable part is what that revealed about before. The runtime role
+# happened to own every table, so the dump was complete **by accident** rather
+# than by design. A backup scoped to whatever the application can see would
+# silently shrink the first time a table was owned elsewhere.
+#
+# The alternative was to grant `opsdash` read access to `drizzle` and keep
+# dumping as the runtime. That works, and it makes the completeness of every
+# future backup depend on remembering to grant the runtime read access to
+# anything new. Taking the dump with the **schema owner's** credential makes
+# completeness the default and a gap the exception.
+#
+# ## No arguments, hard-coded paths
+#
+# Same reason as `dc-migrate`: a destination parameter would let the caller
+# write a root-owned file anywhere, and a database parameter would let it dump
+# something else. Both are hard-coded, so the sudoers entry can forbid arguments
+# outright.
+#
+# The connection URI never reaches argv — `ps` is world-readable — so the parts
+# are exported as `PG*` variables instead.
+
+set -euo pipefail
+
+SECRET_FILE=/root/.dongchannel/migrate.env
+BACKUP_DIR=/home/opssite/backups
+OWNER=opssite
+
+[ "$(id -u)" = "0" ] || { echo "dc-db-backup: must run as root" >&2; exit 1; }
+[ -r "$SECRET_FILE" ] || { echo "dc-db-backup: no readable $SECRET_FILE" >&2; exit 1; }
+
+SRC="$(sed -n 's/^MIGRATION_DATABASE_URL=//p' "$SECRET_FILE" | head -1)"
+[ -n "$SRC" ] || { echo "dc-db-backup: no DSN in $SECRET_FILE" >&2; exit 1; }
+
+rest="${SRC#*://}"
+cred="${rest%%@*}"
+hostpart="${rest#*@}"
+
+PGUSER="${cred%%:*}"
+PGPASSWORD="${cred#*:}"
+PGDATABASE="${hostpart#*/}"
+PGDATABASE="${PGDATABASE%%\?*}"
+hostport="${hostpart%%/*}"
+PGHOST="${hostport%%:*}"
+PGPORT="${hostport#*:}"
+[ "$PGPORT" = "$PGHOST" ] && PGPORT=5432
+export PGUSER PGPASSWORD PGDATABASE PGHOST PGPORT
+
+install -d -m 700 -o "$OWNER" -g "$OWNER" "$BACKUP_DIR"
+TARGET="$BACKUP_DIR/${PGDATABASE}-deploy-$(date +%Y%m%d-%H%M%S).dump"
+
+pg_dump -Fc -f "$TARGET"
+unset PGPASSWORD
+
+# Owned by the site user so the existing retention tooling can still see it, and
+# 600 because a dump contains everything the database does.
+chown "$OWNER:$OWNER" "$TARGET"
+chmod 600 "$TARGET"
+
+# A dump that exists but holds nothing is the failure this reports as success if
+# nobody looks. `pg_restore -l` is the cheapest read that proves the archive is
+# an archive.
+ENTRIES="$(pg_restore -l "$TARGET" 2>/dev/null | grep -c '^[0-9]' || true)"
+if [ "${ENTRIES:-0}" -lt 1 ]; then
+  echo "dc-db-backup: $TARGET has no restorable entries" >&2
+  exit 1
+fi
+
+echo "backup ok: $TARGET ($ENTRIES entries)"

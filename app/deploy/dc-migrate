@@ -1,0 +1,55 @@
+#!/usr/bin/env bash
+#
+# Q35b — the one-shot privileged migration runner.
+#
+# Installed at /usr/local/sbin/dc-migrate, root:root, mode 700, and invoked by
+# the deploy through a single NOPASSWD sudoers entry.
+#
+# ## Why this exists
+#
+# The migration credential is root-owned so the application's OS identity cannot
+# read it. But the deploy itself must run as `opssite`: it does `git reset
+# --hard` and a build inside `/home/opssite`, and running those as root would
+# leave root-owned files in the site user's tree.
+#
+# So the deploy stays unprivileged and the ONE step that needs the credential
+# crosses the boundary here — for the length of one command, with the secret
+# reaching only this process.
+#
+# ## Why the directory is hard-coded and not an argument
+#
+# This is the whole security of the thing. If the app directory were a
+# parameter, `opssite` could point it at a tree containing its own drizzle
+# config and its own migration files, and this wrapper would obligingly execute
+# them as `dc_migrator` — handing back exactly the DDL authority the separation
+# removed. A wrapper that accepts a path is a wrapper that runs anything.
+#
+# For the same reason it takes NO arguments at all and ignores any it is given,
+# so the sudoers entry can name the bare command with nothing to smuggle past
+# it.
+#
+# ## The credential
+#
+# Read into this process's environment and never onto a command line: argv is
+# world-readable through `ps`. Never echoed, and the migration's own output is
+# passed through unchanged because drizzle does not print the DSN.
+
+set -euo pipefail
+
+APP_DIR=/home/opssite/htdocs/app.dongchannel.com/app
+SECRET_FILE=/root/.dongchannel/migrate.env
+
+[ "$(id -u)" = "0" ] || { echo "dc-migrate: must run as root" >&2; exit 1; }
+[ -r "$SECRET_FILE" ] || { echo "dc-migrate: no readable $SECRET_FILE" >&2; exit 1; }
+[ -d "$APP_DIR" ] || { echo "dc-migrate: no app at $APP_DIR" >&2; exit 1; }
+
+# Assign, never execute: the file is a single KEY=value line, but `source` would
+# run it as shell if it ever became anything else.
+MIGRATION_DATABASE_URL="$(sed -n 's/^MIGRATION_DATABASE_URL=//p' "$SECRET_FILE" | head -1)"
+[ -n "$MIGRATION_DATABASE_URL" ] || { echo "dc-migrate: no DSN in $SECRET_FILE" >&2; exit 1; }
+
+cd "$APP_DIR"
+
+# Runs as root. `drizzle-kit migrate` writes nothing to disk — it connects and
+# applies SQL — so this leaves no root-owned file in the site user's tree.
+DATABASE_URL="$MIGRATION_DATABASE_URL" exec pnpm db:migrate
