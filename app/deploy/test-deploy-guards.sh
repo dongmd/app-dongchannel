@@ -147,6 +147,20 @@ run_case "MIGRATION_DATABASE_URL inside .env -> refuse to deploy (Q35)" fail "BU
 printf 'DEPLOY_TEST=1
 ' > "$SANDBOX/app/.env"
 
+# The credential must not survive as far as the restart. `pm2 --update-env`
+# copies the deploy shell's environment into the application process, and that
+# is how it got there: measured in /proc/<pid>/environ on the running app.
+# CMD_RESTART records the environment it was called with, so the assertion is on
+# what the restart would actually have propagated, not on a variable this
+# harness set itself.
+RESTART_ENV="$SANDBOX/restart-env.txt"
+run_case "migrator DSN is gone before pm2 --update-env (Q35)" ok "" --   SKIP_HEALTH=1 MIGRATION_DATABASE_URL=postgres://fixture@127.0.0.1/fixture   CMD_LINT="$(ok LINT)" CMD_TYPECHECK="$(ok TYPECHECK)" CMD_TEST="$(ok TEST)"   CMD_BUILD="$(ok BUILD)" CMD_BACKUP="$(ok BACKUP)" CMD_MIGRATE="$(ok MIGRATE)"   CMD_RESTART="printf '%s' \"\${MIGRATION_DATABASE_URL:-ABSENT}\" > $RESTART_ENV; echo RESTART"
+if [ "$(cat "$RESTART_ENV" 2>/dev/null)" = "ABSENT" ]; then
+  PASS=$((PASS+1)); echo "  PASS  restart saw MIGRATION_DATABASE_URL as ABSENT"
+else
+  FAIL=$((FAIL+1)); echo "  FAIL  restart still saw the migrator DSN -- pm2 --update-env would leak it"
+fi
+
 # Health checks run for real here, against a closed port.
 run_case "health fails → failure exit, no 'Deploy done'" fail "" -- \
   APP_PORT=9 PUBLIC_URL="http://127.0.0.1:9" \

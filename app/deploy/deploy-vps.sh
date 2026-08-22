@@ -329,6 +329,14 @@ fi
 DATABASE_URL="$MIGRATION_DATABASE_URL" eval "$CMD_MIGRATE" \
   || fail "migration failed -- app NOT restarted, still serving the previous version"
 
+# The migrator DSN dies with the migration. Nothing after this line needs it,
+# and step 9 restarts PM2 with `--update-env`, which copies THIS SHELL'S
+# environment into the application process. Measured on the running app: the
+# variable was present in /proc/<pid>/environ, so the app held the credential
+# for the role whose DDL authority Q35 exists to deny it -- separation enforced
+# in the database and handed back through an inherited variable.
+unset MIGRATION_DATABASE_URL
+
 # ─── 8. Seed (bootstrap only, opt-in) ───────────────────────────
 if [ "${DEPLOY_RUN_SEED:-0}" = "1" ]; then
   echo "→ seed allowlist (DEPLOY_RUN_SEED=1)"
@@ -338,6 +346,15 @@ else
 fi
 
 # ─── 9. Restart on the artifact that just passed every gate ─────
+#
+# A guard, not a comment. `unset` above is easy to lose to a later edit, and its
+# absence would be invisible: the deploy would succeed, the app would work, and
+# the only symptom would be a credential sitting in a process environment nobody
+# looks at.
+if [ -n "${MIGRATION_DATABASE_URL:-}" ]; then
+  fail "MIGRATION_DATABASE_URL is still set at restart -- pm2 --update-env would copy
+       the migrator credential into the application process (Q35)"
+fi
 echo "→ restart PM2 app: $PM2_APP_NAME"
 eval "$CMD_RESTART" || {
   echo "!! pm2 restart failed. Known processes:" >&2
