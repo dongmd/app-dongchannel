@@ -99,13 +99,17 @@ export const SURFACES: readonly SurfaceRecord[] = [
     owner: "P3-R08",
     formerlyGovernedBy: ["DC-002", "DC-003", "DC-013", "DC-015"],
     designSection: "7.3",
-    status: "EXISTING_NEEDS_REMEDIATION",
-    failsCriterion: "P3-R08 AC-06",
+    status: "EXISTING_AND_CONFORMING",
     evidence:
-      "All §7.3 elements are mounted -- search, notifications, profile switcher, status " +
-      "indicator, user menu -- but the `+ Tạo nhiệm vụ` action is hard-disabled and its " +
-      "aria-label promises it 'sẽ có ở DC-005'. DC-005 shipped. AC-06 requires each element " +
-      "reachable, not merely rendered, so a permanently inert control fails it.",
+      "REMEDIATED 2026-08-22. All five §7.2/§7.3 elements AC-06 names are mounted and " +
+      "reachable: search, notifications, profile switcher, status indicator, user menu. " +
+      "The `+ Tạo nhiệm vụ` control was REMOVED rather than enabled. It was hard-disabled " +
+      "with an aria-label promising DC-005, which had already shipped, so it was a " +
+      "permanently inert control in a header whose criterion requires reachability. It is " +
+      "not one of the five elements AC-06 names, and it is not made to work because this " +
+      "system does not create tasks -- they are projected from Hermes and there is no " +
+      "POST /api/v1/tasks to point it at. Building one to satisfy a header criterion would " +
+      "be inventing a feature to justify a button.",
   },
   {
     key: "search",

@@ -70,9 +70,16 @@ src/app/(dashboard)/admin/page.tsx
 
 # Files a named criterion licenses this requirement to change.
 # summary.ts + kpi-grid.tsx  -> Overview, EXISTING_NEEDS_REMEDIATION, AC-09
+# global-header.tsx          -> Global header, EXISTING_NEEDS_REMEDIATION, AC-06
+#
+# The register is what licenses each one: a surface it calls
+# EXISTING_NEEDS_REMEDIATION is a surface this requirement is supposed to touch.
+# `global-header.tsx` is deliberately absent from CONFORMING_FILES for the same
+# reason -- it was the one header file the inventory found wanting.
 LICENSED_FILES="
 src/lib/dashboard/summary.ts
 src/components/dashboard/kpi-grid.tsx
+src/components/layout/global-header.tsx
 "
 
 CHANGED="$(git diff --name-only "$BASELINE".."$HEAD_REF" -- . | sed 's|^app/||')"
