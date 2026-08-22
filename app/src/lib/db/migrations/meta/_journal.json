@@ -204,6 +204,13 @@
       "when": 1787278623518,
       "tag": "0028_p3r06_audit_append_only",
       "breakpoints": true
+    },
+    {
+      "idx": 29,
+      "version": "7",
+      "when": 1787278623519,
+      "tag": "0029_p3r04_approvals",
+      "breakpoints": true
     }
   ]
 }

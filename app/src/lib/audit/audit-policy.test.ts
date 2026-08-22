@@ -354,3 +354,33 @@ test("P3 audit actions and auth telemetry actions are DISJOINT", () => {
   assert.ok(AUTH_TELEMETRY_ACTIONS.length > 0);
   assert.ok(AUDIT_ACTIONS.length > 0);
 });
+
+test("a P3 evidence query filtered by isAuditAction returns NO auth telemetry", () => {
+  // The concrete form of the boundary. Both domains write to audit_events --
+  // AC-01 forbids a second log -- so anything collecting P3 evidence filters by
+  // the canonical vocabulary. This asserts that filter actually separates them,
+  // rather than trusting that it would.
+  const rows = [
+    { action: "login.success", domain: "telemetry" },
+    { action: "telegram.command", domain: "p3" },
+    { action: "login.denied", domain: "telemetry" },
+    { action: "approval.confirm", domain: "p3" },
+    { action: "logout", domain: "telemetry" },
+    { action: "telegram.callback.resolve", domain: "p3" },
+    { action: "login.error", domain: "telemetry" },
+  ];
+
+  const collected = rows.filter((r) => isAuditAction(r.action));
+
+  assert.deepEqual(
+    collected.map((r) => r.domain),
+    ["p3", "p3", "p3"],
+    "a P3 evidence collector picked up auth telemetry",
+  );
+
+  // CONTROL both ways: the fixture contains both domains, and the filter keeps
+  // some and drops some. A filter that returned everything or nothing would
+  // otherwise satisfy a one-sided assertion.
+  assert.equal(rows.length - collected.length, 4, "nothing was filtered out");
+  assert.ok(collected.length > 0, "the filter dropped everything");
+});
