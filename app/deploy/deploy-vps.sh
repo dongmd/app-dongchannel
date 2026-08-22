@@ -164,21 +164,41 @@ load_env() {
 
 cd "$APP_DIR"
 
-# ─── 0. Re-exec from a stable copy ──────────────────────────────
-# Step 1 does `git reset --hard`, which rewrites this very file while bash is
-# still reading it. Bash reads scripts lazily by byte offset, so after the file
-# changes underneath it the remaining commands come from the new file at the
-# old offset -- which is how a fixed script kept running its own old logic.
-# Re-exec once from a copy outside the working tree.
+# ─── 0+1. Pull, THEN re-exec the version that was just pulled ───
+#
+# Two problems, one ordering.
+#
+# `git reset --hard` rewrites this file while bash is still reading it. Bash
+# reads scripts lazily by byte offset, so the remaining commands come from the
+# NEW file at the OLD offset -- which is how a fixed script kept running its own
+# old logic. Re-execing from a copy outside the working tree solves that.
+#
+# But the original order was copy-then-pull, which meant the copy was of the
+# PREVIOUS version: every deploy ran the script it had before it pulled, so a
+# fix to this file only took effect on the NEXT deploy. Two deploys failed
+# before that was noticed, and both looked like credential problems (M-10).
+#
+# So: pull first, then copy the pulled file and exec it. The run applies the
+# version it just fetched, and still never reads a file being rewritten
+# underneath it.
 if [ "${DEPLOY_REEXEC:-0}" != "1" ]; then
+  if [ "$SKIP_PULL" = "1" ]; then
+    echo "→ skip pull (SKIP_PULL=1)"
+  elif [ -d .git ]; then
+    echo "→ git pull"
+    git fetch origin "$BRANCH"
+    git reset --hard "origin/$BRANCH"
+  fi
   __copy="$(mktemp /tmp/deploy-vps.XXXXXX.sh)"
   cp "$0" "$__copy"
-  DEPLOY_REEXEC=1 exec bash "$__copy" "$@"
+  echo "→ re-exec the pulled deploy script ($(git -C "$APP_DIR" rev-parse --short HEAD 2>/dev/null || echo unknown))"
+  DEPLOY_REEXEC=1 SKIP_PULL=1 exec bash "$__copy" "$@"
 fi
 
 # ─── 1. Pull latest code ────────────────────────────────────────
+# Already done above for the git case; this remains for the initial clone.
 if [ "$SKIP_PULL" = "1" ]; then
-  echo "→ skip pull (SKIP_PULL=1)"
+  echo "→ skip pull (already pulled before re-exec)"
 elif [ -d .git ]; then
   echo "→ git pull"
   git fetch origin "$BRANCH"
@@ -327,6 +347,24 @@ if [ -d .next/standalone ]; then
 	fi
 
 	echo "   $__copied static files in place"
+
+	# ── Build provenance, stamped into the artefact itself ──
+	#
+	# `deploy-evidence.log` records which commit a deploy STARTED from, which is
+	# a claim about the past. This answers the question that actually gets asked
+	# during an incident: *what is the thing currently running built from?*
+	#
+	# Written into the standalone tree, so it travels with the artefact. If the
+	# checkout later moves ahead -- a `git pull` with no rebuild, exactly the
+	# ambiguity that prompted this -- the two values differ and say so, instead
+	# of the checkout commit being read as the running one.
+	__build_commit="$(git -C "$APP_DIR" rev-parse HEAD 2>/dev/null || echo unknown)"
+	{
+		echo "commit=$__build_commit"
+		echo "built_at=$(date -u +%FT%TZ)"
+		echo "node=$(node --version 2>/dev/null || echo unknown)"
+	} > .next/standalone/BUILD_INFO
+	echo "   build stamped: ${__build_commit:0:7}"
 
 	# `public/` is optional -- this app has none today, but a future one would
 	# be served from the same cwd and would fail the same way.
@@ -495,6 +533,10 @@ echo "→ deploy evidence"
   echo "deployed_at   $(date -u +%FT%TZ)"
   echo "commit        $(git -C "$APP_DIR" rev-parse --short HEAD 2>/dev/null || echo unknown)"
   echo "backup        ${__dump:-unknown}"
+  # Both halves of the provenance question, side by side, so a mismatch is
+  # visible in the log rather than something a reader has to go and check.
+  echo "checkout      $(git -C "$APP_DIR" rev-parse --short HEAD 2>/dev/null || echo unknown)"
+  echo "build         $(sed -n 's/^commit=//p' "$APP_DIR/app/.next/standalone/BUILD_INFO" 2>/dev/null | cut -c1-7 || echo unknown)"
   echo "local_health  ok"
   echo "external      ok"
   echo "root          $__root"
