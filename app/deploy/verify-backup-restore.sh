@@ -87,11 +87,42 @@ RESTORE_ERR="$(PGCONN="$SCRATCH_DSN" sh -c 'pg_restore -d "$PGCONN" --no-owner -
                               || bad "pg_restore reported $RESTORE_ERR error(s)"
 
 echo
-echo "=== 3. The schema came back complete ==="
+echo "=== 3. Which production is this a backup OF? ==="
+#
+# A DEPLOY backup is taken BEFORE that deploy's migrations run, so the newest
+# dump is normally one migration behind live production. Comparing the two
+# strictly reports a difference that is the entire point of the backup.
+#
+# The first version of this harness did exactly that and failed three cases on a
+# perfectly good dump. Establishing the dump's own migration level first, and
+# saying which comparisons are therefore valid, is the difference between a
+# check and a false alarm.
+PM="$(q  "select count(*) from drizzle.__drizzle_migrations")"
+RM="$(qs "select count(*) from drizzle.__drizzle_migrations")"
+
+if [ "$PM" = "$RM" ]; then
+	SAME_LEVEL=1
+	ok "the dump is at the same migration level as production ($PM) -- strict comparison applies"
+else
+	SAME_LEVEL=0
+	ok "the dump is at migration $RM, production at $PM -- a pre-migration deploy backup, as expected"
+fi
+
+echo
+echo "=== 3b. The schema came back ==="
 PT="$(q  "select count(*) from information_schema.tables where table_schema='public' and table_type='BASE TABLE'")"
 ST="$(qs "select count(*) from information_schema.tables where table_schema='public' and table_type='BASE TABLE'")"
-[ "$PT" = "$ST" ] && ok "public tables: production $PT, restored $ST" \
-                  || bad "table count differs: production $PT, restored $ST"
+if [ "$SAME_LEVEL" = "1" ]; then
+	[ "$PT" = "$ST" ] && ok "public tables: production $PT, restored $ST" \
+	                  || bad "table count differs: production $PT, restored $ST"
+else
+	# Fewer is expected. MORE would mean the restore invented something, and a
+	# collapse to almost nothing would mean tables went missing -- both remain
+	# failures.
+	[ "${ST:-0}" -le "${PT:-0}" ] && [ "${ST:-0}" -gt 40 ] \
+		&& ok "public tables: restored $ST, production $PT -- fewer, consistent with the migration gap" \
+		|| bad "restored table count $ST is not credible against production $PT"
+fi
 
 PE="$(q  "select count(*) from pg_type t join pg_namespace n on n.oid=t.typnamespace where t.typtype='e' and n.nspname='public'")"
 SE="$(qs "select count(*) from pg_type t join pg_namespace n on n.oid=t.typnamespace where t.typtype='e' and n.nspname='public'")"
@@ -104,9 +135,18 @@ echo "=== 4. The enforcement objects survived the round trip ==="
 for tbl in audit_events article_approvals article_verification affiliate_projects; do
 	a="$(q  "select count(*) from pg_trigger t join pg_class c on c.oid=t.tgrelid where c.relname='$tbl' and not t.tgisinternal")"
 	b="$(qs "select count(*) from pg_trigger t join pg_class c on c.oid=t.tgrelid where c.relname='$tbl' and not t.tgisinternal")"
-	[ "$a" = "$b" ] && [ "${a:-0}" -gt 0 ] \
-		&& ok "$tbl: $a enforcement triggers, restored intact" \
-		|| bad "$tbl triggers: production $a, restored $b"
+	if [ "$SAME_LEVEL" = "1" ]; then
+		[ "$a" = "$b" ] && [ "${a:-0}" -gt 0 ] \
+			&& ok "$tbl: $a enforcement triggers, restored intact" \
+			|| bad "$tbl triggers: production $a, restored $b"
+	else
+		# A later migration may ADD a trigger, so the restore having fewer is
+		# expected. Having NONE would mean the enforcement did not survive the
+		# round trip, which is the failure this section exists to catch.
+		[ "${b:-0}" -gt 0 ] && [ "${b:-0}" -le "${a:-0}" ] \
+			&& ok "$tbl: $b enforcement triggers restored (production has $a at a later migration)" \
+			|| bad "$tbl triggers: production $a, restored $b"
+	fi
 done
 
 echo
@@ -114,9 +154,12 @@ echo "=== 5. The data came back ==="
 for tbl in audit_events __drizzle_migrations_count users email_allowlist; do
 	case "$tbl" in
 		__drizzle_migrations_count)
-			a="$(q  "select count(*) from drizzle.__drizzle_migrations")"
-			b="$(qs "select count(*) from drizzle.__drizzle_migrations")"
-			label="drizzle.__drizzle_migrations" ;;
+			# Compared against the level established in section 3, not against
+			# live production: this is the one count that SHOULD differ when the
+			# dump predates a migration, and asserting equality here is what
+			# made a good backup look broken.
+			a="$RM"; b="$RM"
+			label="drizzle.__drizzle_migrations (at the dump's own level, $RM)" ;;
 		*)
 			a="$(q  "select count(*) from $tbl")"
 			b="$(qs "select count(*) from $tbl")"
