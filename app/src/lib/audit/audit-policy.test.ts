@@ -1,4 +1,6 @@
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import { test } from "node:test";
 
 import {
@@ -294,4 +296,61 @@ test("AC-12 CONTROL: the record carries the fields a forensic read needs", () =>
     assert.notEqual(v.record[field], undefined, `${field} missing from the record`);
   }
   assert.equal(v.record.at, NOW, "the record does not carry the supplied clock");
+});
+
+// ─────────────────────────────────────────────────────────────────
+// The two write guarantees are separable in the data  (owner decision 2026-08-22)
+// ─────────────────────────────────────────────────────────────────
+
+test("P3 audit actions and auth telemetry actions are DISJOINT", () => {
+  // `lib/auth/audit.ts` writes to the same table on a BEST-EFFORT basis: a
+  // failed write is swallowed so an audit outage cannot lock the owner out.
+  // P3-R06 AC-09 makes the opposite choice for P3 state changes.
+  //
+  // Both guarantees therefore coexist in one table, which is correct -- AC-01
+  // forbids a second log -- but only stays readable while the two vocabularies
+  // do not overlap. Asserted rather than described: a future action named
+  // "login.approve" would make a query for canonical P3 audit rows silently
+  // return best-effort ones.
+  // Read the list from source rather than importing it: `lib/auth/audit.ts` is
+  // correctly `server-only` -- it holds a live `db` handle -- and restructuring
+  // live auth code to make a test convenient is the wrong trade. Same technique
+  // as `refresh-worker-boundary.test.ts`.
+  //
+  // Comments are stripped first. Guards in this project have been tripped three
+  // times by prose in their own explanatory comments, and the doc block above
+  // that constant names every P3 action.
+  const src = readFileSync(join(process.cwd(), "src/lib/auth/audit.ts"), "utf8")
+    .replace(/\/\*[\s\S]*?\*\//g, " ")
+    .replace(/^\s*\/\/.*$/gm, " ");
+
+  const block = src.match(/AUTH_TELEMETRY_ACTIONS\s*=\s*\[([\s\S]*?)\]/);
+  const body = block?.[1];
+  assert.ok(body, "AUTH_TELEMETRY_ACTIONS not found -- this test would assert nothing");
+
+  const AUTH_TELEMETRY_ACTIONS = [...body.matchAll(/"([^"]+)"/g)].map((m) => m[1]);
+  assert.ok(
+    AUTH_TELEMETRY_ACTIONS.length >= 4,
+    `only ${AUTH_TELEMETRY_ACTIONS.length} telemetry actions parsed -- extraction is broken`,
+  );
+
+  for (const telemetry of AUTH_TELEMETRY_ACTIONS) {
+    assert.equal(
+      isAuditAction(telemetry),
+      false,
+      `"${telemetry}" is in BOTH vocabularies -- a P3 audit query would return a best-effort row`,
+    );
+  }
+
+  for (const canonical of AUDIT_ACTIONS) {
+    assert.equal(
+      (AUTH_TELEMETRY_ACTIONS as readonly string[]).includes(canonical),
+      false,
+      `"${canonical}" is claimed by auth telemetry as well`,
+    );
+  }
+
+  // CONTROL: both sets are non-empty, or disjointness is trivially true.
+  assert.ok(AUTH_TELEMETRY_ACTIONS.length > 0);
+  assert.ok(AUDIT_ACTIONS.length > 0);
 });
