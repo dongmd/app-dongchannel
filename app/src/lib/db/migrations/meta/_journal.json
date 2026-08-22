@@ -225,6 +225,13 @@
       "when": 1787278623521,
       "tag": "0031_p3r05_two_step",
       "breakpoints": true
+    },
+    {
+      "idx": 32,
+      "version": "7",
+      "when": 1787278623522,
+      "tag": "0032_p3r05_publish_intent",
+      "breakpoints": true
     }
   ]
 }

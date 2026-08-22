@@ -286,6 +286,87 @@ export function cancelApprove(): CancelResult {
   return { state: "CANCELLED", effects: [] };
 }
 
+// ─── AC-03: what each step actually produces ──────────────────────
+
+/**
+ * The publish intent — the durable hand-off artefact between `P3` and `P4`.
+ *
+ * `AC-08`, in this same requirement, says *"P3 stops at the queue"*, and
+ * `TDD-P3-R04/R05` is headed *"P3 stops at enqueue"*. Both place the enqueue
+ * inside `P3` and the consumption in `P4`, so the dependency runs **P4 → P3**:
+ * the consumer depends on the producer's artefact, which is the right
+ * direction. `P4-R08`/`P4-R09` are title-only stubs and have claimed nothing
+ * about this.
+ *
+ * Nothing here publishes. The publisher re-checks all three gates and treats
+ * this as input, never as authority.
+ */
+export interface PublishIntent {
+  readonly approvalId: string;
+  readonly articleId: string;
+  readonly revisionId: string;
+  /** The bytes consent was given to, carried so the publisher need not join. */
+  readonly payloadHash: string;
+  readonly destination: string;
+  /** Always `OPEN`. `CONSUMED` is `P4`'s word, and the type will not say it. */
+  readonly state: "OPEN";
+}
+
+/**
+ * `AC-03` step 3.
+ *
+ * Built from the pending action and the approval that step 2 created, so the
+ * intent cannot name anything the owner did not consent to — the article,
+ * revision and hash all come from records rather than from arguments.
+ */
+export function buildPublishIntent(p: PendingAction, approvalId: string): PublishIntent {
+  return {
+    approvalId,
+    articleId: p.articleId,
+    revisionId: p.revisionId,
+    payloadHash: p.payloadHash,
+    destination: p.destination,
+    state: "OPEN",
+  };
+}
+
+/**
+ * `AC-03` step 2 — what "lock the revision" means in this system.
+ *
+ * The phrase appears nowhere in the canonical documents except `AC-03` and the
+ * TDD line restating it, so its content comes from the surrounding model.
+ * Articles live in WordPress; this system cannot stop an edit there. What it can
+ * guarantee is that while a publish is pending for an article, **no other
+ * revision of that article can be queued behind it** — enforced by a partial
+ * unique index on open intents.
+ *
+ * Stated as a predicate so the meaning is testable rather than only described.
+ * Without it, "lock" would name nothing the approval does not already do:
+ * `P3-R04`'s own index permits two live approvals for two different revisions
+ * of one article.
+ */
+export function revisionIsLockedBy(
+  openIntents: readonly PublishIntent[],
+  articleId: string,
+): PublishIntent | null {
+  return openIntents.find((i) => i.articleId === articleId && i.state === "OPEN") ?? null;
+}
+
+/** `AC-03`. A second revision cannot be queued while one is pending. */
+export function canEnqueue(
+  openIntents: readonly PublishIntent[],
+  candidate: PublishIntent,
+): { readonly ok: boolean; readonly reason: string } {
+  const held = revisionIsLockedBy(openIntents, candidate.articleId);
+  if (!held) return { ok: true, reason: "no open intent for this article" };
+  if (held.revisionId === candidate.revisionId) {
+    // Same revision: the enqueue is idempotent rather than refused. A replayed
+    // confirm should find the queue already holding its work, not an error.
+    return { ok: false, reason: "already queued for this revision" };
+  }
+  return { ok: false, reason: "another revision of this article is already queued" };
+}
+
 // ─── AC-08: enqueuing is not publishing ───────────────────────────
 
 /**

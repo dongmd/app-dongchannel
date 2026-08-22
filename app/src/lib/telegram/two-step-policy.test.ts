@@ -22,8 +22,11 @@ import {
   beginApprove,
   cancelApprove,
   confirmPublish,
+  buildPublishIntent,
+  canEnqueue,
   confirmationSummary,
   isActionId,
+  revisionIsLockedBy,
   type PendingAction,
 } from "./two-step-policy";
 
@@ -169,6 +172,62 @@ describe("P3-R05 AC-03: only Confirm acts, and in this order", () => {
       assert.notEqual(v.outcome, "ACT");
       assert.equal(v.steps, undefined, `${v.outcome} returned steps`);
     }
+  });
+});
+
+describe("P3-R05 AC-03: the three steps produce real artefacts", () => {
+  const APPROVAL = "11111111-2222-4333-8444-555555555555";
+
+  it("the intent names what the owner consented to, from records not arguments", () => {
+    const i = buildPublishIntent(pending(), APPROVAL);
+    assert.equal(i.approvalId, APPROVAL);
+    assert.equal(i.articleId, "art-1");
+    assert.equal(i.revisionId, "rev-7");
+    assert.equal(i.payloadHash, "h-abc");
+    assert.equal(i.destination, "dongchannel.com/blog");
+  });
+
+  it("an intent is always OPEN -- CONSUMED is P4's word", () => {
+    assert.equal(buildPublishIntent(pending(), APPROVAL).state, "OPEN");
+  });
+
+  it("LOCK: an open intent holds the article", () => {
+    const i = buildPublishIntent(pending(), APPROVAL);
+    assert.equal(revisionIsLockedBy([i], "art-1")?.revisionId, "rev-7");
+    assert.equal(revisionIsLockedBy([i], "art-2"), null);
+  });
+
+  it("LOCK: another revision cannot queue behind a pending publish", () => {
+    const held = buildPublishIntent(pending(), APPROVAL);
+    const other = buildPublishIntent(pending({ revisionId: "rev-8" }), "22222222-2222-4333-8444-555555555555");
+    const v = canEnqueue([held], other);
+    assert.equal(v.ok, false);
+    assert.ok(v.reason.includes("another revision"));
+  });
+
+  it("LOCK: the same revision is idempotent, and says so distinctly", () => {
+    const held = buildPublishIntent(pending(), APPROVAL);
+    const same = buildPublishIntent(pending(), "22222222-2222-4333-8444-555555555555");
+    const v = canEnqueue([held], same);
+    assert.equal(v.ok, false);
+    assert.ok(v.reason.includes("already queued for this revision"));
+  });
+
+  it("LOCK: a different article is unaffected -- the lock is per article", () => {
+    const held = buildPublishIntent(pending(), APPROVAL);
+    const other = buildPublishIntent(pending({ articleId: "art-2" }), "22222222-2222-4333-8444-555555555555");
+    assert.equal(canEnqueue([held], other).ok, true);
+  });
+
+  it("CONTROL: with nothing queued, the enqueue is permitted", () => {
+    // Without this, every refusal above would equally be produced by a
+    // predicate that refused everything.
+    assert.equal(canEnqueue([], buildPublishIntent(pending(), APPROVAL)).ok, true);
+  });
+
+  it("the lock releases when the intent is no longer open", () => {
+    const resolved = { ...buildPublishIntent(pending(), APPROVAL), state: "CONSUMED" as unknown as "OPEN" };
+    assert.equal(revisionIsLockedBy([resolved], "art-1"), null);
   });
 });
 

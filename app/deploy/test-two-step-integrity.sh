@@ -204,8 +204,93 @@ else
 fi
 
 echo
+echo "=== 10b. AC-03: the durable publish intent, and the lock ==="
+# The full confirmed path, reused by each case below and rolled back each time.
+FULLPATH="$PENDING
+UPDATE telegram_pending_actions SET confirmed_at = now() WHERE id = '$ACT1';
+INSERT INTO article_approvals (id, article_id, revision_id, approved_by, payload_hash, callback_nonce, expires_at)
+VALUES ('11111111-2222-4333-8444-555555555555','art-1','rev-7','4242','$(printf 'f%.0s' $(seq 64))','n1', now() + interval '1 hour');
+"
+
+out="$(run_tx "$FULLPATH
+INSERT INTO article_publish_intents (approval_id, article_id, revision_id, payload_hash, destination)
+VALUES ('11111111-2222-4333-8444-555555555555','art-1','rev-7','$(printf 'f%.0s' $(seq 64))','dongchannel.com');
+SELECT 'enqueued';")"
+printf '%s' "$out" | grep -q 'enqueued' \
+	&& ok "AC-03" "a confirmed approval yields a durable publish intent" \
+	|| ctl "AC-03" "the intent could not be created at all: $(printf '%s' "$out" | tail -2 | tr '\n' ' ')"
+
+# The intent must match its approval. Denormalised columns that disagree with
+# their source would have the publisher act on a revision nobody consented to.
+out="$(run_tx "$FULLPATH
+INSERT INTO article_publish_intents (approval_id, article_id, revision_id, payload_hash, destination)
+VALUES ('11111111-2222-4333-8444-555555555555','art-1','rev-9','$(printf 'f%.0s' $(seq 64))','d');")"
+printf '%s' "$out" | grep -qi 'same article, revision and hash' \
+	&& ok "AC-03" "an intent naming a different revision than its approval is refused" \
+	|| bad "AC-03" "a mismatched intent was accepted: $(printf '%s' "$out" | head -1)"
+
+# THE LOCK: at most one open intent per article.
+out="$(run_tx "$FULLPATH
+INSERT INTO article_approvals (id, article_id, revision_id, approved_by, payload_hash, callback_nonce, expires_at)
+VALUES ('22222222-2222-4333-8444-555555555555','art-1','rev-8','4242','$(printf 'e%.0s' $(seq 64))','n2', now() + interval '1 hour');
+INSERT INTO article_publish_intents (approval_id, article_id, revision_id, payload_hash, destination)
+VALUES ('11111111-2222-4333-8444-555555555555','art-1','rev-7','$(printf 'f%.0s' $(seq 64))','d');
+INSERT INTO article_publish_intents (approval_id, article_id, revision_id, payload_hash, destination)
+VALUES ('22222222-2222-4333-8444-555555555555','art-1','rev-8','$(printf 'e%.0s' $(seq 64))','d');")"
+printf '%s' "$out" | grep -qi 'publish_intents_one_open_per_article' \
+	&& ok "AC-03" "LOCK: a second revision cannot queue while one is pending" \
+	|| bad "AC-03" "two open intents coexisted for one article: $(printf '%s' "$out" | head -1)"
+
+# Idempotent enqueue: one approval, one intent.
+out="$(run_tx "$FULLPATH
+INSERT INTO article_publish_intents (approval_id, article_id, revision_id, payload_hash, destination)
+VALUES ('11111111-2222-4333-8444-555555555555','art-1','rev-7','$(printf 'f%.0s' $(seq 64))','d');
+INSERT INTO article_publish_intents (approval_id, article_id, revision_id, payload_hash, destination)
+VALUES ('11111111-2222-4333-8444-555555555555','art-1','rev-7','$(printf 'f%.0s' $(seq 64))','d');")"
+printf '%s' "$out" | grep -qi 'publish_intents_approval_uq' \
+	&& ok "AC-03" "one approval yields at most one intent -- a replay cannot double-queue" \
+	|| bad "AC-03" "an approval produced two intents: $(printf '%s' "$out" | head -1)"
+
+# An intent with no consent behind it.
+out="$(run_tx "INSERT INTO article_publish_intents (approval_id, article_id, revision_id, payload_hash, destination)
+VALUES ('99999999-9999-4999-8999-999999999999','art-1','rev-7','h','d');")"
+printf '%s' "$out" | grep -qi 'needs an existing approval' \
+	&& ok "AC-03" "an intent with no approval behind it is refused" \
+	|| bad "AC-03" "an unauthorised intent was created: $(printf '%s' "$out" | head -1)"
+
+echo
+echo "=== 10c. AC-08: a Telegram action may not consume an intent ==="
+out="$(run_tx "$FULLPATH
+SET LOCAL dc.in_telegram_action = 'on';
+INSERT INTO article_publish_intents (approval_id, article_id, revision_id, payload_hash, destination, state, resolved_at)
+VALUES ('11111111-2222-4333-8444-555555555555','art-1','rev-7','$(printf 'f%.0s' $(seq 64))','d','CONSUMED', now());")"
+printf '%s' "$out" | grep -qi 'may not consume a publish intent' \
+	&& ok "AC-08" "a Telegram action cannot enqueue something already consumed" \
+	|| bad "AC-08" "a Telegram action consumed an intent: $(printf '%s' "$out" | head -1)"
+
+out="$(run_tx "$FULLPATH
+INSERT INTO article_publish_intents (id, approval_id, article_id, revision_id, payload_hash, destination)
+VALUES ('33333333-2222-4333-8444-555555555555','11111111-2222-4333-8444-555555555555','art-1','rev-7','$(printf 'f%.0s' $(seq 64))','d');
+SET LOCAL dc.in_telegram_action = 'on';
+UPDATE article_publish_intents SET state = 'CONSUMED', resolved_at = now() WHERE id = '33333333-2222-4333-8444-555555555555';")"
+printf '%s' "$out" | grep -qi 'may not consume a publish intent' \
+	&& ok "AC-08" "nor mark an existing one consumed -- consumption is P4's act" \
+	|| bad "AC-08" "a Telegram action consumed an existing intent: $(printf '%s' "$out" | head -1)"
+
+# CONTROL: the publisher, with no Telegram flag, CAN consume -- or P4 could
+# never run and every refusal above would be explained by a blanket bar.
+out="$(run_tx "$FULLPATH
+INSERT INTO article_publish_intents (id, approval_id, article_id, revision_id, payload_hash, destination)
+VALUES ('33333333-2222-4333-8444-555555555555','11111111-2222-4333-8444-555555555555','art-1','rev-7','$(printf 'f%.0s' $(seq 64))','d');
+UPDATE article_publish_intents SET state = 'CONSUMED', resolved_at = now() WHERE id = '33333333-2222-4333-8444-555555555555';
+SELECT 'consumed';")"
+printf '%s' "$out" | grep -q 'consumed' \
+	&& ok "AC-08" "CONTROL: the publisher can consume -- the guard is scoped, not blanket" \
+	|| ctl "AC-08" "nobody can consume an intent; P4 could never run: $(printf '%s' "$out" | head -2 | tr '\n' ' ')"
+
+echo
 echo "=== 11. Nothing was left behind ==="
-for t in telegram_pending_actions article_approvals; do
+for t in telegram_pending_actions article_approvals article_publish_intents; do
 	n="$(run_sql "select count(*) from $t")"
 	[ "${n:-x}" = "0" ] && ok "" "$t is empty -- every case rolled back" \
 	                    || bad "" "$t holds $n rows after the run"
