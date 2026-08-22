@@ -34,9 +34,20 @@ BASELINE="${1:-22f546b}"   # the deployed commit the inventory was taken against
 # `app/0`; this guard is what caught it, and the follow-up commit removed it.
 # Ending the range at the first commit would re-report a defect already fixed,
 # which trains the reader to ignore the guard.
+# And the last one that changed something this guard actually EVALUATES. Commits
+# that only edit this script carry the id too -- including the one that fixed the
+# defaulting -- and ending the range on one of those would sweep in every later
+# requirement all over again, which is the exact bug being fixed. A check that
+# extends its own scope by being maintained is not a check.
 if [ "${2:-}" = "" ]; then
-	HEAD_REF="$(git log --format='%H %s' | grep -m1 '(P3-R08)' | cut -d' ' -f1)"
-	[ -n "$HEAD_REF" ] || fail "cannot locate any commit carrying (P3-R08)"
+	HEAD_REF=""
+	for c in $(git log --format='%H %s' | grep '(P3-R08)' | cut -d' ' -f1); do
+		if git diff-tree --no-commit-id --name-only -r "$c" \
+			| grep -qv 'deploy/check-r08-scope\.sh$'; then
+			HEAD_REF="$c"; break
+		fi
+	done
+	[ -n "$HEAD_REF" ] || fail "no (P3-R08) commit changes anything this guard evaluates"
 else
 	HEAD_REF="$2"
 fi
