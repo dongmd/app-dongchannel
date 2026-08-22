@@ -30,6 +30,15 @@
 // query will ever look for.
 
 export const AUDIT_ACTIONS = [
+  // P3-R01 AC-07/AC-08, added 2026-08-22. The transport answers "did Telegram
+  // send this"; the gateway answers "may this caller act". Collapsing them into
+  // one action would make an attack on the endpoint indistinguishable from a
+  // misconfigured allowlist -- two very different things to be woken up for.
+  //
+  // The vocabulary being CLOSED means an addition is deliberate and reviewed,
+  // not that it can never grow. This is the mechanism working.
+  "telegram.transport.accept",
+  "telegram.transport.refuse",
   "telegram.gateway.allow",
   "telegram.gateway.deny",
   "telegram.command",
