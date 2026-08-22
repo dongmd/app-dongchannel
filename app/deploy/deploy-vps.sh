@@ -55,10 +55,23 @@ fail() {
 # as PG* variables instead, which are readable only by this user.
 dump_database() {
   local target="$1"
-  [ -n "${DATABASE_URL:-}" ] || { echo "DATABASE_URL not set" >&2; return 1; }
+
+  # The backup is taken with the SCHEMA OWNER's credential, not the runtime's.
+  #
+  # `pg_dump` can only dump what its role can read, and it fails loudly rather
+  # than dumping less -- which is how this surfaced: after Q35 separated the
+  # roles, `opsdash` lost USAGE on the `drizzle` schema and the dump refused.
+  #
+  # The uncomfortable part is what it revealed about BEFORE. The runtime role
+  # happened to own every table, so the dump was complete by accident rather
+  # than by design. A backup scoped to whatever the application can see is a
+  # backup that would silently shrink the first time a table was owned
+  # elsewhere, and nobody would notice until a restore.
+  local src="${MIGRATION_DATABASE_URL:-${DATABASE_URL:-}}"
+  [ -n "$src" ] || { echo "neither MIGRATION_DATABASE_URL nor DATABASE_URL is set" >&2; return 1; }
 
   local rest cred hostpart
-  rest="${DATABASE_URL#*://}"
+  rest="${src#*://}"
   cred="${rest%%@*}"
   hostpart="${rest#*@}"
 
