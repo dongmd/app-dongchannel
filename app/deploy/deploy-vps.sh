@@ -364,7 +364,13 @@ echo "→ backup database"
 # The wrapper names its own destination, so nothing here passes a path: a
 # destination argument would let this user have a root process write anywhere.
 if [ "$(id -u)" != "0" ] && wrapper_available "$BACKUP_WRAPPER"; then
-  sudo -n "$BACKUP_WRAPPER" || fail "backup failed -- refusing to migrate without one"
+  # The wrapper names its own destination and prints it, so the path is captured
+  # from its output rather than constructed here -- two places building the same
+  # filename is two places to disagree about it.
+  __backup_out="$(sudo -n "$BACKUP_WRAPPER")"     || fail "backup failed -- refusing to migrate without one"
+  __dump="${__backup_out##*: }"
+  __dump="${__dump%% (*}"
+  echo "   $__dump"
 else
   __stamp="$(date -u +%Y%m%d-%H%M%S)"
   __dump="$BACKUP_DIR/dongchannel_ops-deploy-${__stamp}.dump"
@@ -488,7 +494,7 @@ echo "→ deploy evidence"
 {
   echo "deployed_at   $(date -u +%FT%TZ)"
   echo "commit        $(git -C "$APP_DIR" rev-parse --short HEAD 2>/dev/null || echo unknown)"
-  echo "backup        $__dump"
+  echo "backup        ${__dump:-unknown}"
   echo "local_health  ok"
   echo "external      ok"
   echo "root          $__root"
