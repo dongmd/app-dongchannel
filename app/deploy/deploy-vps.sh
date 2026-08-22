@@ -199,6 +199,33 @@ fi
 echo "→ load environment"
 load_env .env || fail "could not load .env"
 
+# The migration credential is loaded SEPARATELY and never from .env.
+#
+# Post-deployment verification found `MIGRATION_DATABASE_URL` sitting in
+# `/home/opssite/.env`, which the Next standalone server reads AT RUNTIME --
+# proven by measurement, not assumed: `DATABASE_URL` is absent from the running
+# process's exec environment (`/proc/<pid>/environ`) and the application reaches
+# the database anyway, so it can only be loading that file itself. Anything the
+# app loads from that file lands in `process.env`, so the app process could read
+# the migrator DSN and issue the DDL that Q35 exists to deny it. A credential
+# separation the application can undo by reading a file is not a separation.
+#
+# `.env.migrate` is never symlinked into the app directory and never copied into
+# the build output, so it cannot be loaded by the runtime.
+ENV_SOURCE="$(readlink -f .env 2>/dev/null || echo .env)"
+if grep -q '^MIGRATION_DATABASE_URL=' "$ENV_SOURCE" 2>/dev/null; then
+  fail "MIGRATION_DATABASE_URL is in $ENV_SOURCE, which the running application loads.
+       Move it to \$MIGRATION_ENV_FILE (default /home/opssite/.env.migrate, mode 600).
+       Leaving it there would let the app process read the credential that Q35 exists
+       to keep away from it -- role separation enforced in the database and undone by
+       a file read."
+fi
+
+MIGRATION_ENV_FILE="${MIGRATION_ENV_FILE:-/home/opssite/.env.migrate}"
+if [ -f "$MIGRATION_ENV_FILE" ]; then
+  load_env "$MIGRATION_ENV_FILE" || fail "could not load $MIGRATION_ENV_FILE"
+fi
+
 # ─── 4. QUALITY GATES — nothing may touch the database above this line ──
 #
 # TD-18. The previous order migrated first and built second, so a compile

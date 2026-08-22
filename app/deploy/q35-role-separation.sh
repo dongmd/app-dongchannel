@@ -27,9 +27,9 @@
 #
 # ## The password
 #
-# Generated here and written straight into `.env`. It never appears on a command
-# line (where `ps` would show it), never in a shell history, and never in
-# output.
+# Generated here and written straight into `/home/opssite/.env.migrate`. It never
+# appears on a command line (where `ps` would show it), never in a shell history,
+# and never in output. Deliberately NOT `.env` — see the note at the write.
 #
 # ## Rollback
 #
@@ -37,7 +37,7 @@
 #     -c 'REASSIGN OWNED BY dc_migrator TO opsdash' \
 #     -c 'GRANT CREATE ON SCHEMA public TO opsdash'
 #   sudo -u postgres psql -c 'DROP ROLE dc_migrator'
-#   sed -i '/^MIGRATION_DATABASE_URL=/d' /home/opssite/.env
+#   rm -f /home/opssite/.env.migrate
 #
 # That returns the database to exactly the shape the pre-change dump captured,
 # without needing the dump.
@@ -46,6 +46,7 @@ set -euo pipefail
 
 DB=dongchannel_ops
 ENV_FILE=/home/opssite/.env
+MIG_ENV_FILE=/home/opssite/.env.migrate
 
 [ "$(id -u)" = "0" ] || { echo "FAIL: run as root (sudo)" >&2; exit 1; }
 
@@ -94,12 +95,26 @@ ALTER DEFAULT PRIVILEGES FOR ROLE dc_migrator IN SCHEMA public
   GRANT USAGE, SELECT ON SEQUENCES TO opsdash;
 SQL
 
-# Hand the credential to the deploy through .env, never through a shell line.
+# Hand the credential to the deploy through a file, never through a shell line.
+#
+# A SEPARATE file from `.env`, and this is the whole point rather than tidiness.
+# The Next standalone server loads `.env` AT RUNTIME -- measured: DATABASE_URL is
+# absent from the running process's exec environment and the app reaches the
+# database regardless. Everything in that file therefore lands in the app's
+# `process.env`. Putting the migrator DSN there would let the application read
+# the credential whose entire purpose is to be unavailable to it, and the role
+# separation would hold in the database while being undone by a file read.
+#
+# `.env.migrate` is never symlinked into the app directory, never copied into
+# `.next/standalone`, and is read only by deploy-vps.sh.
 sed -i '/^MIGRATION_DATABASE_URL=/d' "$ENV_FILE"
-printf 'MIGRATION_DATABASE_URL=postgres://dc_migrator:%s@127.0.0.1:5432/%s\n' "$PW" "$DB" >> "$ENV_FILE"
 chown opssite:opssite "$ENV_FILE"
 chmod 600 "$ENV_FILE"
 
+printf 'MIGRATION_DATABASE_URL=postgres://dc_migrator:%s@127.0.0.1:5432/%s\n' "$PW" "$DB" > "$MIG_ENV_FILE"
+chown opssite:opssite "$MIG_ENV_FILE"
+chmod 600 "$MIG_ENV_FILE"
+
 unset PW
 
-echo "role separation applied; MIGRATION_DATABASE_URL written to .env"
+echo "role separation applied; MIGRATION_DATABASE_URL written to $MIG_ENV_FILE (not .env)"

@@ -132,6 +132,21 @@ run_case "migration fails → PM2 not restarted" fail "RESTART" -- \
   CMD_BUILD="$(ok BUILD)" CMD_BACKUP="$(ok BACKUP)" CMD_MIGRATE="$(bad MIGRATE)" \
   CMD_RESTART="$(ok RESTART)"
 
+# Q35 again, from the other side. The credential being PRESENT is not enough --
+# it must not be present in the file the running application loads. Post-
+# deployment verification found it in `.env`, which the Next standalone server
+# reads at runtime, so the app process could have read the DSN whose whole
+# purpose is to be unavailable to it. Separation enforced in the database and
+# undone by a file read is not separation.
+printf 'DEPLOY_TEST=1
+MIGRATION_DATABASE_URL=postgres://leak@127.0.0.1/leak
+' > "$SANDBOX/app/.env"
+run_case "MIGRATION_DATABASE_URL inside .env -> refuse to deploy (Q35)" fail "BUILD MIGRATE RESTART" --   SKIP_HEALTH=1   CMD_LINT="$(ok LINT)" CMD_TYPECHECK="$(ok TYPECHECK)" CMD_TEST="$(ok TEST)"   CMD_BUILD="$(ok BUILD)" CMD_BACKUP="$(ok BACKUP)" CMD_MIGRATE="$(ok MIGRATE)"   CMD_RESTART="$(ok RESTART)"
+# CONTROL: restore the clean fixture, or every later case inherits the leak and
+# fails for a reason that has nothing to do with what it is testing.
+printf 'DEPLOY_TEST=1
+' > "$SANDBOX/app/.env"
+
 # Health checks run for real here, against a closed port.
 run_case "health fails → failure exit, no 'Deploy done'" fail "" -- \
   APP_PORT=9 PUBLIC_URL="http://127.0.0.1:9" \
