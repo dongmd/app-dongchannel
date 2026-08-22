@@ -269,8 +269,25 @@ echo "→ pending migrations"
 ls -1 src/lib/db/migrations/*.sql 2>/dev/null | tail -3 | sed 's/^/   /' || true
 
 # ─── 7. Migrate ─────────────────────────────────────────────────
+#
+# Migrations run as the SCHEMA OWNER, not as the runtime role.
+#
+# Q35 / AUDIT-ROLE-SEPARATION separated the two: `opsdash` no longer owns the
+# tables and has no CREATE on the schema, so it can no longer disable the
+# append-only enforcement -- and equally, can no longer run a migration. The DDL
+# authority lives in `dc_migrator`, whose DSN is `MIGRATION_DATABASE_URL` in
+# `.env`.
+#
+# If that variable is absent the deploy FAILS rather than falling back to
+# DATABASE_URL. A fallback would mean a machine where the roles were never
+# separated silently migrates as the runtime role, which is the exact state the
+# gate exists to end -- and it would do so while reporting success.
 echo "→ drizzle migrate"
-eval "$CMD_MIGRATE" || fail "migration failed -- app NOT restarted, still serving the previous version"
+if [ -z "${MIGRATION_DATABASE_URL:-}" ]; then
+  fail "MIGRATION_DATABASE_URL is not set -- refusing to migrate as the runtime role (Q35)"
+fi
+DATABASE_URL="$MIGRATION_DATABASE_URL" eval "$CMD_MIGRATE" \
+  || fail "migration failed -- app NOT restarted, still serving the previous version"
 
 # ─── 8. Seed (bootstrap only, opt-in) ───────────────────────────
 if [ "${DEPLOY_RUN_SEED:-0}" = "1" ]; then

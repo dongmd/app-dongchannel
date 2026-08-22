@@ -85,43 +85,49 @@ echo "Deploy guard regression suite"
 echo
 
 run_case "CONTROL: all gates green → whole pipeline runs" ok "" -- \
-  SKIP_HEALTH=1 \
+  SKIP_HEALTH=1 MIGRATION_DATABASE_URL=postgres://fixture@127.0.0.1/fixture \
   CMD_LINT="$(ok LINT)" CMD_TYPECHECK="$(ok TYPECHECK)" CMD_TEST="$(ok TEST)" \
   CMD_BUILD="$(ok BUILD)" CMD_BACKUP="$(ok BACKUP)" CMD_MIGRATE="$(ok MIGRATE)" \
   CMD_RESTART="$(ok RESTART)"
 
 run_case "build fails → no backup, no migration, no restart" fail "BACKUP MIGRATE RESTART" -- \
-  SKIP_HEALTH=1 \
+  SKIP_HEALTH=1 MIGRATION_DATABASE_URL=postgres://fixture@127.0.0.1/fixture \
   CMD_LINT="$(ok LINT)" CMD_TYPECHECK="$(ok TYPECHECK)" CMD_TEST="$(ok TEST)" \
   CMD_BUILD="$(bad BUILD)" CMD_BACKUP="$(ok BACKUP)" CMD_MIGRATE="$(ok MIGRATE)" \
   CMD_RESTART="$(ok RESTART)"
 
 run_case "lint fails → migration never runs" fail "BACKUP MIGRATE RESTART" -- \
-  SKIP_HEALTH=1 \
+  SKIP_HEALTH=1 MIGRATION_DATABASE_URL=postgres://fixture@127.0.0.1/fixture \
   CMD_LINT="$(bad LINT)" CMD_TYPECHECK="$(ok TYPECHECK)" CMD_TEST="$(ok TEST)" \
   CMD_BUILD="$(ok BUILD)" CMD_BACKUP="$(ok BACKUP)" CMD_MIGRATE="$(ok MIGRATE)" \
   CMD_RESTART="$(ok RESTART)"
 
 run_case "typecheck fails → migration never runs" fail "BACKUP MIGRATE RESTART" -- \
-  SKIP_HEALTH=1 \
+  SKIP_HEALTH=1 MIGRATION_DATABASE_URL=postgres://fixture@127.0.0.1/fixture \
   CMD_LINT="$(ok LINT)" CMD_TYPECHECK="$(bad TYPECHECK)" CMD_TEST="$(ok TEST)" \
   CMD_BUILD="$(ok BUILD)" CMD_BACKUP="$(ok BACKUP)" CMD_MIGRATE="$(ok MIGRATE)" \
   CMD_RESTART="$(ok RESTART)"
 
 run_case "tests fail → migration never runs" fail "BACKUP MIGRATE RESTART" -- \
-  SKIP_HEALTH=1 \
+  SKIP_HEALTH=1 MIGRATION_DATABASE_URL=postgres://fixture@127.0.0.1/fixture \
   CMD_LINT="$(ok LINT)" CMD_TYPECHECK="$(ok TYPECHECK)" CMD_TEST="$(bad TEST)" \
   CMD_BUILD="$(ok BUILD)" CMD_BACKUP="$(ok BACKUP)" CMD_MIGRATE="$(ok MIGRATE)" \
   CMD_RESTART="$(ok RESTART)"
 
 run_case "backup fails → migration never runs" fail "MIGRATE RESTART" -- \
-  SKIP_HEALTH=1 \
+  SKIP_HEALTH=1 MIGRATION_DATABASE_URL=postgres://fixture@127.0.0.1/fixture \
   CMD_LINT="$(ok LINT)" CMD_TYPECHECK="$(ok TYPECHECK)" CMD_TEST="$(ok TEST)" \
   CMD_BUILD="$(ok BUILD)" CMD_BACKUP="$(bad BACKUP)" CMD_MIGRATE="$(ok MIGRATE)" \
   CMD_RESTART="$(ok RESTART)"
 
-run_case "migration fails → PM2 not restarted" fail "RESTART" -- \
+run_case "no MIGRATION_DATABASE_URL → migration never runs (Q35)" fail "MIGRATE RESTART" -- \
   SKIP_HEALTH=1 \
+  CMD_LINT="$(ok LINT)" CMD_TYPECHECK="$(ok TYPECHECK)" CMD_TEST="$(ok TEST)" \
+  CMD_BUILD="$(ok BUILD)" CMD_BACKUP="$(ok BACKUP)" CMD_MIGRATE="$(ok MIGRATE)" \
+  CMD_RESTART="$(ok RESTART)"
+
+run_case "migration fails → PM2 not restarted" fail "RESTART" -- \
+  SKIP_HEALTH=1 MIGRATION_DATABASE_URL=postgres://fixture@127.0.0.1/fixture \
   CMD_LINT="$(ok LINT)" CMD_TYPECHECK="$(ok TYPECHECK)" CMD_TEST="$(ok TEST)" \
   CMD_BUILD="$(ok BUILD)" CMD_BACKUP="$(ok BACKUP)" CMD_MIGRATE="$(bad MIGRATE)" \
   CMD_RESTART="$(ok RESTART)"
