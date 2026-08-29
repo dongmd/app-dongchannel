@@ -81,7 +81,18 @@ for op in "update article_approvals set payload_hash='$H2'" \
           "truncate article_approvals"; do
   out="$(run "$op")"
   label="$(echo "$op" | awk '{print toupper($1)}')"
-  if printf '%s' "$out" | grep -qi "immutable"; then
+  # TRUNCATE is a second case: P3-R05's migration 0032 added
+  # article_publish_intents.approval_id REFERENCES article_approvals(id), and
+  # Postgres refuses to TRUNCATE a table another table's foreign key points at,
+  # checked before any trigger runs at all -- so the refusal now carries
+  # Postgres's own FK message rather than "immutable". That is a STRENGTHENING,
+  # not a gap: TRUNCATE is now unconditionally impossible for a second,
+  # independent reason, on top of the trigger. UPDATE and DELETE are
+  # unaffected -- BEFORE triggers fire before FK checks, so they still hit the
+  # immutability guard directly, and this case does not relax that.
+  if [ "$label" = "TRUNCATE" ] && printf '%s' "$out" | grep -qi "foreign key constraint"; then
+    ok "AC-08" "$label refused by the foreign key from article_publish_intents (P3-R05) -- a second, independent guard on top of the immutability trigger"
+  elif printf '%s' "$out" | grep -qi "immutable"; then
     ok "AC-08" "$label refused by the database"
   elif printf '%s' "$out" | grep -qi "error"; then
     bad "AC-08" "$label failed, but not with the immutability guard: $out"
