@@ -20,3 +20,4 @@ export * from "./topic-cluster";
 export * from "./trend-radar";
 export * from "./discovery-candidate";
 export * from "./content-family";
+export * from "./agents";
