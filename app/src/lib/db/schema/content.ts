@@ -68,6 +68,12 @@ export const contentModePolicies = pgTable(
 
     // Who changed it and why. A TTL that quietly tripled is otherwise
     // indistinguishable from content that stopped going stale.
+    // P4-R07 AC-02. The version this row was written under, travelling WITH
+    // the row -- the same discipline P2-R03 applies to a score. A version held
+    // only in code answers "what are the rules now", never "what were they when
+    // this was decided".
+    policyVersion: text("policy_version").notNull().default("v0-2026-08-20"),
+
     updatedBy: text("updated_by").notNull(),
     reason: text("reason"),
 
