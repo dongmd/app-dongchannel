@@ -1,4 +1,4 @@
-import { integer, jsonb, pgEnum, pgTable, text, timestamp, uniqueIndex, uuid } from "drizzle-orm/pg-core";
+import { index, integer, jsonb, pgEnum, pgTable, text, timestamp, uniqueIndex, uuid } from "drizzle-orm/pg-core";
 import { sql } from "drizzle-orm";
 import { profiles } from "./profiles";
 import { hermesMessages, hermesSessions } from "./hermes";
@@ -87,3 +87,32 @@ export type TaskRow = typeof tasks.$inferSelect;
 export type NewTaskRow = typeof tasks.$inferInsert;
 export type TaskStatus = (typeof taskStatusEnum.enumValues)[number];
 export type TaskReviewStatus = (typeof taskReviewStatusEnum.enumValues)[number];
+
+/**
+ * P4-R12 — one row per retry attempt.
+ *
+ * `AC-03`: a retry is a new attempt, not a rewritten history. A `retry_count`
+ * column bumped in place would lose who asked, when, and from which failure —
+ * by the third retry the first two are unrecoverable. Constraints live in
+ * `0036_p4r12_task_retry.sql`.
+ */
+export const taskRetryAttempts = pgTable(
+  "task_retry_attempts",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    taskId: uuid("task_id").notNull(),
+    /** 1 for the first retry. The original run is not an attempt of this table. */
+    attempt: integer("attempt").notNull(),
+    fromStatus: text("from_status").notNull(),
+    requestedBy: text("requested_by").notNull(),
+    requestedAt: timestamp("requested_at", { withTimezone: true }).notNull().defaultNow(),
+    policyVersion: integer("policy_version").notNull(),
+    /** NULL = still running. A real state, not a missing value. */
+    outcome: text("outcome"),
+    finishedAt: timestamp("finished_at", { withTimezone: true }),
+  },
+  (t) => [
+    uniqueIndex("task_retry_attempts_task_attempt_uq").on(t.taskId, t.attempt),
+    index("task_retry_attempts_task_idx").on(t.taskId, t.requestedAt),
+  ],
+);

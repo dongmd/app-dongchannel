@@ -53,6 +53,13 @@ export const AUDIT_ACTIONS = [
   "preview.use",
   "preview.revoke",
   "preview.refuse",
+  // P4-R12, added 2026-08-30. Re-running a FAILED task is an execution act by a
+  // named person, and AC-05 requires it audited through this writer and no
+  // other. Refusals are a separate action from the act: a retry someone was not
+  // allowed to make and a retry that could not be made are different events,
+  // and collapsing them would make "who kept trying" unanswerable.
+  "task.retry",
+  "task.retry.refuse",
 ] as const;
 
 export type AuditAction = (typeof AUDIT_ACTIONS)[number];
