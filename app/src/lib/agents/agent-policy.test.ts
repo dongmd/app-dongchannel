@@ -65,11 +65,19 @@ describe("AC-01 — the registry is closed", () => {
     assert.equal(r.ok === false && r.reason, "AGENT_NOT_REGISTERED");
   });
 
-  it("the PRODUCTION registry is empty, so nothing can be run today", () => {
-    // Not a placeholder assertion. P4-R01 is the framework; no agent has been
-    // specified. If this ever fails, an agent was registered without the
-    // requirement that defines it — which is the CANONICAL_SCOPE_GAP class.
-    assert.equal(AGENT_REGISTRY.size, 0);
+  it("the PRODUCTION registry holds exactly the agents their requirements define", () => {
+    // This asserted `size === 0` while P4-R01 was the only shipped requirement,
+    // and P4-R02 legitimately broke it by registering the first agent -- the
+    // M-15 class again, a fixture pinned to a fact a later requirement exists
+    // to change.
+    //
+    // Rewritten to the claim that does NOT expire: every registered agent is
+    // one a requirement defines. An agent appearing here without one is the
+    // CANONICAL_SCOPE_GAP class -- code in production that no requirement owns.
+    const OWNED = new Set(["aff.project-research"]); // P4-R02
+    for (const name of AGENT_REGISTRY.keys()) {
+      assert.ok(OWNED.has(name), `${name} is registered but no requirement defines it`);
+    }
     assert.equal(resolveAgent(AGENT_REGISTRY, "anything").ok, false);
   });
 

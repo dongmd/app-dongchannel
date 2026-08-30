@@ -154,14 +154,44 @@ export function buildRegistry(specs: readonly AgentSpec[]): Registry {
 }
 
 /**
+ * `P4-R02`'s agent. The first, and for now the only, entry.
+ *
+ * Declared here rather than in `project-research-policy.ts` so the registry
+ * stays the single place an agent comes into existence — `AC-01`'s closed set
+ * means nothing, if a module can register itself.
+ *
+ * The tool list is narrow on purpose: this agent reads pages. It has no
+ * database tool at all, so `AC-07`'s "writes only to research and evidence
+ * tables" is not something it could violate by calling the wrong thing — the
+ * writes are performed by the CALLER, from a plan this agent's output cannot
+ * name a destination in.
+ */
+export const PROJECT_RESEARCH_AGENT: AgentSpec = {
+  name: "aff.project-research",
+  profile: "aff",
+  taskClass: "RESEARCH",
+  tools: ["http.fetchPage"],
+  output: {
+    fields: [
+      { name: "projectId", type: "string", required: true },
+      // The facts array is validated in depth by P4-R02's own
+      // `validateResearch`. This schema is P4-R01's coarse gate; the fine one
+      // is the requirement's, because the three-state fact shape is R02's
+      // business and the framework should not know about it.
+      { name: "facts", type: "string", required: false },
+      { name: "summary", type: "string", required: false },
+    ],
+  },
+};
+
+/**
  * The production registry.
  *
- * **Empty, and correctly so.** `P4-R01` is the framework; no agent has been
- * specified yet. `P4-R02` adds the first entry. An empty registry is not an
- * unfinished one — combined with `resolveAgent` below it means every attempt to
- * run an agent today is refused, which is exactly what AC-01 asks for.
+ * `P4-R01` shipped this EMPTY, and deliberately so: the framework existed
+ * before any agent was specified. `P4-R02` adds the first entry, which is the
+ * moment the framework stops being inert.
  */
-export const AGENT_REGISTRY: Registry = buildRegistry([]);
+export const AGENT_REGISTRY: Registry = buildRegistry([PROJECT_RESEARCH_AGENT]);
 
 /**
  * AC-01. An agent absent from the registry cannot be run at all.

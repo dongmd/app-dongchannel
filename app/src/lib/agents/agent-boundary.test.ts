@@ -43,9 +43,16 @@ describe("AC-07 — the framework holds the control-plane boundary", () => {
   it("CONTROL — the scan can see the framework's modules", () => {
     // A boundary test whose file list is empty passes every assertion below
     // and proves nothing. This is checked first for that reason.
+    // This asserted an EXACT file list and broke when P4-R02 added an agent to
+    // the directory -- the M-15 class for the third time. The claim that does
+    // not expire is that the framework's own two modules are present and the
+    // scan reached them; every OTHER module in here is then held to the same
+    // boundaries below, which is the behaviour that should grow, not break.
+    const names = MODULES.map((m) => m.name);
+    for (const required of ["agent-policy.ts", "runner.ts"]) {
+      assert.ok(names.includes(required), `${required} was not scanned`);
+    }
     assert.ok(MODULES.length >= 2, `only ${MODULES.length} modules found`);
-    const names = MODULES.map((m) => m.name).sort();
-    assert.deepEqual(names, ["agent-policy.ts", "runner.ts"]);
     assert.ok(MODULES.every((m) => m.source.length > 500));
   });
 
@@ -88,14 +95,20 @@ describe("AC-07 — the framework holds the control-plane boundary", () => {
     }
   });
 
-  it("`agent-policy` is pure: it imports nothing at all", () => {
+  it("every *-policy module is pure: it imports nothing at all", () => {
+    // Applies to project-research-policy.ts too, and to whatever P4-R03..R06
+    // add. A purity rule that named one file would stop protecting the moment
+    // a second policy module appeared -- which has now happened once.
+    const policies = MODULES.filter((m) => m.name.endsWith("-policy.ts"));
+    assert.ok(policies.length >= 2, "expected at least two policy modules");
+    for (const m of policies) {
+      const imports = code(m.source).match(/^\s*import\s/gm) ?? [];
+      assert.equal(
+        imports.length, 0,
+        `${m.name} must import nothing — that is what makes its decisions testable as data`,
+      );
+    }
     const policy = MODULES.find((m) => m.name === "agent-policy.ts")!;
-    const imports = code(policy.source).match(/^\s*import\s/gm) ?? [];
-    assert.equal(
-      imports.length,
-      0,
-      "agent-policy must import nothing — that is what makes its decisions testable as data",
-    );
     // And it must not reach for ambient state either: a module that reads the
     // clock cannot be tested by feeding it a time.
     assert.equal(code(policy.source).includes("Date.now"), false);
