@@ -36,9 +36,32 @@ CMD_BACKUP="${CMD_BACKUP:-dump_database}"
 BACKUP_DIR="${BACKUP_DIR:-/home/opssite/backups}"
 CMD_MIGRATE="${CMD_MIGRATE:-pnpm db:migrate}"
 CMD_SEED="${CMD_SEED:-pnpm db:seed}"
-CMD_RESTART="${CMD_RESTART:-pm2 restart $PM2_APP_NAME --update-env}"
+CMD_RESTART="${CMD_RESTART:-restart_app}"
 SKIP_PULL="${SKIP_PULL:-0}"
 SKIP_INSTALL="${SKIP_INSTALL:-0}"
+
+# PM2 keeps one daemon PER USER, and `dongchannel-app` lives in the daemon of
+# RUNTIME_USER -- not root's. The deploy needs root (the migrator env file is
+# root-only, mode 600, and step 7 checks it with `runuser`), so a bare `pm2`
+# here talks to root's daemon, which has never heard of this app.
+#
+# The failure mode this fixes is not the loud one. Loudly, pm2 says "Process or
+# Namespace dongchannel-app not found" and the deploy stops. Quietly, on a host
+# where root's daemon HAPPENS to hold a process of the same name, it would
+# restart the wrong one and report success.
+#
+# RUNTIME_USER is read at call time, not here: it is defined further down, in
+# the migration section that also uses it.
+restart_app() {
+  if [ "$(id -u)" -eq 0 ] && [ "$RUNTIME_USER" != "root" ]; then
+    # --update-env still applies; it copies runuser's environment, which is
+    # cleaner than the deploy shell's -- MIGRATION_DATABASE_URL cannot reach
+    # the app even if the unset above were lost.
+    runuser -u "$RUNTIME_USER" -- pm2 restart "$PM2_APP_NAME" --update-env
+  else
+    pm2 restart "$PM2_APP_NAME" --update-env
+  fi
+}
 
 fail() {
   echo "!! DEPLOY FAILED: $*" >&2
@@ -490,8 +513,14 @@ if [ -n "${MIGRATION_DATABASE_URL:-}" ]; then
 fi
 echo "→ restart PM2 app: $PM2_APP_NAME"
 eval "$CMD_RESTART" || {
-  echo "!! pm2 restart failed. Known processes:" >&2
-  pm2 list || true
+  # List the daemon the restart actually targeted. Printing root's process list
+  # after failing to restart opssite's would be a misleading diagnostic.
+  echo "!! pm2 restart failed. Processes known to $RUNTIME_USER:" >&2
+  if [ "$(id -u)" -eq 0 ] && [ "$RUNTIME_USER" != "root" ]; then
+    runuser -u "$RUNTIME_USER" -- pm2 list || true
+  else
+    pm2 list || true
+  fi
   fail "restart failed"
 }
 
