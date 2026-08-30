@@ -33,6 +33,20 @@ Dashboard vận hành **AFF Research Bot** và **YouTube Global Bot**. Kết n�
 >   qua REST API có xác thực, cả hai chiều.
 > - **n8n là orchestration layer**, không sở hữu entity, không chứa business logic.
 >
+> ### Access và credentials
+>
+> **Đọc `docs/ops/ACCESS_REGISTRY.md` của Repository A trước khi hỏi Owner bất
+> kỳ credential nào.** Quy tắc: **khôi phục và tái dùng access đã được uỷ quyền
+> trước → verify an toàn → chỉ hỏi Owner khi thật sự không có, không hợp lệ,
+> hoặc cần xác thực tương tác.**
+>
+> Kiểm bằng `bash wp-content/plugins/dc-core/tools/dc-access-check.sh` (Repo A).
+> Không in giá trị secret.
+>
+> Hiện chỉ **hai** thứ cần Owner: Telegram bot token + owner id, và xác thực
+> cPanel. VPS, deploy Ops Hub, hai identity database, wrapper migration/backup
+> và credential WordPress REST đều đã có sẵn.
+
 > ### Deploy
 >
 > Claude Code deploy, **owner không deploy**. Owner review/approve decision,
