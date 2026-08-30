@@ -151,7 +151,7 @@ export default async function OfferDetailPage({
       </section>
 
       <div className="rounded-lg border border-dashed border-border p-4 text-center text-xs text-muted-foreground">
-        Form nhập kết quả affiliate + Angles editor sẽ có ở DC-014 (Result forms).
+        Chưa có form nhập kết quả affiliate và chưa có Angles editor.
       </div>
     </div>
   );

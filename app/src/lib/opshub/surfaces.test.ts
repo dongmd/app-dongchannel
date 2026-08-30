@@ -78,10 +78,25 @@ test("CONTROL: the register carries BOTH a present and an absent surface", () =>
     "no NOT_IMPLEMENTED surface -- an inventory that never reports an absence is not an inventory",
   );
 
-  // The two known absences, named, so a future edit cannot quietly drop them.
+  // `telegram-control-plane` is named because it is absent for a reason that
+  // does not expire: P3 built the control plane and deliberately shipped no UI
+  // for it. If that key ever stops being absent, someone built a Telegram
+  // surface and this gate should be read again.
   const absentKeys = absent.map((s) => s.key);
   assert.ok(absentKeys.includes("telegram-control-plane"));
-  assert.ok(absentKeys.includes("money-os-surfaces"));
+
+  // `money-os-surfaces` USED to be named here too, and that was a mistake in
+  // the same class as M-15: a control pinned to a fact that changes when work
+  // lands. P4-R11 built it on 2026-08-30 and the control failed -- not because
+  // the register was wrong, but because the fixture had encoded "this will
+  // always be missing" about a requirement whose whole purpose was to build it.
+  //
+  // The control's real claim is that the register reports BOTH states, and that
+  // is asserted above without naming a key that success can invalidate.
+  assert.ok(
+    conforming.some((s) => s.key === "money-os-surfaces"),
+    "money-os-surfaces should now be conforming -- P4-R11 built it",
+  );
 });
 
 test("CONTROL: a remediation names the criterion it fails", () => {

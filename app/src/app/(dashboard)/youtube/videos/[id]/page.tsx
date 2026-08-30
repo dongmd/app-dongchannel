@@ -126,7 +126,7 @@ export default async function VideoDetailPage({
       ) : null}
 
       <div className="rounded-lg border border-dashed border-border p-4 text-center text-xs text-muted-foreground">
-        Video variants (A/B title/thumbnail/hook) + Metrics form sẽ có ở DC-014 (Result forms).
+        Chưa có phần Video variants (A/B title/thumbnail/hook) và chưa có form Metrics.
       </div>
     </div>
   );

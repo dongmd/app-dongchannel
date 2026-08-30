@@ -41,9 +41,12 @@ cd "$(dirname "$0")/.." || exit 1
 
 # Ids with a canonical disposition in docs/v2/status.yml. DC-011b is REGISTERED
 # (register entry DC-011B, ABSORBED_BY:P4-R11/AC-07); the rest were ghosts,
-# absorbed into the same criterion on 2026-08-29. DC-015 is listed because it is
-# a KNOWN promise under OWNER_DECISION_REQUIRED -- known is not the same as
-# resolved, and AC-07 is what discharges these, not this file.
+# absorbed into the same criterion on 2026-08-29. DC-015 was formalized on
+# 2026-08-30 as its own requirement, P4-R12, after an audit found no existing
+# P4 requirement could own "retry a FAILED task" without distortion.
+#
+# Listed here means REGISTERED, not DELIVERED. AC-07 and P4-R12 are what
+# discharge these; this file only stops NEW ghosts appearing.
 KNOWN="DC-006 DC-010 DC-011b DC-011c DC-012b DC-014 DC-015"
 
 SCAN_ROOTS="src/app src/components"
@@ -85,18 +88,29 @@ if [ "$FILES" -lt 20 ]; then
 fi
 
 IDS=$(echo "$FOUND" | grep -oE 'DC-[0-9]{3}[a-z]?' | sort -u)
-if [ -z "$IDS" ]; then
-  echo "FAIL: $FILES files scanned and NOT ONE story id found."
-  echo "      DC-011b is known to be present in src/app/(dashboard)/aff/markets/page.tsx."
-  echo "      A zero result means the comment-stripping or the pattern is broken."
-  exit 1
-fi
 
-# ---- CONTROL: the known promise must be found. If the scan can no longer see
-# ---- the very reference this guard was written for, its silence means nothing.
-if ! echo "$IDS" | grep -q '^DC-011b$'; then
-  echo "FAIL: CONTROL -- DC-011b was not found in rendered copy."
-  echo "      Either it was resolved (then update KNOWN and this control), or the scan broke."
+# ---- CONTROL, redesigned 2026-08-30.
+#
+# It used to assert DC-011b was FOUND in rendered copy, reasoning that a scan
+# finding nothing is indistinguishable from clean code. Right about the danger,
+# wrong about the fixture: P4-R11 delivered the Markets surface and removed the
+# promise, and the control then failed FOR SUCCESS. Same class as M-15 -- a
+# control pinned to a fact that changes when the work it guards gets done.
+#
+# An EMPTY result is now the expected steady state, so the control cannot be
+# "something was found". It proves the MECHANISM instead: the same read and the
+# same pattern with comment-stripping DISABLED, where ids are known to exist in
+# attribution comments. Nothing there means the reading or the pattern is
+# broken, and a clean main result would prove nothing.
+raw_hits=$(
+  for root in $SCAN_ROOTS; do
+    find "$root" -name '*.tsx' -type f 2>/dev/null -exec grep -ohE 'DC-[0-9]{3}[a-z]?' {} +
+  done | sort -u | wc -l
+)
+if [ "$raw_hits" -lt 1 ]; then
+  echo "FAIL: CONTROL -- scanning $FILES files WITHOUT comment-stripping found no story id"
+  echo "      at all. Ids are known to exist in attribution comments, so the reading or the"
+  echo "      pattern is broken and a clean main result proves nothing."
   exit 1
 fi
 
@@ -109,7 +123,12 @@ for id in $IDS; do
 done
 
 echo "Scanned $FILES .tsx files under: $SCAN_ROOTS"
+echo "Control: $raw_hits distinct ids visible without comment-stripping -- the scan works."
+if [ -z "$IDS" ]; then
+  echo "Promised ids in rendered copy: NONE -- every inherited promise is discharged."
+else
 echo "Promised ids in rendered copy: $(echo "$IDS" | tr '\n' ' ')"
+fi
 
 if [ -n "$GHOSTS" ]; then
   echo

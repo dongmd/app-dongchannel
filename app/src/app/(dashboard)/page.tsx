@@ -1,3 +1,4 @@
+import Link from "next/link";
 import { computeDashboardSummary } from "@/lib/dashboard/summary";
 import { getProfileFilter } from "@/lib/profiles/server";
 import { PROFILE_LABELS } from "@/lib/profiles/types";
@@ -45,9 +46,21 @@ export default async function OverviewPage({ searchParams }: Props) {
 
       <NextBestActions actions={summary.nextBestActions} />
 
+      {/*
+        P4-R11 AC-07. Previously "tasks/memory sẽ có ở DC-006/010" -- two
+        unregistered story ids in one sentence, which is how DC-010 went
+        unnoticed through a whole audit pass. Both promises are removed; what
+        replaces them is a fact the reader can act on.
+
+        P4-R11 AC-10 keeps this Overview scoped to the shell: the AI Money OS
+        surfaces are their own section, and this footer points at them rather
+        than absorbing them.
+      */}
       <footer className="text-xs text-muted-foreground">
         Cập nhật {new Date(summary.generatedAt).toLocaleTimeString("vi-VN")} · cache 30s ·{" "}
-        <span className="font-mono">tasks/memory sẽ có ở DC-006/010</span>
+        <Link href="/moneyos" className="underline underline-offset-2 hover:text-foreground">
+          Xem các bề mặt AI Money OS
+        </Link>
       </footer>
     </div>
   );

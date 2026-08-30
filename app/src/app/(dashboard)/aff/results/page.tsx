@@ -6,12 +6,12 @@ export default function AffResultsPage() {
       <header className="space-y-1">
         <h1 className="text-2xl font-semibold">AFF · Tests & Results</h1>
         <p className="text-sm text-muted-foreground">
-          Impressions/clicks/leads/sales/commission/profit theo offer + angle + period. Form nhập sẽ có ở DC-014.
+          Impressions/clicks/leads/sales/commission/profit theo offer + angle + period. Chưa có form nhập.
         </p>
       </header>
       <AffTabs />
       <div className="rounded-lg border border-dashed border-border p-8 text-center text-sm text-muted-foreground">
-        Results UI chưa xây. Schema `affiliate_results` đã sẵn để DC-014 chỉ cần render + form.
+        Results UI chưa xây. Bảng `affiliate_results` đã có sẵn cấu trúc; chưa requirement nào sở hữu phần render và form nhập.
       </div>
     </div>
   );

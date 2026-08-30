@@ -4,19 +4,20 @@ import {
   Brain,
   Briefcase,
   DollarSign,
+  Radar,
   Settings,
   Youtube,
   type LucideIcon,
 } from "lucide-react";
 
-// AC01 — đúng 6 mục nav theo PRD mục 7.1.
+// AC01 — nav theo PRD mục 7.1, mở rộng bởi P4-R11 (/moneyos, 2026-08-30).
 // Thứ tự bám wireframe mục 8.1: Tổng quan → Công việc → AFF → YouTube → Trí nhớ → (separator) → Quản trị.
 export interface NavItem {
   href: Route;
   label: string;
   icon: LucideIcon;
   match: (pathname: string) => boolean;
-  badgeCount?: number; // reserved cho notification count (DC-015)
+  badgeCount?: number; // reserved cho notification count (P4-R12)
   section: "business" | "admin";
 }
 
@@ -33,6 +34,16 @@ export const NAV_ITEMS: NavItem[] = [
     label: "Công việc",
     icon: Briefcase,
     match: (p) => p === "/tasks" || p.startsWith("/tasks/"),
+    section: "business",
+  },
+  {
+    // P4-R11. The AI Money OS surfaces: P2's eleven live tables finally have a
+    // door. Placed after Công việc and before the two product workspaces --
+    // it is the layer both of them draw their work from.
+    href: "/moneyos",
+    label: "Money OS",
+    icon: Radar,
+    match: (p) => p === "/moneyos" || p.startsWith("/moneyos/"),
     section: "business",
   },
   {

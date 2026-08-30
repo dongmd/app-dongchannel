@@ -6,7 +6,7 @@ export default function NichesPage() {
       <header className="space-y-1">
         <h1 className="text-2xl font-semibold">YouTube · Niches</h1>
         <p className="text-sm text-muted-foreground">
-          Quản lý niche (demand/monetization/copyright risk score). Editor sẽ có ở DC-012b.
+          Quản lý niche (demand/monetization/copyright risk score). Chưa có editor — YouTube engine được canonical hoá ở MASTER-PHASE-4/5, xem Q34.
         </p>
       </header>
       <YoutubeTabs />

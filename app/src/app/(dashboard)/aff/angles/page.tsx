@@ -6,7 +6,7 @@ export default function AffAnglesPage() {
       <header className="space-y-1">
         <h1 className="text-2xl font-semibold">AFF · Angles</h1>
         <p className="text-sm text-muted-foreground">
-          Pain point · Desire · Big idea · Promise · Mechanism. Editor sẽ có ở DC-011c.
+          Pain point · Desire · Big idea · Promise · Mechanism. Chưa có editor.
         </p>
       </header>
       <AffTabs />

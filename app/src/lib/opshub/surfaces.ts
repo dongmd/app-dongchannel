@@ -209,10 +209,14 @@ export const SURFACES: readonly SurfaceRecord[] = [
     owner: "P4-R11",
     formerlyGovernedBy: [],
     designSection: null,
-    status: "NOT_IMPLEMENTED",
+    status: "EXISTING_AND_CONFORMING",
     evidence:
-      "P2 shipped eleven live tables with no interface at all: no opportunity, signal, " +
-      "cluster, score, trend, discovery-candidate or evidence surface exists.",
+      "Built by P4-R11, 2026-08-30. Eight routes under /moneyos: index with real count(*) " +
+      "figures, opportunity queue, signals, clusters, Trend Radar, discovery candidates, " +
+      "evidence/claims, and agent runs. Every table is EMPTY in production today, which is " +
+      "a fact about the pipeline and not about the surfaces -- each renders an empty state " +
+      "naming why it is empty and which requirement would fill it. The queue orders by the " +
+      "STORED P2-R03 normalised score with NULLS LAST and computes no ranking of its own.",
   },
   {
     key: "youtube-workspace",
@@ -279,7 +283,13 @@ export function storyIdOwnership(): ReadonlyMap<string, SurfaceOwner> {
 // said. This is the independent statement of what §7.1 requires, and the gate
 // asserts the two agree.
 
-export const REQUIRED_NAV_HREFS = ["/", "/tasks", "/aff", "/youtube", "/memory", "/admin"] as const;
+// P4-R11 added `/moneyos` on 2026-08-30. The gate's own message says an
+// addition "must go through the requirement, not through a component edit" --
+// this is that requirement doing it, and the entry is added HERE first because
+// this list is the design statement the implementation is checked against.
+export const REQUIRED_NAV_HREFS = [
+  "/", "/tasks", "/moneyos", "/aff", "/youtube", "/memory", "/admin",
+] as const;
 
 /** §7.3 elements. Keys are component module names under `components/layout`. */
 export const REQUIRED_HEADER_ELEMENTS = [

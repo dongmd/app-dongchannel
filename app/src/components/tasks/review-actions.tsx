@@ -185,8 +185,21 @@ export function ReviewActions({ taskId, status, updatedAt, canReview }: Props) {
         </div>
       ) : null}
 
+      {/*
+        P4-R11 AC-07. This line used to promise "Retry (khi task FAILED) sẽ có ở
+        DC-015 cùng SSE" -- a commitment shown to a user, naming a story id that
+        existed in no register. DC-015 is now formalized as a real requirement
+        (P4-R12: retry eligibility, authorized re-execution, live status), and
+        that requirement is not built.
+
+        So there is NO BUTTON here. Not a disabled one, not a hidden one -- a
+        control for a capability that does not exist is a phantom action, and a
+        disabled button still tells the user the feature is one click from
+        working. The honest form is a sentence saying what is not possible.
+      */}
       <p className="text-[11px] text-muted-foreground">
-        Retry (khi task FAILED) sẽ có ở DC-015 cùng SSE.
+        Chạy lại một task đã <span className="font-mono">FAILED</span> hiện chưa
+        thực hiện được từ giao diện.
       </p>
     </section>
   );
