@@ -34,6 +34,18 @@ const MODULES = readdirSync(HERE)
   .filter((f) => f.endsWith(".ts") && !f.endsWith(".test.ts"))
   .map((f) => ({ name: f, source: readFileSync(join(HERE, f), "utf8") }));
 
+/**
+ * The framework itself, versus the agent modules built on it.
+ *
+ * The split exists because they have different obligations: the framework must
+ * touch no database at all, while an agent's persistence layer must touch a
+ * specific and narrow set of tables.
+ */
+const FRAMEWORK = MODULES.filter((m) => m.name === "agent-policy.ts" || m.name === "runner.ts");
+const PERSISTENCE = MODULES.filter(
+  (m) => !FRAMEWORK.includes(m) && !m.name.endsWith("-policy.ts"),
+);
+
 /** Source with comments stripped: a boundary named in prose is not a violation. */
 function code(source: string): string {
   return source.replace(/\/\*[\s\S]*?\*\//g, "").replace(/\/\/[^\n]*/g, "");
@@ -53,6 +65,8 @@ describe("AC-07 — the framework holds the control-plane boundary", () => {
       assert.ok(names.includes(required), `${required} was not scanned`);
     }
     assert.ok(MODULES.length >= 2, `only ${MODULES.length} modules found`);
+    assert.equal(FRAMEWORK.length, 2, "the framework must be exactly agent-policy and runner");
+    assert.ok(PERSISTENCE.length >= 1, "no agent persistence module was scanned");
     assert.ok(MODULES.every((m) => m.source.length > 500));
   });
 
@@ -76,22 +90,53 @@ describe("AC-07 — the framework holds the control-plane boundary", () => {
     }
   });
 
-  it("no module writes any table directly", () => {
+  it("the FRAMEWORK modules write no table at all", () => {
     // Persistence goes through the injected `RunSink`, which the CALLER owns.
     // The framework holding a database handle is what would make every
-    // assertion above a matter of discipline rather than of structure.
-    for (const m of MODULES) {
+    // assertion here a matter of discipline rather than of structure.
+    //
+    // This applied to EVERY module in the directory until P4-R02 added
+    // `project-research.ts`, which is legitimately an agent's persistence
+    // layer -- it must write claims and evidence. A blanket ban would have
+    // forced that module somewhere it does not belong, or been deleted.
+    //
+    // So the ban is scoped to the framework, and agent persistence gets the
+    // SPECIFIC rule below, which is the AC-07 property rather than a proxy
+    // for it.
+    for (const m of FRAMEWORK) {
       const src = code(m.source);
       for (const forbidden of ["drizzle-orm", "lib/db/client", "from \"../db", "postgres("]) {
-        assert.equal(
-          src.includes(forbidden),
-          false,
-          `${m.name} reaches for a database (${forbidden})`,
-        );
+        assert.equal(src.includes(forbidden), false, `${m.name} reaches for a database (${forbidden})`);
       }
       assert.equal(/\.insert\s*\(/.test(src), false, `${m.name} performs an insert`);
       assert.equal(/\.update\s*\(/.test(src), false, `${m.name} performs an update`);
       assert.equal(/\.delete\s*\(/.test(src), false, `${m.name} performs a delete`);
+    }
+  });
+
+  it("an agent's persistence layer writes ONLY research and evidence tables", () => {
+    // AC-07 stated precisely instead of by proxy. These modules DO hold a
+    // database handle -- that is their job -- so the property that matters is
+    // WHICH tables they can reach.
+    const ALLOWED = ["claims", "evidence", "agentRuns", "affiliateProjects", "modelPolicies"];
+    const FORBIDDEN_TABLES = [
+      "articleApprovals", "articlePublishIntents", "telegramPendingActions",
+      "auditEvents", "articlePreviewLinks",
+    ];
+    for (const m of PERSISTENCE) {
+      const src = code(m.source);
+      for (const table of FORBIDDEN_TABLES) {
+        assert.equal(src.includes(table), false,
+          `${m.name} names ${table} -- an agent must not reach that Source of Truth`);
+      }
+      // And a SELECT on affiliateProjects is fine; a write to it is not.
+      assert.equal(/update\(affiliateProjects\)/.test(src), false,
+        `${m.name} updates affiliate_projects -- AC-02 forbids advancing a project`);
+      assert.equal(/insert\(affiliateProjects\)/.test(src), false,
+        `${m.name} inserts an affiliate project`);
+      // CONTROL: it really does write the tables it is supposed to, so this
+      // test is not passing against a module that writes nothing.
+      assert.ok(ALLOWED.some((tbl) => src.includes(tbl)), `${m.name} writes nothing at all`);
     }
   });
 
