@@ -29,6 +29,20 @@ function matcherExcludes(fragment: string): boolean {
   return m![1]!.includes(fragment);
 }
 
+/**
+ * The exclusion list as the middleware actually declares it, split into the
+ * alternatives the regex engine sees.
+ *
+ * Substring checks cannot express "the NAMESPACE is not exempt": the anchored
+ * alternative `api/v1/outbound/alerts$` trivially contains `api/v1/`. Only the
+ * split can tell a specific route from a whole namespace, and telling those
+ * apart is the entire point of the control below.
+ */
+function matcherAlternatives(): string[] {
+  const m = MIDDLEWARE.match(/matcher:\s*\[\s*"([^"]+)"/)![1]!;
+  return m.slice(m.indexOf("(?!") + 3, m.indexOf(").*)")).split("|");
+}
+
 describe("P3-R07: the self-verifying endpoints are reachable without a session", () => {
   it("the preview route is excluded from the auth middleware", () => {
     // Requiring a session here would defeat Q32 Option A outright: reviewing a
@@ -44,13 +58,40 @@ describe("P3-R07: the self-verifying endpoints are reachable without a session",
     assert.equal(matcherExcludes("api/telegram/webhook$"), true);
   });
 
+  it("the outbound alert endpoint is excluded (P4-R09 AC-05)", () => {
+    // Its caller is a Hermes cron script: no browser, no cookie, so `getToken`
+    // can never succeed for it. Found the same way the webhook was -- the
+    // endpoint answered 401 to a CORRECT token, because the request never
+    // reached the handler that would have checked it.
+    assert.ok(matcherAlternatives().includes("api/v1/outbound/alerts$"));
+  });
+
   it("CONTROL: ordinary routes are still guarded", () => {
     // Without this, "excluded" would also be satisfied by a matcher that
     // guarded nothing at all.
     for (const guarded of ["/admin", "/tasks", "/api/v1/tasks", "/search"]) {
       assert.equal(matcherExcludes(guarded), false, `${guarded} appears in the exclusion list`);
     }
-    assert.equal(matcherExcludes("api/v1/"), false);
+  });
+
+  it("no exclusion opens a whole NAMESPACE, and every one is anchored", () => {
+    // This replaces a substring check for "api/v1/", which broke the moment a
+    // single anchored api/v1 route was excluded -- the string is a prefix of
+    // the route. It was right to fail: it had caught a real change. But the
+    // property it was reaching for is about the SHAPE of the alternative, so
+    // that is what is asserted now.
+    //
+    // A namespace exclusion is the dangerous mistake here: `api/v1/` would
+    // unauthenticate every business route in one character.
+    for (const alt of matcherAlternatives()) {
+      if (!alt.startsWith("api/")) continue;
+      if (alt === "api/auth/") continue; // NextAuth's own handler, guarded by NextAuth
+      assert.ok(
+        alt.endsWith("$"),
+        `"${alt}" is an unanchored api exclusion -- every sibling path inherits it`,
+      );
+    }
+    assert.equal(matcherAlternatives().includes("api/v1/"), false, "the whole v1 namespace is exempt");
   });
 
   it("the webhook exclusion is anchored, so a sibling path cannot inherit it", () => {

@@ -83,7 +83,7 @@ export async function middleware(req: NextRequest) {
   });
 }
 
-// Two self-verifying endpoints are excluded, and each carries its own reason.
+// Three self-verifying endpoints are excluded, and each carries its own reason.
 //
 // `api/telegram/webhook` (P3-R01 AC-07) authenticates with Telegram's secret
 // token header, not with a session. Left in the matcher it was redirected to
@@ -95,11 +95,20 @@ export async function middleware(req: NextRequest) {
 // Requiring a session there would defeat the requirement outright: the point of
 // Q32 Option A is that reviewing a draft from a phone does not need a login.
 //
-// Neither is unguarded. Each verifies before it acts, refuses without side
+// `api/v1/outbound/alerts` (P4-R09 AC-05) is called by a Hermes cron job --
+// a shell script with no browser and no cookie, so `getToken` can never
+// succeed for it. It authenticates with a shared service token compared in
+// constant time, and FAILS CLOSED when that token is unconfigured: an endpoint
+// that opened because its secret was missing would be a public queue of
+// production failures. This exclusion was found the same way the webhook one
+// was -- the endpoint answered 401 to a correct token, because the request
+// never reached the handler.
+//
+// None is unguarded. Each verifies before it acts, refuses without side
 // effects, and audits every decision -- which is more than a session cookie
-// would have told either of them.
+// would have told any of them.
 export const config = {
   matcher: [
-    "/((?!login$|api/auth/|api/health$|api/telegram/webhook$|preview/|_next/static/|_next/image|favicon\\.ico$|robots\\.txt$|.*\\.(?:png|jpg|jpeg|svg|gif|webp|ico|css|js|map)$).*)",
+    "/((?!login$|api/auth/|api/health$|api/telegram/webhook$|api/v1/outbound/alerts$|preview/|_next/static/|_next/image|favicon\\.ico$|robots\\.txt$|.*\\.(?:png|jpg|jpeg|svg|gif|webp|ico|css|js|map)$).*)",
   ],
 };
