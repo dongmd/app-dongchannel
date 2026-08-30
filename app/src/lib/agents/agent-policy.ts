@@ -185,13 +185,41 @@ export const PROJECT_RESEARCH_AGENT: AgentSpec = {
 };
 
 /**
+ * `P4-R06`'s agent. A SEPARATE agent, which is the whole requirement.
+ *
+ * `G-42`: *"a writer checking its own work is not a check."* Separate name,
+ * separate task class, separate routing entry, and -- the part that matters --
+ * a tool list containing NO draft-mutating tool. `P4-R01 AC-02` refuses an
+ * undeclared tool at call time, so "it has no write access to the draft" is
+ * enforced by the framework rather than reviewed by a person.
+ *
+ * The Writer is deliberately NOT registered: `P4-R05` is a validator over a
+ * draft an operator supplies, and adding a WRITER agent this one could be
+ * confused with is scope this requirement does not have.
+ */
+export const QA_AGENT: AgentSpec = {
+  name: "content.qa",
+  profile: "aff",
+  taskClass: "QA",
+  // Read-only, deliberately. No `draft.write`, no `article.update`, nothing
+  // that could edit what it is judging.
+  tools: ["draft.read", "evidence.read"],
+  output: {
+    fields: [
+      { name: "draftId", type: "string", required: true },
+      { name: "findings", type: "string", required: false },
+    ],
+  },
+};
+
+/**
  * The production registry.
  *
  * `P4-R01` shipped this EMPTY, and deliberately so: the framework existed
- * before any agent was specified. `P4-R02` adds the first entry, which is the
- * moment the framework stops being inert.
+ * before any agent was specified. `P4-R02` added the first entry, which is the
+ * moment the framework stopped being inert.
  */
-export const AGENT_REGISTRY: Registry = buildRegistry([PROJECT_RESEARCH_AGENT]);
+export const AGENT_REGISTRY: Registry = buildRegistry([PROJECT_RESEARCH_AGENT, QA_AGENT]);
 
 /**
  * AC-01. An agent absent from the registry cannot be run at all.

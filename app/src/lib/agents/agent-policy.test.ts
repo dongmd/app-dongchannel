@@ -74,7 +74,7 @@ describe("AC-01 — the registry is closed", () => {
     // Rewritten to the claim that does NOT expire: every registered agent is
     // one a requirement defines. An agent appearing here without one is the
     // CANONICAL_SCOPE_GAP class -- code in production that no requirement owns.
-    const OWNED = new Set(["aff.project-research"]); // P4-R02
+    const OWNED = new Set(["aff.project-research", "content.qa"]); // P4-R02, P4-R06
     for (const name of AGENT_REGISTRY.keys()) {
       assert.ok(OWNED.has(name), `${name} is registered but no requirement defines it`);
     }
