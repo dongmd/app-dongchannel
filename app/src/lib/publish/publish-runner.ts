@@ -47,6 +47,18 @@ export interface PublishAttemptFailure {
   readonly code: string;
   /** How many attempts have been made, including this one. */
   readonly attempts: number;
+  /**
+   * Set ONLY when the caller already holds a real `WordpressError.kind` --
+   * `TRANSPORT`/`TIMEOUT` never had an HTTP status to begin with (the request
+   * never reached WordPress), so `classifyWordpressError(status, code)` cannot
+   * reconstruct them from `(0, "TRANSPORT")` and falls through to `UNKNOWN`,
+   * which is NOT retryable. That silently turned a network blip into the same
+   * terminal, owner-alerting failure `G-53` reserves for a real validation
+   * error. `article-guard.ts` and `sync-worker.ts` both read `err.kind`
+   * directly for exactly this reason; this is the one classifier, used the
+   * same way, not a second one.
+   */
+  readonly kind?: WordpressErrorKind;
 }
 
 export interface AuditEntry {
@@ -120,8 +132,10 @@ export async function resolvePublishFailure(
 ): Promise<PublishFailureResult> {
   // ONE classifier. `TD-21`'s, the same one the retry loop uses -- two
   // classifiers that can disagree is exactly the defect `P4-R07 AC-06` names
-  // for QA, and it applies here identically.
-  const kind = classifyWordpressError(failure.status, failure.code);
+  // for QA, and it applies here identically. `failure.kind`, when the caller
+  // already has a real `WordpressError.kind`, is that SAME classifier's
+  // answer computed earlier and carried forward -- not a second one.
+  const kind = failure.kind ?? classifyWordpressError(failure.status, failure.code);
   const retryable = isRetryableKind(kind);
   const exhausted = failure.attempts >= MAX_ATTEMPTS;
 

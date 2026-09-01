@@ -116,7 +116,13 @@ export class WordpressClient {
   private async request<T>(
     method: string,
     path: string,
-    options: { body?: unknown; idempotencyKey?: string; correlationId?: string } = {},
+    options: {
+      body?: unknown;
+      idempotencyKey?: string;
+      correlationId?: string;
+      /** P4-R08 AC-06/AC-10 -- the signed-publish exception headers. Merged in last; see publishStatus(). */
+      extraHeaders?: Readonly<Record<string, string>>;
+    } = {},
   ): Promise<{ data: T; replay: boolean; requestId?: string }> {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), this.timeoutMs);
@@ -130,6 +136,7 @@ export class WordpressClient {
     if (options.body !== undefined) headers["Content-Type"] = "application/json";
     if (options.idempotencyKey) headers["Idempotency-Key"] = options.idempotencyKey;
     if (options.correlationId) headers["X-Request-ID"] = options.correlationId;
+    if (options.extraHeaders) Object.assign(headers, options.extraHeaders);
 
     let response: Response;
     try {
@@ -302,6 +309,105 @@ export class WordpressClient {
       dcVerified: data.dc_verified === true,
     };
   }
+
+  /**
+   * `P4-R08 AC-06`/`AC-10` -- the one door through which this identity can
+   * ever reach `post_status = 'publish'`. `signatureHeaders` carries
+   * `X-DC-Publish-Signature` / `X-DC-Publish-Revision`
+   * (`publish-signature.ts`'s `signPublishRequest`); this method adds no
+   * signing logic of its own, matching the split `preview-policy.ts` /
+   * `publish-signer.ts` already draw between policy and crypto.
+   *
+   * No body is sent. `dc_v1_handle_publish_status()` accepts one only to echo
+   * a `revision_id` for its own audit trail -- the authorisation decision is
+   * carried entirely by the headers, read via `$_SERVER` before any body is
+   * parsed. Sending one would add a JSON content-type requirement for no
+   * contract benefit.
+   *
+   * Returns whatever WordPress answered, `post_status` included, WITHOUT
+   * asserting it equals `'publish'`. WordPress's own guard already refuses a
+   * mismatch with `PUBLISH_NOT_APPLIED` (403) before a 200 can carry
+   * anything else -- but `publish-executor.ts` re-verifies the body per M-04
+   * rather than trusting a call that merely did not throw, and that check
+   * belongs in exactly one place. Duplicating it here would be the "two
+   * classifiers that can disagree" defect `P4-R07 AC-06` names, applied to
+   * this contract instead of QA.
+   */
+  async publishStatus(
+    wpPostId: number,
+    signatureHeaders: Readonly<Record<string, string>>,
+    correlationId?: string,
+  ): Promise<{ id: number; postStatus: string; postModifiedGmt: string | null; wpContentHash: string }> {
+    const { data } = await this.request<{
+      id: number;
+      post_status: string;
+      post_modified_gmt: string | null;
+      wp_content_hash: string;
+    }>("PATCH", `/articles/${wpPostId}/publish-status`, {
+      correlationId,
+      extraHeaders: signatureHeaders,
+    });
+
+    return {
+      id: data.id,
+      postStatus: data.post_status,
+      postModifiedGmt: data.post_modified_gmt,
+      wpContentHash: data.wp_content_hash,
+    };
+  }
+}
+
+/**
+ * `P4-R08 AC-10` -- adapts `WordpressClient.publishStatus` to
+ * `publish-executor.ts`'s injected `WordpressPublishCall` shape.
+ *
+ * The executor stays free of `WordpressError`, `fetch` and `server-only` --
+ * see that module's own boundary test -- so this is the one place a thrown
+ * `WordpressError` becomes the plain `{ status, code, kind }` the executor's
+ * classifier-reuse (`resolvePublishFailure`, `TD-21`) already knows how to
+ * read. An error this client did not throw as `WordpressError` (a bug, not a
+ * WordPress refusal) is deliberately NOT swallowed here -- it propagates, so
+ * a defect in this file fails loudly instead of being filed as a WordPress
+ * error it never was.
+ *
+ * `kind` is carried through rather than dropped. `TRANSPORT`/`TIMEOUT`
+ * (`request()`'s catch block, above) are thrown with no real HTTP status --
+ * the request never reached WordPress -- so `classifyWordpressError(status,
+ * code)` cannot reconstruct them from `(0, "TRANSPORT")` and would answer
+ * `UNKNOWN`, which is not retryable. `article-guard.ts` and `sync-worker.ts`
+ * both read `err.kind` directly for the identical reason; this adapter now
+ * does the same rather than re-deriving a worse answer from strictly less
+ * information.
+ *
+ * Untested at THIS layer, deliberately, like every other method on
+ * `WordpressClient` -- importing this file drags in `server-only`, which
+ * throws outside a server bundling context and makes a plain `node:test` run
+ * of this module impossible (confirmed while writing this function: a
+ * `client.test.ts` was attempted and removed for exactly this reason). The
+ * flattening this function does is instead proven at `publish-executor.
+ * test.ts`'s "REGRESSION: a TRANSPORT/TIMEOUT failure" case, one layer up,
+ * against a fake shaped like this function's own return type.
+ */
+export function wordpressPublishCall(
+  client: WordpressClient,
+): (
+  wpPostId: number,
+  headers: Readonly<Record<string, string>>,
+) => Promise<
+  | { readonly ok: true; readonly postStatus: string; readonly postModifiedGmt: string | null }
+  | { readonly ok: false; readonly status: number; readonly code: string; readonly kind: WordpressErrorKind }
+> {
+  return async (wpPostId, headers) => {
+    try {
+      const result = await client.publishStatus(wpPostId, headers);
+      return { ok: true, postStatus: result.postStatus, postModifiedGmt: result.postModifiedGmt };
+    } catch (err) {
+      if (err instanceof WordpressError) {
+        return { ok: false, status: err.httpStatus ?? 0, code: err.code, kind: err.kind };
+      }
+      throw err;
+    }
+  };
 }
 
 /**
