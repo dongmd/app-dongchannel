@@ -363,9 +363,16 @@ export function publishWorkerDeps(): PublishWorkerDeps {
             entityType: entry.entityType,
             entityId: entry.entityId,
             result,
-            // The executor's own outcome survives here, where the vocabulary is
-            // not constrained -- nothing is lost by the mapping above.
-            after: { outcome: entry.outcome, detail: entry.detail },
+            // `AC-07`: both halves or neither -- "an entry saying only what a
+            // thing became cannot answer what it was". The entity here is the
+            // INTENT, and the worker only ever audits after CLAIMING one, so
+            // its prior state is known and is genuinely `OPEN` rather than a
+            // placeholder invented to satisfy the rule.
+            //
+            // The executor's own richer outcome rides in `after`, where the
+            // vocabulary is unconstrained, so the mapping above loses nothing.
+            before: { intent_state: "OPEN" },
+            after: { intent_state: entry.outcome, detail: entry.detail },
           },
           new Date(),
         ),
