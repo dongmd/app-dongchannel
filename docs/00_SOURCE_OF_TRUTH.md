@@ -65,6 +65,29 @@ Guessing the requirement from local documents is the specific failure this file 
 
 Claude Code performs deployment. **The owner does not deploy.** The owner reviews and approves decisions, content, security and scope where a requirement calls for it.
 
+> ### Zero-touch mandate — owner instruction, 2026-09-05
+>
+> **Claude Code Desktop deploys production directly.** The full pipeline —
+> `coding → test/lint/typecheck → commit → push → deploy → PM2 restart →
+> health check → smoke test → verify` — runs **autonomously, with no
+> confirmation between steps**, for anything inside project scope reachable
+> with access Claude already holds (SSH to `vocapro` is configured and
+> sufficient).
+>
+> On failure: investigate, fix, or **roll back to the last stable commit**, then
+> report. Ask the owner only for MFA / expired credentials, insufficient access,
+> or a real risk of **data loss or an unrollbackable outcome**.
+>
+> **The earlier "Desktop must not deploy; CLI is the only deployer" split is
+> WITHDRAWN.** It cost a session: Desktop completed `P4-R08 AC-10`, could not
+> demonstrate it, and produced a `READY_FOR_PROD` handoff for a deploy that then
+> had to be routed elsewhere. Both Desktop and CLI deploy, through the same
+> gates below — the gates are the safety mechanism, not the choice of tool.
+>
+> Autonomy over pacing is **not** autonomy over truth: a green deploy still
+> proves only that the pipeline ran. Nothing becomes `VERIFIED` because it
+> deployed. Full text: Repository A's `docs/WORKING_PROTOCOL.md` §0.
+
 ```
 code → gated tests/build → commit → push
      → VPS deploy pipeline → backup → migrate (if needed)
@@ -92,10 +115,12 @@ Two behaviours worth knowing before mistaking them for bugs:
 ## Working protocol
 
 Repository A's `docs/WORKING_PROTOCOL.md` governs **how batches are paced and
-handed back** in every Claude Code session, on this repository too: propose the
-next batch and ask before starting it; once approved, run the whole batch
-without asking about each ordinary step; stop only for a hard blocker or a
-decision that is the owner's. It changes no requirement and no architecture.
+handed back** in every Claude Code session, on this repository too. **As amended
+2026-09-05 (§0, zero-touch):** for work inside project scope, run the whole
+pipeline through production verification without pausing for approval, and
+report what was done; propose the next batch but do not wait on it. Stop only
+for MFA / credentials, insufficient access, or risk of data loss or an
+unrollbackable outcome. It changes no requirement and no architecture.
 
 ## Status report header
 
