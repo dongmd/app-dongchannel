@@ -230,6 +230,91 @@ async function main() {
   return finish();
 }
 
+/**
+ * `AC-10`'s CONTROL, and `P4-R09 AC-02` in the same run.
+ *
+ * This is the half a wrong key can never prove: WordPress answering 200 and
+ * the post actually becoming `publish`. It then REPLAYS the same publish and
+ * asserts, by reading WordPress back rather than by trusting a return value,
+ * that exactly one post exists and its id did not change — which is `AC-02`'s
+ * stated criterion, in its own words ("by reading WordPress back").
+ */
+async function assertRealPublish(
+  result: Awaited<ReturnType<typeof runPublishOnce>>,
+  articleId: string,
+  wpPostId: number,
+  before: Awaited<ReturnType<typeof readState>>,
+) {
+  eq_("claimed", result.outcome, "EXECUTED");
+  if (result.outcome === "EXECUTED") {
+    eq_("published", result.result.outcome, "PUBLISHED");
+    if (result.result.outcome === "PUBLISHED") {
+      eq_("post-id", result.result.wpPostId, wpPostId);
+    }
+  }
+
+  // AC-10's control, read back from WordPress -- never from the return value.
+  const after = await readState(wpPostId);
+  eq_("wp-status", after.postStatus, "publish");
+  eq_("content-untouched", after.wpContentHash, before.wpContentHash);
+
+  const key = publishIdempotencyKey(articleId, REVISION, DEFAULT_DESTINATION);
+  const rec = await db
+    .select({
+      state: articlePublishRecords.state,
+      wpPostId: articlePublishRecords.wpPostId,
+      publishedHash: articlePublishRecords.publishedHash,
+      attempts: articlePublishRecords.attempts,
+    })
+    .from(articlePublishRecords)
+    .where(eq(articlePublishRecords.idempotencyKey, key));
+
+  eq_("record-state", rec[0]?.state, "SUCCEEDED");
+  eq_("record-post-id", rec[0]?.wpPostId, wpPostId); // AC-01: the post id is STORED
+  eq_("record-attempts", rec[0]?.attempts, 1);
+
+  const intents = await db
+    .select({ state: articlePublishIntents.state })
+    .from(articlePublishIntents)
+    .where(and(eq(articlePublishIntents.articleId, articleId), eq(articlePublishIntents.revisionId, REVISION)));
+  eq_("intent-consumed", intents[0]?.state, "CONSUMED"); // AC-05
+
+  // ── P4-R09 AC-02: replay, and count posts by reading WordPress ──
+  //
+  // A second intent for the same (article, revision) cannot even be created --
+  // the approval is already consumed and the lock is released, so the honest
+  // replay is to run the worker again against a NEW intent on the SAME
+  // revision, which is what a retry after a crash would look like.
+  const [replayApproval] = await db
+    .select({ id: articleApprovals.id })
+    .from(articleApprovals)
+    .where(and(eq(articleApprovals.articleId, articleId), eq(articleApprovals.revisionId, REVISION)))
+    .limit(1);
+
+  if (replayApproval) {
+    await db.insert(articlePublishIntents).values({
+      approvalId: replayApproval.id,
+      articleId,
+      revisionId: REVISION,
+      payloadHash: rec[0]?.publishedHash ?? "",
+      destination: DEFAULT_DESTINATION,
+    });
+
+    const replay = await runPublishOnce(publishWorkerDeps());
+    eq_("replay-noop", replay.outcome, "ALREADY_PUBLISHED");
+
+    const afterReplay = await readState(wpPostId);
+    eq_("still-one-post", afterReplay.id, wpPostId);
+    eq_("still-published", afterReplay.postStatus, "publish");
+
+    const recs = await db
+      .select({ id: articlePublishRecords.id })
+      .from(articlePublishRecords)
+      .where(eq(articlePublishRecords.wpPostId, wpPostId));
+    eq_("one-record-per-post", recs.length, 1);
+  }
+}
+
 async function runPhase(
   articleId: string,
   wpPostId: number,
@@ -243,12 +328,39 @@ async function runPhase(
   eq_("CONTROL-key", typeof realKey === "string" && realKey.length > 0, true, true);
   if (controlFailed) return finish();
 
-  process.env.DC_PUBLISH_SIGNING_KEY_V1 = "E2E-DELIBERATELY-WRONG-KEY-never-the-production-one";
+  // ── REAL PUBLISH is opt-in, and deliberately awkward to reach ──
+  //
+  // `AC10_REAL_PUBLISH=1` makes this run sign with the PRODUCTION key, which
+  // means the article really becomes public and CANNOT be put back from here:
+  // dc/v1 has no unpublish route and dc_integration holds publish_posts=false
+  // outside the one signed write. Undoing it needs WP-CLI.
+  //
+  // Two conditions, not one. An environment variable alone is too easy to
+  // inherit by accident from a shell that set it for a previous run, and the
+  // consequence here is irreversible, so the post id must be named again as a
+  // second argument and the two must agree.
+  const wantReal = process.env.AC10_REAL_PUBLISH === "1";
+  const confirmed = wantReal && process.argv[3] === `PUBLISH-${wpPostId}`;
+
+  if (wantReal && !confirmed) {
+    no("CONTROL-confirm", `AC10_REAL_PUBLISH=1 requires the literal argument PUBLISH-${wpPostId}`, true);
+    return;
+  }
+
+  if (!confirmed) {
+    process.env.DC_PUBLISH_SIGNING_KEY_V1 = "E2E-DELIBERATELY-WRONG-KEY-never-the-production-one";
+  }
+  ok("mode", confirmed ? "REAL PUBLISH -- the production key is in use" : "dry -- deliberately wrong key, nothing can publish");
 
   const deps = publishWorkerDeps();
   const result = await runPublishOnce(deps);
 
   process.env.DC_PUBLISH_SIGNING_KEY_V1 = realKey;
+
+  if (confirmed) {
+    await assertRealPublish(result, articleId, wpPostId, before);
+    return;
+  }
 
   console.log(`   worker outcome: ${JSON.stringify(result).slice(0, 300)}`);
 
