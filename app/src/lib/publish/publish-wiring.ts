@@ -289,6 +289,32 @@ async function loadVerification(articleId: string) {
 }
 
 /**
+ * The worker's outcome vocabulary → the audit's.
+ *
+ * A refusal never reached WordPress; a failure did. Keeping them apart is what
+ * makes "did we touch the site?" answerable from the log alone. A replayed
+ * no-op is neither — it is the system working, and `REPLAYED` says so without
+ * reading as an error.
+ *
+ * Anything unrecognised maps to a refusal with `ERROR`, not to a success: an
+ * outcome nobody enumerated is not evidence that a publish happened.
+ */
+function auditShapeFor(workerAction: string): { action: string; result: string } {
+  switch (workerAction) {
+    case "PUBLISH_SUCCEEDED":
+      return { action: "publish.execute", result: "OK" };
+    case "PUBLISH_REFUSED":
+      return { action: "publish.refuse", result: "REFUSED" };
+    case "PUBLISH_FAILED":
+      return { action: "publish.execute", result: "ERROR" };
+    case "PUBLISH_REPLAY_NOOP":
+      return { action: "publish.replay", result: "REPLAYED" };
+    default:
+      return { action: "publish.refuse", result: "ERROR" };
+  }
+}
+
+/**
  * Build the real dependency set.
  *
  * `wordpressClientFromEnv()` and `publishSignerFromEnv()` are both called at
@@ -318,17 +344,28 @@ export function publishWorkerDeps(): PublishWorkerDeps {
 
     // P3-R06 is the single audit authority. The publish path does not get its
     // own log; it writes through the same canonical writer as everything else.
+    //
+    // Both vocabularies are CLOSED and the writer REFUSES anything outside
+    // them, so the executor's own richer outcome (`APPROVAL_WITHDRAWN`,
+    // `SUCCEEDED`, …) is carried in `after` and mapped here to the audit's
+    // three-value action and five-value result. Passing it straight through is
+    // what the first version did, and the real writer rejected the row --
+    // caught by the AC-10 end-to-end run, not by the unit tests, which fake
+    // this function.
     recordAudit: async (entry) => {
+      const { action, result } = auditShapeFor(entry.action);
       await db.transaction((tx) =>
         writeAudit(
           tx as unknown as Parameters<typeof writeAudit>[0],
           {
             actorType: "system",
-            action: `publish.${entry.action.toLowerCase()}`,
+            action,
             entityType: entry.entityType,
             entityId: entry.entityId,
-            result: entry.outcome,
-            after: { detail: entry.detail },
+            result,
+            // The executor's own outcome survives here, where the vocabulary is
+            // not constrained -- nothing is lost by the mapping above.
+            after: { outcome: entry.outcome, detail: entry.detail },
           },
           new Date(),
         ),

@@ -60,6 +60,22 @@ export const AUDIT_ACTIONS = [
   // and collapsing them would make "who kept trying" unanswerable.
   "task.retry",
   "task.retry.refuse",
+  // P4-R08 AC-09/AC-10, added 2026-09-05. Every publish attempt, success and
+  // refusal is audited through this writer and no other -- the criterion says
+  // "no second log", and the publish path was the last thing still without a
+  // vocabulary here. Found by the AC-10 end-to-end run, which the unit tests
+  // could not have caught: they fake `recordAudit`, so a refused action only
+  // surfaces against the real writer.
+  //
+  // THREE actions, not one. A publish that was refused by a gate never reached
+  // WordPress; a publish that was attempted and failed did. Collapsing them
+  // would make "did we touch the site?" unanswerable from the log -- the same
+  // distinction `telegram.transport.*` and `telegram.gateway.*` are kept apart
+  // for. `publish.replay` is separate again because a no-op replay is the
+  // system working correctly, not an error, and it must not read as one.
+  "publish.execute",
+  "publish.refuse",
+  "publish.replay",
 ] as const;
 
 export type AuditAction = (typeof AUDIT_ACTIONS)[number];
