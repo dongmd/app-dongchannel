@@ -267,6 +267,13 @@
       "when": 1787278623527,
       "tag": "0037_p4r09_outbound_alerts",
       "breakpoints": true
+    },
+    {
+      "idx": 38,
+      "version": "7",
+      "when": 1787278623528,
+      "tag": "0038_p4r08_publish_wiring",
+      "breakpoints": true
     }
   ]
 }

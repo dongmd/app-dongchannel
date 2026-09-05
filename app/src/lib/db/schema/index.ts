@@ -3,6 +3,7 @@ export * from "./identity";
 export * from "./audit";
 export * from "./approval";
 export * from "./two-step";
+export * from "./publish";
 export * from "./profiles";
 export * from "./hermes";
 export * from "./tasks";

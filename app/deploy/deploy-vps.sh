@@ -396,6 +396,47 @@ if [ -d .next/standalone ]; then
 		cp -r public .next/standalone/public || fail "could not copy public/ into standalone"
 		echo "   public/ copied"
 	fi
+
+	# ── The artefact must be readable by the identity that RUNS it ──
+	#
+	# A root deploy builds root-owned files. Most are mode 644, so the runtime
+	# user reads them by accident rather than by design -- but `next build`
+	# copies `.env` into the standalone tree preserving mode 600, and a
+	# root-owned 600 file is unreadable to `opssite`. The server then logs
+	#
+	#   ⨯ Failed to load env from .env [EACCES: permission denied]
+	#
+	# and carries on, because `pm2 restart --update-env` happens to have put the
+	# same variables in the process environment. That is the dangerous part: the
+	# deploy is green, the app is healthy, and the artefact's own env file has
+	# never once been read. The first restart that does NOT inherit the deploy
+	# shell's environment -- a reboot resurrecting from `dump.pm2`, a bare
+	# `pm2 restart` by hand -- would start an app with no configuration at all.
+	#
+	# Found 2026-09-05 by reading the error log after a green deploy.
+	#
+	# `chown` only: modes are NOT widened. A secret that was 600 stays 600, it
+	# simply belongs to the user who needs it -- exactly the posture
+	# /home/opssite/.env already has. Widening to 644 would put the database
+	# credential in reach of every account on the host.
+	if [ "$(id -u)" -eq 0 ] && [ "$RUNTIME_USER" != "root" ]; then
+		if id "$RUNTIME_USER" >/dev/null 2>&1; then
+			chown -R "$RUNTIME_USER":"$RUNTIME_USER" .next/standalone \
+				|| fail "could not give $RUNTIME_USER ownership of the standalone tree"
+
+			# Verified by ATTEMPTING THE READ as that user, not by inspecting
+			# mode bits -- the same discipline the Q35b check above uses, and for
+			# the same reason: mode is a proxy that misses ACLs, group
+			# membership and a non-traversable parent.
+			if [ -f .next/standalone/.env ]; then
+				runuser -u "$RUNTIME_USER" -- test -r .next/standalone/.env \
+					|| fail "$RUNTIME_USER still cannot read .next/standalone/.env after chown --
+       the running app would start with no configuration on any restart that
+       does not inherit this shell's environment"
+				echo "   standalone env readable by $RUNTIME_USER"
+			fi
+		fi
+	fi
 else
 	echo "→ no standalone output; skipping the static copy"
 fi

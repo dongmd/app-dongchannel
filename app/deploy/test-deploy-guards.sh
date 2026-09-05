@@ -195,6 +195,75 @@ else
   FAIL=$((FAIL+1)); echo "  FAIL  restart still saw the migrator DSN -- pm2 --update-env would leak it"
 fi
 
+# ── The standalone artefact must be readable by the identity that RUNS it ──
+#
+# Regression guard for the 2026-09-05 defect: a root deploy left
+# .next/standalone/.env owned root:root mode 600, so `opssite` could not read
+# it. The app survived only because `pm2 restart --update-env` had put the same
+# variables in the process environment -- meaning the deploy was green, the app
+# was healthy, and the artefact's own env file had never once been read. The
+# first restart not inheriting the deploy shell's environment (a reboot
+# resurrecting from dump.pm2) would have started an app with no configuration.
+#
+# TWO cases, because one of them cannot run everywhere and saying so is better
+# than a vacuous pass -- the same reasoning as the Q35b note above.
+
+# 1. STRUCTURAL, runs everywhere. The fix is present, and it does not "fix" the
+#    problem by widening modes -- which would put the database credential in
+#    reach of every account on the host.
+if grep -q 'chown -R "$RUNTIME_USER":"$RUNTIME_USER" .next/standalone' "$DEPLOY" \
+   && grep -q 'runuser -u "$RUNTIME_USER" -- test -r .next/standalone/.env' "$DEPLOY"; then
+	PASS=$((PASS+1)); echo "  PASS  standalone ownership fix present, and verified by attempting the read"
+else
+	FAIL=$((FAIL+1)); echo "  FAIL  the standalone chown/verify is missing -- the EACCES defect can return"
+fi
+
+if grep -qE 'chmod +(-R +)?(644|a\+r|o\+r|go\+r) +\.next/standalone' "$DEPLOY"; then
+	FAIL=$((FAIL+1)); echo "  FAIL  the deploy widens modes on the standalone tree -- .env would become world-readable"
+else
+	PASS=$((PASS+1)); echo "  PASS  the standalone tree is re-owned, never mode-widened (least privilege held)"
+fi
+
+# 2. FUNCTIONAL, only where unix permissions and users are real AND we are root.
+#    On the developer machine `chmod 600` reports 644 back, so the control could
+#    never fail and the case would prove nothing. It runs on the VPS, which is
+#    where the defect happened.
+if [ "$(id -u)" = "0" ] && id opssite >/dev/null 2>&1 && [ "$(uname -s)" = "Linux" ]; then
+	SB2="$(mktemp -d)"
+	mkdir -p "$SB2/app/src/lib/db/migrations" "$SB2/app/.next/standalone"
+	printf 'DEPLOY_TEST=1\n' > "$SB2/app/.env"
+	# Reproduce the defect exactly: root-owned, mode 600, inside the artefact.
+	printf 'DEPLOY_TEST=1\n' > "$SB2/app/.next/standalone/.env"
+	mkdir -p "$SB2/app/.next/static"; : > "$SB2/app/.next/static/asset.js"
+	chown -R root:root "$SB2/app/.next"; chmod 600 "$SB2/app/.next/standalone/.env"
+
+	# CONTROL: the defect is real in this fixture before the deploy touches it.
+	if runuser -u opssite -- test -r "$SB2/app/.next/standalone/.env" 2>/dev/null; then
+		FAIL=$((FAIL+1)); echo "  FAIL  CONTROL: the fixture is already readable -- this case would pass vacuously"
+	else
+		out2="$(env DEPLOY_REEXEC=1 SKIP_PULL=1 SKIP_INSTALL=1 SKIP_HEALTH=1 APP_DIR="$SB2" \
+			MIGRATION_DATABASE_URL=postgres://fixture@127.0.0.1/fixture \
+			CMD_LINT="true" CMD_TYPECHECK="true" CMD_TEST="true" CMD_BUILD="true" \
+			CMD_BACKUP="true" CMD_MIGRATE="true" CMD_RESTART="true" \
+			bash "$DEPLOY" 2>&1)" || true
+		if runuser -u opssite -- test -r "$SB2/app/.next/standalone/.env" 2>/dev/null; then
+			PASS=$((PASS+1)); echo "  PASS  the deploy made the standalone .env readable by opssite"
+			# And did not do it by widening: other must still not have read.
+			m="$(stat -c '%a' "$SB2/app/.next/standalone/.env")"
+			case "$m" in
+				*0|*1|*2|*3) PASS=$((PASS+1)); echo "  PASS  mode $m -- still not world-readable" ;;
+				*) FAIL=$((FAIL+1)); echo "  FAIL  mode $m -- the secret was widened, not re-owned" ;;
+			esac
+		else
+			FAIL=$((FAIL+1)); echo "  FAIL  opssite still cannot read the standalone .env after deploy"
+			echo "        tail: $(tail -3 <<<"$out2" | tr '\n' ' ')"
+		fi
+	fi
+	rm -rf "$SB2"
+else
+	echo "  SKIP  standalone ownership functional case -- needs Linux, root, and the opssite user (runs on the VPS)"
+fi
+
 # Health checks run for real here, against a closed port.
 run_case "health fails → failure exit, no 'Deploy done'" fail "" -- \
   APP_PORT=9 PUBLIC_URL="http://127.0.0.1:9" \

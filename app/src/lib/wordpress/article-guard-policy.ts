@@ -81,6 +81,45 @@ export function hashContractVersionOf(hash: string | null | undefined): string |
   return hash.length > i + 1 ? prefix : null;
 }
 
+/**
+ * `P4-R08 AC-10` — the bridge between the two hashes of one article.
+ *
+ * WordPress computes the SAME sha256 twice, and exposes it two ways:
+ *
+ *   `dc_v1_content_hash()`               `'v1:' . hash('sha256', $content)`
+ *                                        — the READ contract, opaque and
+ *                                        version-prefixed (`v1-schema.php`)
+ *
+ *   `dc_core_publish_signature_valid()`  `hash('sha256', $content)`
+ *                                        — the SIGNATURE contract, raw, no
+ *                                        prefix (`v1-controllers.php` line 608)
+ *
+ * They differ by exactly the prefix, which is why this is a `slice` and not a
+ * re-hash: Repo B never sees `post_content`, so it could not recompute the
+ * digest even if it wanted to. Getting this wrong does not fail loudly — it
+ * produces a syntactically perfect signature over the wrong payload, which
+ * WordPress refuses with `PUBLISH_SIGNATURE_INVALID` and no clue why.
+ *
+ * The raw form is also the ONLY form the rest of the chain accepts:
+ * `article_approvals_hash_shape` CHECKs `payload_hash` against
+ * `^[0-9a-f]{64}$`, so a prefixed value could not be stored as an approval at
+ * all.
+ *
+ * Fails closed on any hash whose contract version is not the one this build
+ * understands — the same discipline `decideArticleSync` applies to a baseline
+ * taken under a different contract.
+ */
+export function rawSha256FromWpHash(wpContentHash: string | null | undefined): string | null {
+  if (typeof wpContentHash !== "string") return null;
+  if (hashContractVersionOf(wpContentHash) !== HASH_CONTRACT_VERSION) return null;
+
+  const raw = wpContentHash.slice(HASH_CONTRACT_VERSION.length + 1);
+  // Asserted, not assumed: a 'v1:'-prefixed value carrying something other
+  // than a sha256 hex digest is a contract violation, and signing over it
+  // would put a malformed payload on the wire.
+  return /^[0-9a-f]{64}$/.test(raw) ? raw : null;
+}
+
 function present(v: string | null | undefined): v is string {
   return typeof v === "string" && v.trim().length > 0;
 }

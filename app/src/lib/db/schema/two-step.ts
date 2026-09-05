@@ -129,6 +129,19 @@ export const articlePublishIntents = pgTable(
     state: publishIntentStateEnum("state").notNull().default("OPEN"),
     enqueuedAt: timestamp("enqueued_at", { withTimezone: true }).notNull().defaultNow(),
     resolvedAt: timestamp("resolved_at", { withTimezone: true }),
+
+    /**
+     * `P4-R08 AC-10` — the worker's compare-and-swap claim (migration `0038`).
+     *
+     * `decidePublish` reads the intent state from the SNAPSHOT its caller
+     * passed in, not under a lock, so two workers reading the same OPEN intent
+     * would both pass gate 1 and both call WordPress. Claiming is therefore a
+     * conditional UPDATE, not a read — and this column is what it swaps on.
+     *
+     * A stale claim is reclaimable after ten minutes: a worker that crashed
+     * mid-publish would otherwise hold the per-article lock forever.
+     */
+    claimedAt: timestamp("claimed_at", { withTimezone: true }),
   },
   (t) => ({
     /** One approval, at most one intent: a replayed confirm cannot double-queue. */
