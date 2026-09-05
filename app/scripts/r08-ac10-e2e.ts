@@ -1,7 +1,13 @@
 /**
  * `P4-R08 AC-10` end-to-end, run ON THE VPS against production WordPress.
  *
- *   pnpm tsx scripts/r08-ac10-e2e.ts <wpPostId> <phase>
+ *   pnpm tsx --conditions=react-server scripts/r08-ac10-e2e.ts <wpPostId>
+ *
+ * One self-contained run: it creates its own rows, exercises the worker, and
+ * tears down in a `finally`. An earlier version split this across three
+ * invocations and the state between them was itself the bug — a crashed run
+ * left the intent CANCELLED, so the next phase found nothing to claim and
+ * reported a failure that was really a leftover.
  *
  * ## What this can and cannot prove, and why
  *
@@ -19,13 +25,13 @@
  * So this script proves everything up to and including WordPress **evaluating
  * our request**, and deliberately stops short of a successful publish:
  *
- *   phase setup    real rows: verification PASS, a real approval, a real intent
- *   phase run      the REAL worker claims it, reads WordPress live, assembles
- *                  state, runs the three gates, signs with the REAL production
- *                  key, and makes a REAL HTTP request to the live route
- *   phase teardown removes the rows it created
+ *   setup     real rows: verification PASS, a real approval, a real intent
+ *   run       the REAL worker claims it, reads WordPress live, assembles
+ *             state, runs the three gates, signs, and makes a REAL HTTP
+ *             request to the live route
+ *   teardown  removes what it can; WITHDRAWS the approval, which is immutable
  *
- * `run` is executed with a DELIBERATELY WRONG signing key. That is not a
+ * The worker runs with a DELIBERATELY WRONG signing key. That is not a
  * weaker test dressed up — it is the only way to exercise the whole path
  * including the network round trip and WordPress's own signature evaluation
  * without changing a post. It proves: the claim, the live read, the hash
@@ -76,7 +82,21 @@ function eq_(id: string, actual: unknown, expected: unknown, control = false) {
   else no(id, `expected ${e}, got ${a}`, control);
 }
 
-const REVISION = "ac10-e2e";
+/**
+ * A FRESH revision per run, and that is forced by the schema rather than
+ * chosen for convenience:
+ *
+ *   - `article_approvals` is IMMUTABLE (migration 0029 refuses UPDATE, DELETE
+ *     and TRUNCATE) because consent is a historical fact. A run therefore
+ *     cannot delete its own approval and reuse the identifier.
+ *   - `article_approvals_article_revision_uq` allows one LIVE approval per
+ *     (article, revision), so a second run on the same revision could not
+ *     create one anyway.
+ *
+ * Teardown withdraws instead of deleting — a withdrawal is a NEW ROW pointing
+ * at what it retracts, which is the mechanism `P3-R04 AC-08` specifies.
+ */
+const REVISION = `ac10-e2e-${Date.now().toString(36)}`;
 const OWNER_TG = 1;
 
 async function readState(wpPostId: number) {
@@ -84,30 +104,47 @@ async function readState(wpPostId: number) {
   return client.getArticleSyncState(wpPostId);
 }
 
-/** Rows this script created, so teardown removes exactly those and nothing else. */
-async function teardown(articleId: string) {
+/**
+ * Remove exactly what this run created — and WITHDRAW what it cannot remove.
+ *
+ * The approval is immutable by design, so the honest cleanup is `P3-R04 AC-08`'s
+ * own mechanism: a withdrawal row pointing at it. Deleting was attempted first
+ * and the database refused, which is the constraint working.
+ */
+async function teardown(articleId: string, approvalId: string | null) {
   const key = publishIdempotencyKey(articleId, REVISION, DEFAULT_DESTINATION);
   await db.delete(articlePublishRecords).where(eq(articlePublishRecords.idempotencyKey, key));
   await db
     .delete(articlePublishIntents)
     .where(and(eq(articlePublishIntents.articleId, articleId), eq(articlePublishIntents.revisionId, REVISION)));
-  await db
-    .delete(articleApprovals)
-    .where(and(eq(articleApprovals.articleId, articleId), eq(articleApprovals.revisionId, REVISION)));
+
+  if (approvalId) {
+    await db.insert(articleApprovals).values({
+      articleId,
+      revisionId: REVISION,
+      approvedBy: OWNER_TG,
+      payloadHash: "0".repeat(64),
+      callbackNonce: `act_${"f".repeat(32)}`,
+      expiresAt: new Date(Date.now() + 3600_000),
+      withdrawsId: approvalId,
+    });
+  }
+
+  // The verification row is the MUTABLE half of the split and is this run's to
+  // remove. Only for the canary's own article.
   await db.delete(articleVerification).where(eq(articleVerification.articleId, articleId));
 }
 
 async function main() {
   const wpPostId = Number(process.argv[2]);
-  const phase = String(process.argv[3] ?? "");
 
-  if (!Number.isSafeInteger(wpPostId) || wpPostId <= 0 || !["setup", "run", "teardown"].includes(phase)) {
-    console.error("usage: tsx scripts/r08-ac10-e2e.ts <wpPostId> <setup|run|teardown>");
+  if (!Number.isSafeInteger(wpPostId) || wpPostId <= 0) {
+    console.error("usage: tsx scripts/r08-ac10-e2e.ts <wpPostId>");
     process.exit(2);
   }
 
   const articleId = String(wpPostId);
-  console.log(`\n=== P4-R08 AC-10 E2E · post ${wpPostId} · phase ${phase} ===\n`);
+  console.log(`\n=== P4-R08 AC-10 E2E · post ${wpPostId} · revision ${REVISION} ===\n`);
 
   // ── Every phase begins by reading WordPress. The article's real state is the
   //    premise of the whole run, and asserting it here means a surprise shows
@@ -122,33 +159,30 @@ async function main() {
   }
   ok("CONTROL-hash", `v1 read hash bridges to a 64-hex signature hash (${liveHash.slice(0, 12)}…)`);
 
-  if (phase === "teardown") {
-    await teardown(articleId);
-    const left = await db
-      .select({ id: articlePublishIntents.id })
-      .from(articlePublishIntents)
-      .where(and(eq(articlePublishIntents.articleId, articleId), eq(articlePublishIntents.revisionId, REVISION)));
-    eq_("teardown", left.length, 0);
-    eq_("post-untouched", before.postStatus, "draft");
-    return finish();
-  }
+  eq_("CONTROL-draft", before.postStatus, "draft", true);
+  if (controlFailed) return finish();
 
-  if (phase === "setup") {
-    await teardown(articleId); // idempotent re-run
-
+  let approvalId: string | null = null;
+  try {
     // QA must PASS for gate 3, and verification is what AC-04 reads. Both are
     // written here EXPLICITLY rather than defaulted, because a missing row
     // means "not verified" and would refuse -- which is the correct default and
     // the reason it has to be set deliberately for a publish to be eligible.
-    await db.insert(articleVerification).values({
-      articleId,
-      evidenceLevel: "E2",
-      qaResult: "PASS",
-      claimsChecked: 1,
-      unsupportedClaims: 0,
-      conflictingClaims: 0,
-      lastVerifiedAt: new Date(),
-    });
+    await db
+      .insert(articleVerification)
+      .values({
+        articleId,
+        evidenceLevel: "E2",
+        qaResult: "PASS",
+        claimsChecked: 1,
+        unsupportedClaims: 0,
+        conflictingClaims: 0,
+        lastVerifiedAt: new Date(),
+      })
+      .onConflictDoUpdate({
+        target: articleVerification.articleId,
+        set: { evidenceLevel: "E2", qaResult: "PASS", unsupportedClaims: 0, conflictingClaims: 0 },
+      });
 
     // The approval binds to the LIVE hash. `article_approvals_hash_shape`
     // CHECKs 64 lowercase hex, which is exactly the signature form -- the
@@ -166,6 +200,7 @@ async function main() {
       })
       .returning({ id: articleApprovals.id });
 
+    approvalId = approval!.id;
     ok("approval", `article_approvals row ${approval!.id}`);
 
     // The intent. The 0032 trigger PROVES it matches its approval -- article,
@@ -185,10 +220,21 @@ async function main() {
 
     ok("intent", `article_publish_intents row ${intent!.id} state=${intent!.state}`);
     eq_("intent-open", intent!.state, "OPEN");
-    return finish();
+
+    await runPhase(articleId, wpPostId, before);
+  } finally {
+    await teardown(articleId, approvalId);
+    ok("teardown", "intent + record + verification removed; approval WITHDRAWN (immutable by design)");
   }
 
-  // ── phase run ────────────────────────────────────────────────────
+  return finish();
+}
+
+async function runPhase(
+  articleId: string,
+  wpPostId: number,
+  before: Awaited<ReturnType<typeof readState>>,
+) {
   //
   // The REAL worker, the REAL wiring, the REAL production database and the
   // REAL WordPress route. Only the signing key is substituted -- see the module
@@ -257,8 +303,6 @@ async function main() {
 
   eq_("intent-cancelled", intents[0]?.state, "CANCELLED");
   eq_("resolved-at-set", intents[0]?.resolvedAt !== null, true);
-
-  return finish();
 }
 
 function finish() {
