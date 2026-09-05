@@ -230,7 +230,16 @@ fi
 #    where the defect happened.
 if [ "$(id -u)" = "0" ] && id opssite >/dev/null 2>&1 && [ "$(uname -s)" = "Linux" ]; then
 	SB2="$(mktemp -d)"
+	# `mktemp -d` is mode 700 and root-owned, so opssite cannot TRAVERSE into it
+	# and `test -r` on a file inside would fail however the file itself is owned.
+	# That is the non-traversable-parent case this very guard warns about, and
+	# the first version of this fixture walked straight into it: the case failed
+	# on the VPS while the real deploy had demonstrably worked. Making the path
+	# traversable is what lets the assertion measure ownership rather than the
+	# sandbox's own permissions.
+	chmod 755 "$SB2"
 	mkdir -p "$SB2/app/src/lib/db/migrations" "$SB2/app/.next/standalone"
+	chmod 755 "$SB2/app"
 	printf 'DEPLOY_TEST=1\n' > "$SB2/app/.env"
 	# Reproduce the defect exactly: root-owned, mode 600, inside the artefact.
 	printf 'DEPLOY_TEST=1\n' > "$SB2/app/.next/standalone/.env"
