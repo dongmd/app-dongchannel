@@ -207,8 +207,9 @@ test("việc tạo từ web cho trợ lý Hermes thật: có tin nhắn Telegram
 
 test("cờ preview: tắt mặc định, và không bao giờ bật khi NEXTAUTH_URL là dongchannel.com", async () => {
   const { isLumiPreviewEnabled, isLumiPreviewPath } = await import("./preview-flag.ts");
-  const keep = { p: process.env.DONGLUMI_PREVIEW, u: process.env.NEXTAUTH_URL };
+  const keep = { p: process.env.DONGLUMI_PREVIEW, u: process.env.NEXTAUTH_URL, d: process.env.LUMI_DATA };
   try {
+    delete process.env.LUMI_DATA; // the production host runs with LUMI_DATA=db, which (correctly) forces preview off
     delete process.env.DONGLUMI_PREVIEW;
     assert.equal(isLumiPreviewEnabled(), false);
     process.env.DONGLUMI_PREVIEW = "1";
@@ -220,6 +221,7 @@ test("cờ preview: tắt mặc định, và không bao giờ bật khi NEXTAUTH
   } finally {
     if (keep.p === undefined) delete process.env.DONGLUMI_PREVIEW; else process.env.DONGLUMI_PREVIEW = keep.p;
     if (keep.u === undefined) delete process.env.NEXTAUTH_URL; else process.env.NEXTAUTH_URL = keep.u;
+    if (keep.d === undefined) delete process.env.LUMI_DATA; else process.env.LUMI_DATA = keep.d;
   }
 });
 
