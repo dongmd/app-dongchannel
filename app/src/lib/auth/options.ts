@@ -1,6 +1,8 @@
 import "server-only";
 import type { NextAuthOptions } from "next-auth";
 import GoogleProvider from "next-auth/providers/google";
+import CredentialsProvider from "next-auth/providers/credentials";
+import { isDevLoginEnabled } from "./dev-login";
 import { eq } from "drizzle-orm";
 import { db } from "@/lib/db";
 import { users, type AppRole } from "@/lib/db/schema/identity";
@@ -32,6 +34,20 @@ export const authOptions: NextAuthOptions = {
     },
   },
   providers: [
+    // Local development only (see dev-login.ts). Absent in production builds.
+    ...(isDevLoginEnabled()
+      ? [
+          CredentialsProvider({
+            id: "dev-login",
+            name: "Dev login",
+            credentials: { email: { label: "Email", type: "text" } },
+            async authorize(credentials) {
+              const email = credentials?.email?.trim().toLowerCase();
+              return email ? { id: email, email, name: email } : null;
+            },
+          }),
+        ]
+      : []),
     GoogleProvider({
       clientId: process.env.GOOGLE_CLIENT_ID ?? "",
       clientSecret: process.env.GOOGLE_CLIENT_SECRET ?? "",

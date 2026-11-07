@@ -83,7 +83,7 @@ test("AC-05: telegram_ref accepts ids and nothing else", () => {
     "@owner",
     "hello there",
     "123:abc",
-    "8123456789:AAHdqTcvCH1vGWJxfSeofSAs0K5PALDsaw1", // a bot token has this shape
+    "1234567890:AAFAKEFAKEFAKEFAKEFAKEFAKEFAKEFAKEF", // a bot token has this shape
     "a@b.com",
     "",
     "123:456:789",
@@ -96,7 +96,7 @@ test("AC-05: telegram_ref accepts ids and nothing else", () => {
 });
 
 test("AC-05: a refused telegram_ref does not echo the value it refused", () => {
-  const token = "8123456789:AAHdqTcvCH1vGWJxfSeofSAs0K5PALDsaw1";
+  const token = "1234567890:AAFAKEFAKEFAKEFAKEFAKEFAKEFAKEFAKEF";
   const v = buildAuditRecord(input({ telegramRef: token }), NOW);
   assert.equal(v.ok, false);
   assert.equal(v.ok === false && v.reason, "TELEGRAM_REF_NOT_IDS");
@@ -111,8 +111,8 @@ test("a secret in the payload refuses the write -- redaction is not enough here"
   // An audit row cannot be edited or deleted afterwards, so a secret written
   // here is written for good. Scrubbing would leave the caller still passing it.
   const cases: Array<[string, unknown]> = [
-    ["bare bot token", { note: "8123456789:AAHdqTcvCH1vGWJxfSeofSAs0K5PALDsaw1" }],
-    ["token in a URL", { url: "https://api.telegram.org/bot8123456789:AAHdqTcvCH1vGWJxfSeofSAs0K5PALDsaw1/x" }],
+    ["bare bot token", { note: "1234567890:AAFAKEFAKEFAKEFAKEFAKEFAKEFAKEFAKEF" }],
+    ["token in a URL", { url: "https://api.telegram.org/bot1234567890:AAFAKEFAKEFAKEFAKEFAKEFAKEFAKEFAKEF/x" }],
     ["google client secret", { s: "GOCSPX-abcdefghijklmnopqrstuvwxyz" }],
     ["api key", { k: "sk-abcdefghijklmnopqrstuvwxyz012345" }],
     ["dsn with password", { db: "postgres://user:hunter2@host/db" }],

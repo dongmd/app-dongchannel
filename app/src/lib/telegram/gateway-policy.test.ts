@@ -222,7 +222,7 @@ test("AC-11: every command the registry declares is resolvable, and nothing else
 test("AC-06: a bare Telegram bot token is redacted from log output", () => {
   // The shape that leaks: it is embedded in the API URL, so a failed request
   // quoting its own URL prints the credential in full.
-  const token = "8123456789:AAHdqTcvCH1vGWJxfSeofSAs0K5PALDsaw1";
+  const token = "1234567890:AAFAKEFAKEFAKEFAKEFAKEFAKEFAKEFAKEF";
   const line = `GET https://api.telegram.org/bot${token}/getUpdates failed`;
 
   const scrubbed = scrub(line);
@@ -232,7 +232,7 @@ test("AC-06: a bare Telegram bot token is redacted from log output", () => {
 });
 
 test("AC-06: a token in a structured field is redacted whatever the key looks like", () => {
-  const token = "8123456789:AAHdqTcvCH1vGWJxfSeofSAs0K5PALDsaw1";
+  const token = "1234567890:AAFAKEFAKEFAKEFAKEFAKEFAKEFAKEFAKEF";
   const out = JSON.stringify(redact({ botToken: token, note: `using ${token}` }));
   assert.equal(out.includes(token), false, "the bot token survived structured redaction");
 });
@@ -279,7 +279,7 @@ test("AC-08: a gateway record never carries anything P3-R06 would refuse", () =>
   // canonical writer rejects, because AC-09 makes a refused audit write FAIL
   // THE OPERATION -- a gateway that could emit an unwritable record would be a
   // denial of service on itself.
-  const hostile = cmd(`/status ${"8123456789:AAHdqTcvCH1vGWJxfSeofSAs0K5PALDsaw1"}`, OWNER);
+  const hostile = cmd(`/status ${"1234567890:AAFAKEFAKEFAKEFAKEFAKEFAKEFAKEFAKEF"}`, OWNER);
   const rec = auditRecordFor(authorize(hostile, ALLOWLIST, NOW), NOW);
   assert.equal(JSON.stringify(rec).includes("AAHdqTcv"), false, "the token reached the record");
   assert.equal(buildAuditRecord({ ...rec }, NOW).ok, true);

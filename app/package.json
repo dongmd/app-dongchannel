@@ -1,8 +1,8 @@
 {
-  "name": "dongchannel-ops-hub",
+  "name": "dong-lumi-web",
   "version": "0.1.0",
   "private": true,
-  "description": "DongChannel AI Operations Hub \u2014 dashboard v\u1eadn h\u00e0nh AFF & YouTube Bot",
+  "description": "Dong-Lumi web app (app.dongchannel.com)",
   "engines": {
     "node": ">=20.11.0"
   },
@@ -10,13 +10,18 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
+    "preview": "node scripts/preview.mjs",
     "lint": "next lint",
     "typecheck": "tsc --noEmit",
+    "test:pg": "tsx --test --conditions=react-server src/lib/lumi-m1/pg-server.test.ts src/lib/lumi-m1/rollback.test.ts src/lib/lumi-m1/ui.test.ts",
+    "lumi:m1:dev": "node scripts/lumi-m1-devenv.mjs",
+    "lumi:m1:worker": "tsx --conditions=react-server scripts/lumi-m1-worker.ts --simulate",
+    "lumi:m1:seed": "tsx --conditions=react-server scripts/lumi-m1-seed.ts",
     "db:generate": "drizzle-kit generate",
     "db:migrate": "drizzle-kit migrate",
     "db:studio": "drizzle-kit studio",
     "db:seed": "tsx scripts/seed-allowlist.ts",
-    "test": "tsx --test --conditions=react-server src/lib/log-redact.test.ts src/lib/claims/visibility.test.ts src/lib/claims/public-payload.test.ts src/lib/auth/privilege.test.ts src/lib/wordpress/retry-policy.test.ts src/lib/wordpress/article-guard-policy.test.ts src/lib/wordpress/client.test.ts src/lib/content/content-mode-policy.test.ts src/lib/content/schema-agreement.test.ts src/lib/content/refresh-worker-boundary.test.ts src/lib/content/opportunity-policy.test.ts src/lib/content/opportunity-schema.test.ts src/lib/content/signal-policy.test.ts src/lib/content/signal-schema.test.ts src/lib/content/scoring-policy.test.ts src/lib/content/score-boundaries.test.ts src/lib/content/topic-cluster-policy.test.ts src/lib/content/trend-radar-policy.test.ts src/lib/content/bidirectional-discovery-policy.test.ts src/lib/content/content-family-policy.test.ts src/lib/opshub/surfaces.test.ts src/lib/telegram/gateway-policy.test.ts src/lib/audit/audit-policy.test.ts src/lib/telegram/callback-policy.test.ts src/lib/telegram/approval-policy.test.ts src/lib/telegram/command-policy.test.ts src/lib/telegram/command-handlers.test.ts src/lib/telegram/two-step-policy.test.ts src/lib/telegram/transport-policy.test.ts src/lib/telegram/owner-isolation.test.ts src/lib/telegram/preview-policy.test.ts src/lib/telegram/preview-boundary.test.ts src/lib/agents/agent-policy.test.ts src/lib/agents/runner.test.ts src/lib/agents/agent-boundary.test.ts src/lib/moneyos/display-policy.test.ts src/lib/moneyos/boundary.test.ts src/lib/content/qa-policy.test.ts src/lib/agents/project-research-policy.test.ts src/lib/agents/content-strategy-policy.test.ts src/lib/agents/evidence-research-policy.test.ts src/lib/agents/writer-policy.test.ts src/lib/agents/qa-agent-policy.test.ts src/lib/tasks/retry-policy.test.ts src/lib/publish/publisher-policy.test.ts src/lib/publish/idempotency-policy.test.ts src/lib/publish/publish-runner.test.ts src/lib/publish/publish-signature.test.ts src/lib/publish/publish-signer.test.ts src/lib/publish/publish-executor.test.ts src/lib/publish/publish-worker.test.ts src/lib/notify/outbound-policy.test.ts src/lib/test-registry.test.ts"
+    "test": "tsx --test --conditions=react-server src/lib/log-redact.test.ts src/lib/claims/visibility.test.ts src/lib/claims/public-payload.test.ts src/lib/auth/privilege.test.ts src/lib/wordpress/retry-policy.test.ts src/lib/wordpress/article-guard-policy.test.ts src/lib/wordpress/client.test.ts src/lib/content/content-mode-policy.test.ts src/lib/content/schema-agreement.test.ts src/lib/content/refresh-worker-boundary.test.ts src/lib/content/opportunity-policy.test.ts src/lib/content/opportunity-schema.test.ts src/lib/content/signal-policy.test.ts src/lib/content/signal-schema.test.ts src/lib/content/scoring-policy.test.ts src/lib/content/score-boundaries.test.ts src/lib/content/topic-cluster-policy.test.ts src/lib/content/trend-radar-policy.test.ts src/lib/content/bidirectional-discovery-policy.test.ts src/lib/content/content-family-policy.test.ts src/lib/opshub/surfaces.test.ts src/lib/telegram/gateway-policy.test.ts src/lib/audit/audit-policy.test.ts src/lib/telegram/callback-policy.test.ts src/lib/telegram/approval-policy.test.ts src/lib/telegram/command-policy.test.ts src/lib/telegram/command-handlers.test.ts src/lib/telegram/two-step-policy.test.ts src/lib/telegram/transport-policy.test.ts src/lib/telegram/owner-isolation.test.ts src/lib/telegram/preview-policy.test.ts src/lib/telegram/preview-boundary.test.ts src/lib/agents/agent-policy.test.ts src/lib/agents/runner.test.ts src/lib/agents/agent-boundary.test.ts src/lib/moneyos/display-policy.test.ts src/lib/moneyos/boundary.test.ts src/lib/content/qa-policy.test.ts src/lib/agents/project-research-policy.test.ts src/lib/agents/content-strategy-policy.test.ts src/lib/agents/evidence-research-policy.test.ts src/lib/agents/writer-policy.test.ts src/lib/agents/qa-agent-policy.test.ts src/lib/tasks/retry-policy.test.ts src/lib/publish/publisher-policy.test.ts src/lib/publish/idempotency-policy.test.ts src/lib/publish/publish-runner.test.ts src/lib/publish/publish-signature.test.ts src/lib/publish/publish-signer.test.ts src/lib/publish/publish-executor.test.ts src/lib/publish/publish-worker.test.ts src/lib/notify/outbound-policy.test.ts src/lib/lumi/engine.test.ts src/lib/lumi/data-mode.test.ts src/lib/lumi-m1/core.test.ts src/lib/lumi-m1/hermes-tools.test.ts src/lib/lumi-m1/ssh-hermes.test.ts src/lib/auth/dev-login.test.ts src/lib/test-registry.test.ts"
   },
   "dependencies": {
     "@auth/drizzle-adapter": "^1.7.4",
@@ -31,17 +36,22 @@
     "react-dom": "^19.0.0",
     "server-only": "^0.0.1",
     "tailwind-merge": "^2.6.0",
+    "three": "0.170.0",
     "zod": "^3.24.1"
   },
   "devDependencies": {
+    "@electric-sql/pglite": "^0.5.15",
     "@types/node": "^22.10.5",
     "@types/react": "^19.0.4",
     "@types/react-dom": "^19.0.2",
+    "@types/three": "0.170.0",
     "autoprefixer": "^10.4.20",
     "dotenv": "^17.4.2",
     "drizzle-kit": "^0.30.1",
+    "embedded-postgres": "18.6.0-beta.19",
     "eslint": "^9.18.0",
     "eslint-config-next": "^15.5.21",
+    "playwright-core": "^1.65.0",
     "postcss": "^8.5.22",
     "tailwindcss": "^3.4.17",
     "tsx": "^4.23.1",

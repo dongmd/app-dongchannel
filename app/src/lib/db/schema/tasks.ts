@@ -21,6 +21,9 @@ export const taskStatusEnum = pgEnum("task_status", [
   "CANCELLED",
   "SYNC_DELAYED",
   "IMPORTED",
+  // Dong-Lumi M1 (migrations 0039): written only while the m1_enabled flag is on; drained before a rollback (TDD 14.7).
+  "WAITING_ASSISTANT",
+  "ON_HOLD",
 ]);
 
 export const taskReviewStatusEnum = pgEnum("task_review_status", [

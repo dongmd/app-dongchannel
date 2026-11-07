@@ -1,0 +1,4 @@
+name: lumi-intake
+description: Giao viec tu Telegram -> BAN NHAP trong Dong-Lumi, khong qua model (danh tinh = id nguoi gui cua nen tang)
+events:
+  - agent:start

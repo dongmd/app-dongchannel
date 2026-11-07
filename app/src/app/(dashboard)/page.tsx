@@ -1,4 +1,6 @@
 import Link from "next/link";
+import { redirect } from "next/navigation";
+import { lumiDataMode } from "@/lib/lumi/data-mode";
 import { computeDashboardSummary } from "@/lib/dashboard/summary";
 import { getProfileFilter } from "@/lib/profiles/server";
 import { PROFILE_LABELS } from "@/lib/profiles/types";
@@ -13,6 +15,8 @@ interface Props {
 }
 
 export default async function OverviewPage({ searchParams }: Props) {
+  // Chế độ dữ liệu thật: trang chủ là Dong-Lumi. Tổng quan cũ vẫn mở được qua /?legacy=1.
+  if (lumiDataMode() === "db" && (await searchParams)["legacy"] !== "1") redirect("/lumi");
   const profile = await getProfileFilter(searchParams);
   const summary = await computeDashboardSummary(profile);
   const profileLabel = PROFILE_LABELS[profile];

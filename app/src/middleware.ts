@@ -1,6 +1,8 @@
 import { NextResponse, type NextRequest } from "next/server";
 import { getToken } from "next-auth/jwt";
 import { checkRateLimit, LIMITERS, makeKey } from "@/lib/rate-limit";
+import { isLumiPreviewEnabled, isLumiPreviewPath } from "@/lib/lumi/preview-flag";
+import { isServiceTokenPath } from "@/lib/lumi-m1/service-paths";
 
 // AC04/AC05 (DC-001) + AC06 (DC-004) + AC01/AC04 (DC-016)
 //   - Attach x-request-id vào mọi response
@@ -51,6 +53,20 @@ export async function middleware(req: NextRequest) {
         },
       },
     );
+  }
+
+  // Preview Dong-Lumi (dữ liệu mô phỏng, không đăng nhập): chỉ khi DONGLUMI_PREVIEW=1 và không phải production.
+  if (isLumiPreviewEnabled() && isLumiPreviewPath(pathname)) {
+    const response = NextResponse.next();
+    response.headers.set("x-request-id", requestId);
+    return response;
+  }
+
+  // M1 bot endpoints: a service token replaces the browser session. The handler verifies the token (fail closed).
+  if (req.headers.get("x-dc-service-token") !== null && isServiceTokenPath(req.method, pathname)) {
+    const response = NextResponse.next();
+    response.headers.set("x-request-id", requestId);
+    return response;
   }
 
   // Auth guard

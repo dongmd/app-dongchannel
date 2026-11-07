@@ -3,6 +3,7 @@ import {
   BarChart3,
   Brain,
   Briefcase,
+  ListChecks,
   DollarSign,
   Radar,
   Settings,
@@ -34,6 +35,14 @@ export const NAV_ITEMS: NavItem[] = [
     label: "Công việc",
     icon: Briefcase,
     match: (p) => p === "/tasks" || p.startsWith("/tasks/"),
+    section: "business",
+  },
+  {
+    // Dong-Lumi M1 (môi trường thử): giao việc cho trợ lý, xem đầu ra, duyệt. Dữ liệu thật trong PostgreSQL.
+    href: "/work",
+    label: "Giao việc (M1)",
+    icon: ListChecks,
+    match: (p) => p === "/work" || p.startsWith("/work/"),
     section: "business",
   },
   {

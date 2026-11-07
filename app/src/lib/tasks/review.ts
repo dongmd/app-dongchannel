@@ -1,5 +1,5 @@
 import "server-only";
-import { and, eq } from "drizzle-orm";
+import { and, eq, sql } from "drizzle-orm";
 import { db } from "@/lib/db";
 import { tasks, type TaskReviewStatus, type TaskStatus } from "@/lib/db/schema/tasks";
 import { auditEvents } from "@/lib/db/schema/audit";
@@ -75,6 +75,8 @@ export async function reviewTask(input: ReviewInput): Promise<ReviewResult> {
         reviewStatus: tasks.reviewStatus,
         updatedAt: tasks.updatedAt,
         completedAt: tasks.completedAt,
+        // M1 (migration 0040): tasks that belong to a Dong-Lumi project are reviewed through lumi_approvals only.
+        projectId: sql<string | null>`"tasks"."project_id"`,
       })
       .from(tasks)
       .where(eq(tasks.id, input.taskId))
@@ -83,6 +85,14 @@ export async function reviewTask(input: ReviewInput): Promise<ReviewResult> {
 
     if (!current) {
       return { ok: false, code: "NOT_FOUND", message: "Không tìm thấy nhiệm vụ." };
+    }
+
+    if (current.projectId) {
+      return {
+        ok: false,
+        code: "INVALID_TRANSITION",
+        message: "Việc thuộc luồng Dong-Lumi M1: duyệt qua POST /api/v1/approvals/decide (lưu quyết định theo phiên bản đầu ra).",
+      };
     }
 
     // AC05 — optimistic lock

@@ -55,7 +55,20 @@ const PKG = join(APP_ROOT, "package.json");
  * way to exclude a file is to forget it — which is indistinguishable from the
  * bug this guard exists to catch.
  */
-const EXCLUDED: ReadonlyArray<{ path: string; reason: string }> = [];
+const EXCLUDED: ReadonlyArray<{ path: string; reason: string }> = [
+	{
+		path: "src/lib/lumi-m1/pg-server.test.ts",
+		reason: "Starts a real PostgreSQL server process (embedded binaries) and kills a worker process; ~20s. Run with `pnpm test:pg` (TDD 14.9, evidence class 2).",
+	},
+	{
+		path: "src/lib/lumi-m1/ui.test.ts",
+		reason: "Drives Chrome against a Next dev server, a PostgreSQL server and a worker process; needs a local browser and ~2 min. Run with `pnpm test:pg` (TDD 14.9).",
+	},
+	{
+		path: "src/lib/lumi-m1/rollback.test.ts",
+		reason: "Needs git history (worktree of the previous release) and a PostgreSQL server; run with `pnpm test:pg` (TDD 14.7/14.9).",
+	},
+];
 
 function findTestFiles(dir: string): string[] {
 	const out: string[] = [];

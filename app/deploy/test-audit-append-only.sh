@@ -150,7 +150,7 @@ echo
 echo "=== 6. AC-05: the database refuses a telegram_ref that is not ids ==="
 
 tok="$(run_sql "insert into audit_events (actor_type, action, result, telegram_ref)
-                values ('system','telegram.command','OK','8123456789:AAHdqTcvCH1vGWJxfSeofSAs0K5PALDsaw1')")"
+                values ('system','telegram.command','OK','1234567890:AAFAKEFAKEFAKEFAKEFAKEFAKEFAKEFAKEF')")"
 if printf '%s' "$tok" | grep -qi "error"; then
 	ok "AC-05" "a bot-token-shaped reference is refused by the CHECK"
 else

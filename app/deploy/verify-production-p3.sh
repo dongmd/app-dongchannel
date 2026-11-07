@@ -94,7 +94,7 @@ AUD_MID="$(q "select count(*) from audit_events")"
 
 echo
 echo "=== 4. P3-R06 — the redaction CHECK holds in production ==="
-out="$(rt "INSERT INTO audit_events (actor_type, action, result, telegram_ref) VALUES ('system','telegram.command','OK','8123456789:AAHdqTcvCH1vGWJxfSeofSAs0K5PALDsaw1')")"
+out="$(rt "INSERT INTO audit_events (actor_type, action, result, telegram_ref) VALUES ('system','telegram.command','OK','1234567890:AAFAKEFAKEFAKEFAKEFAKEFAKEFAKEFAKEF')")"
 echo "$out" | grep -qi "error" && ok "R06" "a bot-token-shaped telegram_ref is refused by the CHECK" \
                               || bad "R06" "a token-shaped value was accepted into telegram_ref"
 

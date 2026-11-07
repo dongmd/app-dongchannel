@@ -15,6 +15,9 @@ const STATUS_LABEL: Record<TaskStatus, { label: string; tone: "muted" | "primary
   CANCELLED: { label: "Đã huỷ", tone: "muted" },
   SYNC_DELAYED: { label: "Đồng bộ chậm", tone: "warning" },
   IMPORTED: { label: "Đã nhập", tone: "muted" },
+  // Dong-Lumi M1 statuses (the badge must never throw on a value it has not seen).
+  WAITING_ASSISTANT: { label: "Chờ trợ lý", tone: "warning" },
+  ON_HOLD: { label: "Tạm giữ", tone: "warning" },
 };
 
 const TONE_STYLES: Record<"muted" | "primary" | "warning" | "destructive" | "success", string> = {
@@ -26,7 +29,7 @@ const TONE_STYLES: Record<"muted" | "primary" | "warning" | "destructive" | "suc
 };
 
 export function TaskStatusBadge({ status }: { status: TaskStatus }) {
-  const def = STATUS_LABEL[status];
+  const def = STATUS_LABEL[status] ?? { label: String(status), tone: "muted" as const };
   return (
     <span
       className={cn(

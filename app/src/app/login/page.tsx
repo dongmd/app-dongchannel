@@ -1,8 +1,8 @@
 "use client";
 
-import { signIn } from "next-auth/react";
+import { getProviders, signIn } from "next-auth/react";
 import { useSearchParams } from "next/navigation";
-import { Suspense } from "react";
+import { Suspense, useEffect, useState } from "react";
 
 // Auth.js v4 error codes -> AC10 error message (chung, không lộ email).
 const ERROR_MESSAGES: Record<string, string> = {
@@ -15,6 +15,26 @@ const ERROR_MESSAGES: Record<string, string> = {
   Callback: "Đăng nhập không thành công. Thử lại.",
   default: "Đăng nhập không thành công. Thử lại.",
 };
+
+// Local development only: the provider exists server-side only when the dev-login gate is open (lib/auth/dev-login.ts),
+// so on staging/production getProviders() has no "dev-login" entry and nothing below renders.
+function DevLogin({ callbackUrl }: { callbackUrl: string }) {
+  const [enabled, setEnabled] = useState(false);
+  useEffect(() => { getProviders().then((p) => setEnabled(Boolean(p && p["dev-login"]))).catch(() => setEnabled(false)); }, []);
+  if (!enabled) return null;
+  return (
+    <section aria-label="Đăng nhập thử (chỉ máy dev)" className="space-y-2 rounded-md border border-amber-500/40 bg-amber-500/10 p-3">
+      <p className="text-xs text-amber-500">Đăng nhập thử — chỉ có trên máy phát triển, dữ liệu tổng hợp.</p>
+      <div className="flex flex-wrap gap-2">
+        {["owner@dev.local", "admin@dev.local", "viewer@dev.local"].map((email) => (
+          <button key={email} type="button" onClick={() => signIn("dev-login", { email, callbackUrl })} className="rounded-md border border-border px-3 py-1.5 text-xs hover:bg-accent focus:outline-none focus:ring-2 focus:ring-ring">
+            {email.split("@")[0]!.toUpperCase()}
+          </button>
+        ))}
+      </div>
+    </section>
+  );
+}
 
 function LoginContent() {
   const params = useSearchParams();
@@ -51,6 +71,8 @@ function LoginContent() {
         <GoogleIcon />
         Đăng nhập với Google
       </button>
+
+      <DevLogin callbackUrl={callbackUrl} />
 
       <p className="text-center text-xs text-muted-foreground">
         Bằng cách đăng nhập, bạn đồng ý ghi lại phiên truy cập trong nhật ký hệ thống.

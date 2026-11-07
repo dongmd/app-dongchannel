@@ -50,3 +50,4 @@ drizzle/
 
 # graphify (per-repo knowledge graph, if installed)
 graphify-out/
+.preview-data/

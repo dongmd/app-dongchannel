@@ -287,8 +287,9 @@ export function storyIdOwnership(): ReadonlyMap<string, SurfaceOwner> {
 // addition "must go through the requirement, not through a component edit" --
 // this is that requirement doing it, and the entry is added HERE first because
 // this list is the design statement the implementation is checked against.
+// Dong-Lumi M1 added `/work` (giao việc cho trợ lý; TDD 14.9, 2026-11-06) the same way: here first, then the component.
 export const REQUIRED_NAV_HREFS = [
-  "/", "/tasks", "/moneyos", "/aff", "/youtube", "/memory", "/admin",
+  "/", "/tasks", "/work", "/moneyos", "/aff", "/youtube", "/memory", "/admin",
 ] as const;
 
 /** §7.3 elements. Keys are component module names under `components/layout`. */

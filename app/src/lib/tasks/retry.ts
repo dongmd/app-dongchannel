@@ -48,6 +48,7 @@ export async function retryTask(
       id: tasks.id,
       status: tasks.status,
       profileSlug: tasks.profileSlug,
+      projectId: sql<string | null>`"tasks"."project_id"`,
       retryCount: sql<number>`(
         SELECT count(*)::int FROM task_retry_attempts a WHERE a.task_id = ${tasks.id}
       )`,
@@ -64,6 +65,11 @@ export async function retryTask(
   const auth = authorizeRetry(deps.requester, task?.profileSlug ?? null);
   if (!auth.ok) {
     return { ok: false, reason: auth.reason, detail: null };
+  }
+
+  if (task?.projectId) {
+    // M1 tasks have their own run model (lumi_task_runs); the legacy retry must not touch them.
+    return { ok: false, reason: "TASK_NOT_IN_A_FAILURE_STATE", detail: "Việc thuộc luồng M1: dùng POST /api/v1/tasks/{id}/runs." };
   }
 
   const eligible = retryEligibility(
