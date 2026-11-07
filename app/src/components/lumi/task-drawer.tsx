@@ -246,6 +246,17 @@ function RealPanel({ task, role }: { task: NonNullable<ReturnType<typeof useLumi
           {x.errorCode && <span style={{ color: "#f08a8a" }}>{x.errorCode}</span>}
         </div>
       ))}
+      {r.children.length > 0 && (
+        <>
+          <div className="l-label">Kế hoạch / việc con ({r.children.length}){r.checkpoints > 0 ? ` · ${r.checkpoints} điểm dừng` : ""}</div>
+          {r.children.map((c) => (
+            <div key={c.code} className="small" style={{ display: "flex", gap: 8, flexWrap: "wrap" }} data-testid="plan-item">
+              <span>{c.code}</span><strong>{REAL_STATUS_LABEL[c.status] ?? c.status}</strong><span>{c.title}</span>
+              {c.note && <span className="muted">{c.note}</span>}
+            </div>
+          ))}
+        </>
+      )}
       <div className="l-row" style={{ marginTop: 10, flexWrap: "wrap" }}>
         {canManage && retryable && <button className="l-btn sm" disabled={busy} onClick={() => go(() => dispatch({ type: "task.retry", taskId: task.id }))}>{r.status === "REVISION_REQUESTED" ? "Giao trợ lý sửa" : "Giao lại"}</button>}
         {canManage && !closed && <button className="l-btn sm danger" disabled={busy} onClick={() => go(() => dispatch({ type: "task.cancel", taskId: task.id, reason: "Chủ hủy từ giao diện Dong-Lumi" }))}>Hủy việc</button>}

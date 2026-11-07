@@ -145,6 +145,12 @@ function NeedsMe({ f }: { f: DashFilter }) {
           {c.total} mục
         </LumiLink>
       </div>
+      {!f.projectId && !f.memberId && (state.real?.plansPending?.length ?? 0) > 0 && (
+        <div className="l-note" style={{ marginBottom: 8 }} data-testid="dash-plans-pending">
+          <strong>{state.real!.plansPending!.length} kế hoạch chờ bạn duyệt:</strong>{" "}
+          {state.real!.plansPending!.map((p) => <LumiLink key={p.planId} href={`/lumi/plans/${p.planId}`} className="l-chiplink amber">{p.code} v{p.version}</LumiLink>)}
+        </div>
+      )}
       {c.total === 0 ? (
         <div className="l-row" style={{ color: "var(--l-green)", padding: "8px 0" }}><CheckCircle2 size={18} /> Không có gì chờ bạn quyết{f.projectId || f.memberId ? " trong phạm vi đang lọc" : ""}.</div>
       ) : (

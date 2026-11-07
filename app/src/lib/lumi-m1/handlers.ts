@@ -14,6 +14,8 @@ import {
   setDispatchEnabled, setFlag, startRun, submitOutput, acceptHumanTask, type Db, type HermesPort, type Role,
 } from "./core";
 import { createTask, transitionTask, upsertActor } from "./core-web";
+import { createGrant, declareCapability, decideActionRequest, decideProposal, revokeGrant, setAutonomyLimits } from "./autonomy";
+import { cancelPlan, closeGoal, companyOverview, createGoal, createPlan, decidePlan, getPlanDetail, reconcileLedger, recordLedger, revisePlan, setPlansEnabled, type PlanDecision } from "./plans";
 
 export type Principal =
   | { kind: "user"; actorRef: string; role: Role }
@@ -56,6 +58,17 @@ const MESSAGES: Record<string, string> = {
   RATE_LIMITED: "Quá nhiều yêu cầu",
   PAYLOAD_TOO_LARGE: "Thân yêu cầu quá lớn",
   M1_DISABLED: "Luồng M1 đang tắt (cờ m1_enabled)",
+  PLANS_DISABLED: "Tính năng kế hoạch đang tắt (cờ plans_enabled)",
+  PLAN_EXISTS: "Mục tiêu này đã có kế hoạch đang chạy",
+  PLAN_CLOSED: "Kế hoạch đã kết thúc",
+  PLAN_LIVE: "Mục tiêu còn kế hoạch đang chạy; hủy hoặc hoàn tất kế hoạch trước",
+  PLANNING_OPEN: "Đang có việc lập kế hoạch chưa xong",
+  NO_BUDGET: "Không đủ ngân sách khả dụng cho phần cam kết",
+  CEILING_BELOW_USED: "Trần mới thấp hơn phần đã dùng và cam kết",
+  TASK_LOCKED: "Việc đã chạy không được sửa hoặc bỏ",
+  PROJECT_NOT_ACTIVE: "Dự án không còn hoạt động",
+  RUN_NOT_OPEN: "Lượt chạy không còn mở",
+  NOT_LEAD: "Bạn không phải trưởng kế hoạch",
 };
 
 export function fail(e: unknown): ApiRes {
@@ -164,8 +177,8 @@ export const HANDLERS: Record<string, (ctx: ApiCtx, req: ApiReq) => Promise<ApiR
     const b = req.body; need(b, ["content", "idempotency_key"]);
     const taskId = uuid(req.params.id, "task_id");
     if (p.kind === "bot") need(b, ["run_id"]);
-    const r: any = await submitOutput(ctx.db, { taskId, runId: p.kind === "bot" ? uuid(b.run_id, "run_id") : undefined, actorRef: p.actorRef, content: String(b.content).slice(0, 50_000), idempotencyKey: String(b.idempotency_key), now: ctx.now() });
-    const data = { output_id: r.output.id, version: r.output.version, late: r.late === true };
+    const r: any = await submitOutput(ctx.db, { taskId, runId: p.kind === "bot" ? uuid(b.run_id, "run_id") : undefined, actorRef: p.actorRef, content: String(b.content).slice(0, 50_000), idempotencyKey: String(b.idempotency_key), now: ctx.now(), final: b.final === false ? false : undefined });
+    const data = { output_id: r.output.id, version: r.output.version, late: r.late === true, ...(r.checkpoint ? { checkpoint: r.checkpoint } : {}) };
     return r.alreadyProcessed ? processed(data) : ok(data, 201);
   },
   // 8.6.6 (mounted at /tasks/{id}/runs because legacy /tasks/{id}/retry already exists; see TDD 8.6.6)
@@ -226,9 +239,114 @@ export const HANDLERS: Record<string, (ctx: ApiCtx, req: ApiReq) => Promise<ApiR
   async setFlag(ctx, req) {
     const u = userOnly(req.principal);
     const b = req.body; need(b, ["key", "value"]);
-    if (!["emergency_stop", "m1_enabled"].includes(b.key)) throw new LumiError("VALIDATION_ERROR", 400, { missing: ["key"] });
-    await setFlag(ctx.db, u.actorRef, b.key, b.value === true, ctx.now());
+    if (!["emergency_stop", "m1_enabled", "plans_enabled"].includes(b.key)) throw new LumiError("VALIDATION_ERROR", 400, { missing: ["key"] });
+    if (b.key === "plans_enabled") await setPlansEnabled(ctx.db, u.actorRef, b.value === true, ctx.now());
+    else await setFlag(ctx.db, u.actorRef, b.key, b.value === true, ctx.now());
     return ok({ key: b.key, value: b.value === true });
+  },
+  // ── Autonomy (TDD 8.11): owner-only. Bots never reach these (userOnly).
+  async declareCapability(ctx, req) {
+    const u = userOnly(req.principal);
+    const b = req.body; need(b, ["mode"]);
+    if (!["RESTRICTED", "DECLARED_FULL"].includes(b.mode)) throw new LumiError("VALIDATION_ERROR", 400, { missing: ["mode"] });
+    await declareCapability(ctx.db, ctx.hermes, u.actorRef, uuid(req.params.id, "assistant_id"), b.mode, b.acknowledged === true, ctx.now());
+    return ok({ mode: b.mode, dispatch_enabled: false });
+  },
+  async setAutonomyLimits(ctx, req) {
+    const u = userOnly(req.principal);
+    const b = req.body;
+    await setAutonomyLimits(ctx.db, u.actorRef, uuid(req.params.id, "assistant_id"), { maxContinuations: b.max_continuations, maxSubtasks: b.max_subtasks }, ctx.now());
+    return ok({});
+  },
+  async createGrant(ctx, req) {
+    const u = userOnly(req.principal);
+    const b = req.body; need(b, ["assistant_id", "project_id", "account_ref", "action_type", "valid_until"]);
+    const vu = new Date(b.valid_until); if (Number.isNaN(vu.getTime())) throw new LumiError("VALIDATION_ERROR", 400, { missing: ["valid_until(invalid)"] });
+    const n = (v: unknown) => (v === undefined || v === null || v === "" ? undefined : Number(v));
+    const g = await createGrant(ctx.db, u.actorRef, { assistantId: uuid(b.assistant_id, "assistant_id"), projectId: uuid(b.project_id, "project_id"), accountRef: String(b.account_ref), actionType: String(b.action_type), currency: str(b.currency), perActionMax: n(b.per_action_max), budgetTotal: n(b.budget_total), countLimit: n(b.count_limit), askIfAmountOver: n(b.ask_if_amount_over), validUntil: vu, note: str(b.note) }, ctx.now());
+    return ok({ grant_id: g.id }, 201);
+  },
+  async revokeGrant(ctx, req) {
+    const u = userOnly(req.principal);
+    await revokeGrant(ctx.db, u.actorRef, uuid(req.params.id, "grant_id"), ctx.now());
+    return ok({});
+  },
+  async decideAction(ctx, req) {
+    const u = userOnly(req.principal);
+    const b = req.body; need(b, ["decision"]);
+    if (!["APPROVE", "DENY"].includes(b.decision)) throw new LumiError("VALIDATION_ERROR", 400, { missing: ["decision"] });
+    const r = await decideActionRequest(ctx.db, u.actorRef, uuid(req.params.id, "request_id"), b.decision, str(b.note), ctx.now());
+    return r.alreadyProcessed ? processed({ state: r.state }) : ok({ state: r.state });
+  },
+  async decideProposal(ctx, req) {
+    const u = userOnly(req.principal);
+    const b = req.body; need(b, ["decision"]);
+    if (!["ACTIVATE", "REJECT"].includes(b.decision)) throw new LumiError("VALIDATION_ERROR", 400, { missing: ["decision"] });
+    const r = await decideProposal(ctx.db, u.actorRef, uuid(req.params.id, "project_id"), b.decision, ctx.now());
+    return r.alreadyProcessed ? processed({}) : ok({});
+  },
+  // ── IMP-01: goals, plans, ledger (TDD 14.11.B.5). All user-only; bots reach plans only through the MCP tool plan_submit_version.
+  async listGoals(ctx, req) {
+    userOnly(req.principal);
+    return ok(await companyOverview(ctx.db));
+  },
+  async createGoal(ctx, req) {
+    const u = userOnly(req.principal);
+    const b = req.body; need(b, ["project_id", "title", "outcome"]);
+    const key = idemKey(req);
+    const n = (v: unknown) => (v === undefined || v === null || v === "" ? undefined : Number(v));
+    const d = (v: unknown) => { if (v === undefined || v === null || v === "") return undefined; const x = new Date(String(v)); if (Number.isNaN(x.getTime())) throw new LumiError("VALIDATION_ERROR", 400, { missing: ["date(invalid)"] }); return x; };
+    const r = await createGoal(ctx.db, { actorRef: u.actorRef, key, title: String(b.title), outcome: String(b.outcome), projectId: uuid(b.project_id, "project_id"), metrics: b.metrics, constraints: b.constraints, maxLoss: n(b.max_loss), currency: str(b.currency), periodStart: d(b.period_start), periodEnd: d(b.period_end), now: ctx.now() });
+    return r.alreadyProcessed ? processed({ goal: r.goal }) : ok({ goal: r.goal }, 201);
+  },
+  async closeGoal(ctx, req) {
+    const u = userOnly(req.principal);
+    const b = req.body; need(b, ["result"]);
+    const r = await closeGoal(ctx.db, { actorRef: u.actorRef, goalId: uuid(req.params.id, "goal_id"), result: String(b.result), note: str(b.note), now: ctx.now() });
+    return r.alreadyProcessed ? processed({ goal: r.goal }) : ok({ goal: r.goal });
+  },
+  async createPlan(ctx, req) {
+    const u = userOnly(req.principal);
+    const b = req.body; need(b, ["goal_id", "lead_assistant_id"]);
+    const r = await createPlan(ctx.db, { actorRef: u.actorRef, key: idemKey(req), goalId: uuid(b.goal_id, "goal_id"), leadAssistantId: uuid(b.lead_assistant_id, "lead_assistant_id"), now: ctx.now() });
+    return r.alreadyProcessed ? processed({ plan: r.plan }) : ok({ plan: r.plan }, 201);
+  },
+  async planDetail(ctx, req) {
+    userOnly(req.principal);
+    const d = await getPlanDetail(ctx.db, uuid(req.params.id, "plan_id"));
+    if (!d) throw new LumiError("NOT_FOUND", 404);
+    return ok(d);
+  },
+  async decidePlan(ctx, req) {
+    const u = userOnly(req.principal);
+    const b = req.body; need(b, ["version", "content_hash", "decision"]);
+    if (!["APPROVE", "REVISE", "REJECT", "DEFER", "RESUME"].includes(b.decision)) throw new LumiError("VALIDATION_ERROR", 400, { missing: ["decision"] });
+    const r = await decidePlan(ctx.db, { actorRef: u.actorRef, planId: uuid(req.params.id, "plan_id"), version: Number(b.version), contentHash: String(b.content_hash), decision: b.decision as PlanDecision, reason: str(b.reason), now: ctx.now() });
+    return r.alreadyProcessed ? processed({ plan: r.plan, decision: r.decision }) : ok({ plan: r.plan, decision: r.decision });
+  },
+  async revisePlan(ctx, req) {
+    const u = userOnly(req.principal);
+    need(req.body, ["instruction"]);
+    const r = await revisePlan(ctx.db, { actorRef: u.actorRef, planId: uuid(req.params.id, "plan_id"), instruction: String(req.body.instruction), now: ctx.now() });
+    return ok({ task_id: r.task.id }, 201);
+  },
+  async cancelPlan(ctx, req) {
+    const u = userOnly(req.principal);
+    const r = await cancelPlan(ctx.db, { actorRef: u.actorRef, planId: uuid(req.params.id, "plan_id"), reason: String(req.body?.reason ?? ""), now: ctx.now() });
+    return r.alreadyProcessed ? processed({ plan: r.plan }) : ok({ plan: r.plan });
+  },
+  async recordLedger(ctx, req) {
+    const u = userOnly(req.principal);
+    const b = req.body; need(b, ["category", "amount", "currency", "source"]);
+    const r = await recordLedger(ctx.db, { actorRef: u.actorRef, planId: uuid(req.params.id, "plan_id"), key: idemKey(req), category: String(b.category), amount: Number(b.amount), currency: String(b.currency), source: String(b.source), budgetKind: b.budget_kind === "PREPARE" ? "PREPARE" : "EXECUTE", taskId: b.task_id ? uuid(b.task_id, "task_id") : undefined, note: str(b.note), now: ctx.now() });
+    return r.created ? ok({ created: true }, 201) : processed({ created: false });
+  },
+  async reconcileLedger(ctx, req) {
+    const u = userOnly(req.principal);
+    const b = req.body; need(b, ["entry_ids", "reconciliation_key"]);
+    if (!Array.isArray(b.entry_ids)) throw new LumiError("VALIDATION_ERROR", 400, { missing: ["entry_ids(array)"] });
+    const r = await reconcileLedger(ctx.db, { actorRef: u.actorRef, planId: uuid(req.params.id, "plan_id"), entryIds: b.entry_ids.map((x: unknown) => uuid(x, "entry_id")), reconciliationKey: String(b.reconciliation_key), now: ctx.now() });
+    return ok(r);
   },
   async cancel(ctx, req) {
     const u = userOnly(req.principal);

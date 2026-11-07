@@ -73,12 +73,12 @@ before(async () => {
   assert.equal(seed.status, 0, seed.stderr);
   const p1 = await freePort(); const p2 = await freePort();
   base = `http://localhost:${p1}`; baseNoLogin = `http://localhost:${p2}`;
-  startNext(p1, { LUMI_DEV_LOGIN: "1", LUMI_DATA: "db", DONGLUMI_PREVIEW: "1" }); // db mode must win over the anonymous preview flag
+  startNext(p1, { LUMI_DEV_LOGIN: "1", LUMI_DATA: "db", DONGLUMI_PREVIEW: "1", LUMI_PLAN_MAX_TASKS: "5" }); // db mode must win over the anonymous preview flag
   startNext(p2, { LUMI_DATA: "db" }); // gate CLOSED: no LUMI_DEV_LOGIN
-  kids.push(spawn(process.execPath, ["--import", "tsx", "--conditions=react-server", "scripts/lumi-m1-worker.ts", "--simulate"], { cwd: process.cwd(), stdio: "ignore", env: { ...process.env, DATABASE_URL: pg.url } }));
+  kids.push(spawn(process.execPath, ["--import", "tsx", "--conditions=react-server", "scripts/lumi-m1-worker.ts", "--simulate"], { cwd: process.cwd(), stdio: "ignore", env: { ...process.env, DATABASE_URL: pg.url, LUMI_PLAN_MAX_TASKS: "5" } }));
   await Promise.all([waitHttp(`${base}/api/health`), waitHttp(`${baseNoLogin}/api/health`)]);
   // Warm up (compile) every route the tests touch so a dev-server hot reload cannot interrupt a login mid-test.
-  for (const o of [base, baseNoLogin]) for (const path of ["/login", "/work", "/lumi", "/lumi/projects/test-offer-us", "/lumi/telegram", "/api/lumi/state", "/api/auth/session", "/api/v1/tasks"]) await fetch(o + path, { redirect: "manual" }).catch(() => {});
+  for (const o of [base, baseNoLogin]) for (const path of ["/login", "/work", "/lumi", "/lumi/projects/test-offer-us", "/lumi/telegram", "/lumi/company", "/api/v1/lumi/goals", "/api/lumi/state", "/api/auth/session", "/api/v1/tasks"]) await fetch(o + path, { redirect: "manual" }).catch(() => {});
   browser = await chromium.launch({ executablePath: CHROME, headless: true });
 });
 after(async () => {
@@ -234,6 +234,111 @@ describe("Giao diện Dong-Lumi mới (/lumi) trên dữ liệu THẬT", () => {
     });
     assert.equal(r.ok, false);
     assert.equal((await pg.sql`SELECT count(*)::int n FROM tasks`)[0]!.n, before);
+    await ctx.close();
+  });
+});
+
+describe("IMP-01 — kế hoạch xuyên suốt cho một bot (adapter GIẢ, dữ liệu mô phỏng)", () => {
+  it("OWNER: bật kế hoạch → tạo mục tiêu → bot (giả) lập kế hoạch → duyệt 2 bước (bấm đúp) → 2 việc chạy → duyệt đầu ra → báo cáo cuối → đóng mục tiêu; đối chiếu CSDL", async () => {
+    const ctx = await browser.newContext(); const page = await ctx.newPage();
+    assert.equal((await login(page, base, "owner@dev.local")).user?.role, "OWNER");
+    const [asst] = await pg.sql`SELECT dispatch_enabled FROM lumi_assistants WHERE slug='lumitest'`;
+    if (!asst!.dispatch_enabled) {
+      await go(page, `${base}/lumi/telegram`);
+      await page.getByRole("button", { name: /Giao việc: TẮT/ }).click();
+      await page.getByRole("button", { name: /Giao việc: BẬT/ }).waitFor();
+    }
+    await go(page, `${base}/lumi/company`);
+    await page.getByTestId("company-honesty").waitFor();
+    // trạng thái ban đầu: tính năng tắt, nói rõ, chưa tạo được mục tiêu
+    await page.getByTestId("plans-off").waitFor();
+    assert.equal(await page.getByTestId("goal-create-open").count(), 0);
+    await page.getByTestId("plans-enable").click();
+    await page.getByTestId("goal-create-open").waitFor();
+    await page.getByTestId("goal-create-open").click();
+    await page.getByTestId("goal-title").fill("Thử hướng X (UI kế hoạch tự động)");
+    await page.getByTestId("goal-outcome").fill("Có kế hoạch thử để quyết định đầu tư tiếp hay dừng");
+    await page.getByTestId("goal-submit").click();
+    const goal = await (async () => { const t0 = Date.now(); for (;;) { const [r] = await pg.sql`SELECT code FROM lumi_goals WHERE title LIKE '%UI kế hoạch tự động%'`; if (r) return r.code as string; if (Date.now() - t0 > 30000) throw new Error("goal not created"); await new Promise((x) => setTimeout(x, 500)); } })();
+    await page.getByTestId(`plan-request-${goal}`).click();
+    await page.getByTestId("plan-create-submit").click();
+    const link = page.getByTestId(`goal-${goal}`).locator("a[href^='/lumi/plans/']");
+    await link.waitFor({ timeout: 30_000 });
+    await link.click();
+    await page.waitForURL(/\/lumi\/plans\/[0-9a-f-]{36}$/, { timeout: 60_000 });
+    const planUrl = page.url();
+    // worker giả (có nhãn [MÔ PHỎNG]) nộp kế hoạch mẫu
+    // đợi tới khi worker giả đã nộp phiên bản 1 (CSDL), rồi mới tải trang — tránh tải lại liên tục khi dev server đang biên dịch
+    await (async () => { const t0 = Date.now(); for (;;) { if ((await pg.sql`SELECT 1 FROM lumi_plan_versions v JOIN lumi_plans p ON p.id=v.plan_id JOIN lumi_goals g ON g.id=p.goal_id WHERE g.code=${goal}`).length) return; if (Date.now() - t0 > 90000) throw new Error("worker giả chưa nộp kế hoạch"); await new Promise((x) => setTimeout(x, 1000)); } })();
+    await page.reload();
+    await page.getByTestId("plan-honesty").waitFor({ timeout: 90_000 });
+    await (async () => { const t0 = Date.now(); for (;;) { if (await page.getByTestId("plan-approve-open").count()) return; if (Date.now() - t0 > 90000) throw new Error("plan not submitted: " + (await page.locator("main").innerText()).slice(0, 500)); await page.waitForTimeout(5000); await page.reload(); } })();
+    const body = await page.getByTestId("pending-version").innerText();
+    assert.match(body, /MÔ PHỎNG/);
+    assert.match(await page.getByTestId("ai-cost-note").innerText(), /Chi phí AI chưa đo theo lượt/);
+    // bước 1 → bước 2; bấm đúp xác nhận ⇒ chỉ một lần duyệt
+    await page.getByTestId("plan-approve-open").click();
+    await page.getByTestId("dlg-confirm").waitFor();
+    await page.getByTestId("dlg-confirm").dblclick().catch(() => {});
+    await page.getByTestId("approved-version").waitFor({ timeout: 30_000 });
+    const [plan] = await pg.sql`SELECT p.id,p.status,p.approved_version FROM lumi_plans p JOIN lumi_goals g ON g.id=p.goal_id WHERE g.code=${goal} ORDER BY p.created_at DESC LIMIT 1`;
+    assert.equal(plan!.status, "EXECUTING");
+    assert.equal((await pg.sql`SELECT 1 FROM lumi_approvals WHERE kind='PLAN' AND object_id=${plan!.id}`).length, 1);
+    assert.equal((await pg.sql`SELECT 1 FROM tasks WHERE plan_id=${plan!.id} AND plan_task_key IS NOT NULL`).length, 2);
+    // hai việc chạy bằng worker giả → chờ duyệt đầu ra; Chủ duyệt từng đầu ra ở màn Việc
+    const codes = (await pg.sql`SELECT code FROM tasks WHERE plan_id=${plan!.id} AND plan_task_key IS NOT NULL ORDER BY plan_task_key`).map((r) => r.code as string);
+    for (const code of codes) {
+      await go(page, `${base}/lumi/projects/test-offer-us?task=${code}`);
+      await waitIn(page, '[data-testid="task-detail"]', "Duyệt bản 1");
+      await page.getByRole("button", { name: "Duyệt bản 1" }).click();
+      await waitIn(page, '[data-testid="real-panel"]', "Trạng thái thật: Hoàn thành");
+    }
+    // worker kết thúc kế hoạch: báo cáo cuối + DONE (đúng một bản), chi phí AI ghi 'chưa biết'
+    await (async () => { const t0 = Date.now(); for (;;) { const [r] = await pg.sql`SELECT status FROM lumi_plans WHERE id=${plan!.id}`; if (r!.status === "DONE") return; if (Date.now() - t0 > 60000) throw new Error("plan not DONE: " + r!.status); await new Promise((x) => setTimeout(x, 1000)); } })();
+    assert.equal((await pg.sql`SELECT 1 FROM lumi_reports WHERE plan_id=${plan!.id} AND kind='FINAL'`).length, 1);
+    assert.ok((await pg.sql`SELECT 1 FROM lumi_ledger_entries WHERE plan_id=${plan!.id} AND entry_type='ACTUAL' AND amount IS NULL AND source='UNKNOWN'`).length >= 2);
+    assert.equal((await pg.sql`SELECT 1 FROM lumi_ledger_entries WHERE plan_id=${plan!.id} AND entry_type='ACTUAL' AND amount=0`).length, 0, "không bao giờ ghi 0 thay cho 'chưa biết'");
+    await go(page, planUrl);
+    await page.getByTestId("plan-reports").waitFor();
+    assert.match(await page.getByTestId("plan-ledger").innerText(), /chưa biết/i);
+    // mục tiêu CHƯA tự đóng; Chủ đóng với bằng chứng ≥ 10 ký tự
+    assert.equal((await pg.sql`SELECT status FROM lumi_goals WHERE code=${goal}`)[0]!.status, "ACTIVE");
+    await go(page, `${base}/lumi/company`);
+    await page.getByTestId(`goal-close-${goal}`).click();
+    await page.getByTestId("goal-result").selectOption("ACHIEVED");
+    await page.getByTestId("goal-close-submit").click();
+    await page.getByRole("alert").filter({ hasText: /10/ }).waitFor(); // thiếu bằng chứng ⇒ bị từ chối
+    await page.getByTestId("goal-close-note").fill("Đã xem báo cáo cuối và đầu ra mô phỏng — chỉ để kiểm thử luồng");
+    await page.getByTestId("goal-close-submit").click();
+    await (async () => { const t0 = Date.now(); for (;;) { const [r] = await pg.sql`SELECT status,result FROM lumi_goals WHERE code=${goal}`; if (r!.status !== "ACTIVE") { assert.equal(r!.result, "ACHIEVED"); return; } if (Date.now() - t0 > 20000) throw new Error("goal not closed"); await new Promise((x) => setTimeout(x, 500)); } })();
+    await ctx.close();
+  });
+
+  it("VIEWER: xem được Công ty và kế hoạch nhưng không có nút duyệt/ghi/hủy; API ghi bị từ chối và không đổi gì", async () => {
+    const ctx = await browser.newContext(); const page = await ctx.newPage();
+    assert.equal((await login(page, base, "viewer@dev.local")).user?.role, "VIEWER");
+    await go(page, `${base}/lumi/company`);
+    await page.getByTestId("company-honesty").waitFor();
+    assert.equal(await page.getByTestId("goal-create-open").count(), 0);
+    assert.equal(await page.getByTestId("plans-enable").count(), 0);
+    const [pl] = await pg.sql`SELECT id FROM lumi_plans ORDER BY created_at DESC LIMIT 1`;
+    await go(page, `${base}/lumi/plans/${pl!.id}`);
+    await page.getByTestId("plan-view").waitFor();
+    for (const t of ["plan-approve-open", "plan-reject-open", "plan-cancel-open", "ledger-open"]) assert.equal(await page.getByTestId(t).count(), 0, t);
+    const before = (await pg.sql`SELECT (SELECT count(*)::int FROM lumi_goals) g,(SELECT count(*)::int FROM lumi_ledger_entries) l`)[0]!;
+    const st = await page.evaluate(async (id) => (await fetch(`/api/v1/lumi/plans/${id}/cancel`, { method: "POST", headers: { "content-type": "application/json", "idempotency-key": "viewer-try-cancel-1" }, body: JSON.stringify({ reason: "viewer thử hủy" }) })).status, pl!.id as string);
+    assert.equal(st, 403);
+    const after = (await pg.sql`SELECT (SELECT count(*)::int FROM lumi_goals) g,(SELECT count(*)::int FROM lumi_ledger_entries) l`)[0]!;
+    assert.deepEqual(after, before);
+    await ctx.close();
+  });
+
+  it("chưa đăng nhập: /lumi/company chuyển về /login; API kế hoạch trả 401", async () => {
+    const ctx = await browser.newContext(); const page = await ctx.newPage();
+    await go(page, `${base}/lumi/company`);
+    assert.match(page.url(), /\/login/);
+    const r = await page.evaluate(async () => ({ list: (await fetch("/api/v1/lumi/goals")).status, mk: (await fetch("/api/v1/lumi/goals", { method: "POST", headers: { "content-type": "application/json", "idempotency-key": "anon-try-00000001" }, body: "{}" })).status }));
+    assert.deepEqual(r, { list: 401, mk: 401 });
     await ctx.close();
   });
 });

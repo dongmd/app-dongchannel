@@ -68,6 +68,10 @@ const EXCLUDED: ReadonlyArray<{ path: string; reason: string }> = [
 		path: "src/lib/lumi-m1/rollback.test.ts",
 		reason: "Needs git history (worktree of the previous release) and a PostgreSQL server; run with `pnpm test:pg` (TDD 14.7/14.9).",
 	},
+	{
+		path: "src/lib/lumi-m1/plans-pg.test.ts",
+		reason: "IMP-01 concurrency/contract tests on a real PostgreSQL server process (embedded binaries); run with `pnpm test:pg` (TDD 14.9, evidence class 2).",
+	},
 ];
 
 function findTestFiles(dir: string): string[] {

@@ -1,7 +1,7 @@
 "use client";
 
 import { usePathname } from "next/navigation";
-import { Bell, Brain, CalendarDays, Building2, FolderKanban, Menu, MessageCircle, Plus, RotateCcw, Sparkles } from "lucide-react";
+import { Bell, Brain, CalendarDays, Building2, FolderKanban, Menu, MessageCircle, Plus, RotateCcw, Sparkles, Target } from "lucide-react";
 import { useState, type ReactNode } from "react";
 
 import { pendingBreakdown, pendingCounts } from "@/lib/lumi/selectors";
@@ -27,6 +27,8 @@ export function Shell({ children }: { children: ReactNode }) {
   const { state, reset, openNewTask, navOpen, setNavOpen } = useLumi();
   const path = usePathname();
   const counts = pendingCounts(state);
+  const plansPending = state.real?.plansPending?.length ?? 0;
+  const totalPending = counts.total + plansPending;
   const [confirmReset, setConfirmReset] = useState(false);
   const [legacyOpen, setLegacyOpen] = useState(false);
   const owner = state.members.find((m) => m.kind === "human")!;
@@ -70,10 +72,18 @@ export function Shell({ children }: { children: ReactNode }) {
             <LumiLink href="/lumi/memory" aria-current={cur("/lumi/memory") ? "page" : undefined}>
               <Brain size={17} /> Bộ nhớ
             </LumiLink>
-            <LumiLink href="/lumi/approvals" aria-current={cur("/lumi/approvals") ? "page" : undefined} title={pendingBreakdown(counts)}>
+            <LumiLink href="/lumi/approvals" aria-current={cur("/lumi/approvals") ? "page" : undefined} title={`${pendingBreakdown(counts)}${plansPending ? ` + ${plansPending} kế hoạch` : ""}`}>
               <Bell size={17} /> Chờ duyệt
-              {counts.total > 0 && <span className="count" aria-label={pendingBreakdown(counts)}>{counts.total} mục</span>}
+              {totalPending > 0 && <span className="count" aria-label={`${pendingBreakdown(counts)}${plansPending ? ` + ${plansPending} kế hoạch` : ""}`} data-testid="nav-pending-count">{totalPending} mục</span>}
             </LumiLink>
+            {real && (
+              <>
+                <div className="group">Công ty</div>
+                <LumiLink href="/lumi/company" aria-current={cur("/lumi/company") || cur("/lumi/plans") ? "page" : undefined} data-testid="nav-company">
+                  <Target size={17} /> Tổng quan công ty
+                </LumiLink>
+              </>
+            )}
             <div className="group">{real ? "Kênh" : "Mô phỏng"}</div>
             <LumiLink href="/lumi/telegram" aria-current={cur("/lumi/telegram") ? "page" : undefined}>
               <MessageCircle size={17} /> {real ? "Telegram & kết nối" : "Telegram mô phỏng"}

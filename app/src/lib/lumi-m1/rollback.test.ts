@@ -25,11 +25,14 @@ import { handle, type ApiCtx, type Principal } from "./handlers";
 import { SimulatedHermes } from "./hermes-port";
 import { drainM1 } from "./drain";
 import { processOutbox } from "./core";
+import { drainPlans, setPlansEnabled } from "./plans";
+import { handleRpc } from "./mcp";
 
 const nodeRequire = createRequire(path.join(process.cwd(), "package.json"));
 let oldServer: ChildProcess | null = null;
 const PREV_COMMIT = "2313f7c"; // last commit before any M1 code (docs only on top of the preview release)
 const OLD_STATUSES = ["CAPTURED", "QUEUED", "RUNNING", "WAITING_REVIEW", "APPROVED", "REVISION_REQUESTED", "REJECTED", "COMPLETED", "FAILED", "CANCELLED", "SYNC_DELAYED", "IMPORTED"];
+process.env.LUMI_PLAN_MAX_TASKS = "5";
 const OWNER: Principal = { kind: "user", actorRef: "web:owner@test", role: "OWNER" };
 const hdr = (k?: string) => ({ get: (n: string) => (n.toLowerCase() === "idempotency-key" ? k ?? null : null) });
 
@@ -103,8 +106,8 @@ describe("rollback rehearsal (PostgreSQL server, previous release code, syntheti
     assert.ok(s.kpiOk);
   });
 
-  it("2. sau khi áp 0039–0041, bản cũ vẫn chạy trên CSDL đã migrate với dữ liệu cũ (cổng bước 3)", async () => {
-    await replayMigrations(srv.sql, "0042", "0039");
+  it("2. sau khi áp 0039–0044, bản cũ vẫn chạy trên CSDL đã migrate với dữ liệu cũ (cổng bước 3)", async () => {
+    await replayMigrations(srv.sql, "0044", "0039"); // all of this release's migrations: the old code must still run on the fully migrated schema
     const cols = await q(`SELECT column_name FROM information_schema.columns WHERE table_name='tasks' AND column_name IN ('project_id','owner_kind','description')`);
     assert.equal(cols.length, 3);
     const s = oldSmoke();
@@ -173,6 +176,51 @@ describe("rollback rehearsal (PostgreSQL server, previous release code, syntheti
     assert.deepEqual(again.rewritten, { onHold: 0, waitingAssistant: 0 });
   });
 
+  it("3b. IMP-01: tạo mục tiêu→kế hoạch→duyệt→việc→sổ, drain kế hoạch+M1 ⇒ không xóa dữ liệu, bản cũ vẫn chạy, drain lặp được", async () => {
+    const db = postgresDb(srv.sql);
+    const before0 = (await q(`SELECT count(*)::int n FROM tasks`))[0].n;
+    await q(`INSERT INTO lumi_system_flags(key,value,set_by,set_at) VALUES ('m1_enabled','true','test',now()) ON CONFLICT (key) DO UPDATE SET value='true'`);
+    await setPlansEnabled(db, "web:owner@test", true, clock, { maxTasks: 5, versionTtlHours: null });
+    await q(`INSERT INTO profiles(slug,name,type,status) VALUES ('rb3','Rehearsal bot 3','bot','active') ON CONFLICT DO NOTHING`);
+    const [a] = await q(`INSERT INTO lumi_assistants(slug,name,hermes_profile,connection_state,tool_allowlist,run_deadline_seconds,ack_deadline_seconds,max_run_failures,max_transport_attempts,max_revision_rounds,max_runs_per_day,execution_level) VALUES ('rb3','Bot rb3','rb3','VERIFIED','["tasks.intake","outputs.submit","knowledge.context"]',600,30,2,3,2,50,0) RETURNING id`);
+    assert.equal((await call("setDispatch", OWNER, { params: { id: a.id }, body: { enabled: true } })).status, 200);
+    const [proj] = await q(`SELECT id FROM lumi_projects WHERE slug='rb'`);
+    const g = await call("createGoal", OWNER, { key: "rb-goal-000000001", body: { title: "Mục tiêu diễn tập", outcome: "Kế hoạch diễn tập", project_id: proj.id } });
+    assert.equal(g.status, 201, JSON.stringify(g));
+    const p = await call("createPlan", OWNER, { key: "rb-plan-000000001", body: { goal_id: g.data.goal.id, lead_assistant_id: a.id } });
+    assert.equal(p.status, 201, JSON.stringify(p));
+    const planId = p.data.plan.id as string;
+    const [pl] = await q(`SELECT planning_task_id FROM lumi_plans WHERE id=$1`, [planId]);
+    const [run] = await q(`UPDATE lumi_task_runs SET state='RUNNING',started_at=$2,acked_at=$2 WHERE task_id=$1 AND state='PENDING' RETURNING id`, [pl.planning_task_id, clock.toISOString()]);
+    const body = {
+      schema: 1, summary: "[DIỄN TẬP] Kế hoạch tổng hợp cho bài diễn tập rollback, không có giá trị kinh doanh.",
+      opportunity: { evidence: [{ claim: "dữ liệu giả", ref: "diễn tập", as_of: "2026-11-01" }], confidence: "LOW" },
+      scope: { in: ["a"], out: ["b"] }, deliverables: [{ key: "d", title: "Đầu ra", acceptance: "Có" }],
+      tasks: [{ key: "t1", title: "Việc diễn tập", description: "x", deliverable_key: "d", assignee_slug: "rb3", expected_output: "Đầu ra", acceptance: "Có đầu ra", due_in_days: 3, budget_alloc: { amount: 30, currency: "USD" }, depends_on: [] }],
+      milestones: [], cost: { currency: "USD", ceiling_requested: 100, lines: [{ category: "TOOL", low: 5, base: 10, high: 20, source: "ESTIMATED", as_of: "2026-11-07", confidence: "LOW" }], unknown_note: "Chi phí AI chưa đo" },
+      prepare_spent: { amount: null, note: "chưa đo" }, grants_requested: [], stop_conditions: ["Dừng nếu không có đầu ra"], risks: [], alternatives: [],
+    };
+    const rpc = await handleRpc(ctx(), { kind: "bot", slug: "rb3", actorRef: "bot:rb3" } as any, { jsonrpc: "2.0", id: 1, method: "tools/call", params: { name: "plan_submit_version", arguments: { run_id: run.id, body } } });
+    assert.ok(!(rpc as any).result.isError, JSON.stringify(rpc));
+    const [v] = await q(`SELECT content_hash FROM lumi_plan_versions WHERE plan_id=$1 AND version=1`, [planId]);
+    assert.equal((await call("decidePlan", OWNER, { params: { id: planId }, body: { version: 1, content_hash: v.content_hash, decision: "APPROVE" } })).status, 200);
+    assert.equal((await call("recordLedger", OWNER, { params: { id: planId }, key: "rb-ledger-00000001", body: { category: "TOOL", amount: 7, currency: "USD", source: "MANUAL" } })).status, 201);
+    const counts = async () => (await q(`SELECT (SELECT count(*)::int FROM lumi_goals) g,(SELECT count(*)::int FROM lumi_plans) p,(SELECT count(*)::int FROM lumi_plan_versions) v,(SELECT count(*)::int FROM lumi_ledger_entries) l,(SELECT count(*)::int FROM lumi_budgets) b`))[0];
+    const c0 = await counts();
+    const d = await drainPlans(db, "web:owner@test", clock);
+    assert.equal(d.plansPaused, 1);
+    await drainM1(db, "web:owner@test", clock);
+    assert.deepEqual(await counts(), c0, "drain không xóa dữ liệu kế hoạch/sổ");
+    assert.equal((await q(`SELECT status FROM lumi_plans WHERE id=$1`, [planId]))[0].status, "PAUSED_ADJUSTMENT");
+    assert.ok((await q(`SELECT count(*)::int n FROM tasks`))[0].n > before0, "việc của kế hoạch vẫn còn");
+    assert.equal((await call("createGoal", OWNER, { key: "rb-goal-000000002", body: { title: "Không được tạo", outcome: "x", project_id: proj.id } })).status >= 400, true);
+    const s = oldSmoke();
+    assert.ok(s.statuses.every((x) => OLD_STATUSES.includes(x)), JSON.stringify(s.statuses));
+    assert.ok(s.kpiOk);
+    const again = await drainPlans(db, "web:owner@test", clock);
+    assert.equal(again.plansPaused, 0);
+    assert.deepEqual(await counts(), c0);
+  });
 
   it("5. bản cũ khởi động như một máy chủ Next THẬT trên CSDL đã drain và phục vụ qua HTTP (khác với kiểm thử trên bản sao dữ liệu production — chưa làm)", async () => {
     const port: number = await new Promise((res) => { const sv = net.createServer(); sv.listen(0, "127.0.0.1", () => { const x = (sv.address() as net.AddressInfo).port; sv.close(() => res(x)); }); });

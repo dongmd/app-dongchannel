@@ -17,6 +17,9 @@ import { handle, resolveBotToken, type ApiCtx, type Principal } from "./handlers
 import { SimulatedHermes } from "./hermes-port";
 import { workerCycle } from "./worker";
 import { handleRpc, intakeFromChat, MCP_TOOLS } from "./mcp";
+import { addPlanItem, createGrant, decideActionRequest, decideProposal, proposeProject, requestAction, revokeGrant, setAutonomyLimits, updatePlanItem } from "./autonomy";
+import { buildDbState } from "../lumi/db-state";
+import { LumiError } from "./core";
 
 let srv: PgServer;
 let db: Db;
@@ -505,12 +508,12 @@ describe("pg-server: máy chủ MCP quyền tối thiểu", () => {
     handleRpc(ctx(), bot, { jsonrpc: "2.0", id: 1, method, params }, { actorFor: () => actor });
   const call = async (bot: any, name: string, args: any, actor?: string) => (await rpc(bot, "tools/call", { name, arguments: args }, actor)).result;
 
-  it("chỉ có đúng 2 công cụ (đọc việc được giao, nộp đầu ra); KHÔNG có công cụ tạo nháp, xác nhận, duyệt, hủy hay giao lại", async () => {
+  it("chỉ có đúng 7 công cụ (đọc việc, nộp/điểm dừng, kế hoạch, nộp phiên bản Plan&Cost, đề xuất dự án, xin quyền); KHÔNG có công cụ tạo nháp, xác nhận, duyệt, hủy, giao lại, cấp quyền hay kích hoạt dự án", async () => {
     const w = await world();
     const names = (await rpc(w.bot, "tools/list")).result.tools.map((x: any) => x.name).sort();
-    assert.deepEqual(names, ["knowledge_context", "outputs_submit"]);
+    assert.deepEqual(names, ["actions_request", "knowledge_context", "outputs_submit", "plan_add", "plan_submit_version", "plan_update", "project_propose"]);
     assert.deepEqual(MCP_TOOLS.map((x) => x.name).sort(), names);
-    for (const bad of ["tasks_intake", "tasks_confirm", "approvals_decide", "outputs_adopt", "tasks_cancel", "runs_start"]) assert.equal((await call(w.bot, bad, {})).isError, true);
+    for (const bad of ["tasks_intake", "tasks_confirm", "approvals_decide", "outputs_adopt", "tasks_cancel", "runs_start", "grants_create", "projects_activate", "actions_decide"]) assert.equal((await call(w.bot, bad, {})).isError, true);
     assert.ok(!JSON.stringify(MCP_TOOLS).includes("actor_ref"), "danh tính không do mô hình cung cấp");
   });
   it("tạo bản nháp do CỔNG Telegram gọi (không qua model): chỉ tạo NHÁP; danh tính là id người gửi của nền tảng; lặp lại không tạo thêm", async () => {
@@ -567,3 +570,206 @@ describe("pg-server: máy chủ MCP quyền tối thiểu", () => {
 async function call_api(_n: string, taskId: string) {
   return handle("transition", ctx(), { principal: OWNER, params: { id: taskId }, body: { to: "CANCELLED", expected_status: "RUNNING", reason: "dừng thử" }, headers: hdr() });
 }
+
+// ───────────────────────── Tự chủ (TDD 8.11)
+const rejectsCode = async (p: Promise<unknown>, code: string) => assert.rejects(p, (e: any) => e instanceof LumiError && e.code === code, `expected ${code}`);
+const OWNER_REF = "web:owner@test";
+const inDays = (n: number) => new Date(clock.getTime() + n * 86400_000);
+async function act(w: Awaited<ReturnType<typeof world>>, o: Partial<Parameters<typeof requestAction>[1]> = {}) {
+  return requestAction(db, { assistantId: w.asstId, projectId: w.projectId, accountRef: "google-ads:111", actionType: "ADS_SPEND", amount: 30, currency: "USD", summary: "Tăng ngân sách chiến dịch thử", now: clock, ...o });
+}
+
+describe("pg-server: tự chủ — khả năng công cụ tách khỏi quyền hành động", () => {
+  it("RESTRICTED từ chối profile có công cụ rộng; DECLARED_FULL cần xác nhận rõ, rồi giữ nguyên mọi công cụ; đổi chế độ tắt giao việc", async () => {
+    const w = await world({ enable: false });
+    hermes.behaviour.tools = ["terminal", "web", "browser", "outputs.submit"];
+    assert.equal((await call("setDispatch", OWNER, { params: { id: w.asstId }, body: { enabled: true } })).error?.code, "PROFILE_EXCEEDS_ALLOWLIST");
+    assert.equal((await call("declareCapability", OWNER, { params: { id: w.asstId }, body: { mode: "DECLARED_FULL" } })).status, 400, "thiếu acknowledged");
+    assert.equal((await call("declareCapability", ADMIN, { params: { id: w.asstId }, body: { mode: "DECLARED_FULL", acknowledged: true } })).status, 403, "chỉ OWNER");
+    assert.equal((await call("declareCapability", w.bot, { params: { id: w.asstId }, body: { mode: "DECLARED_FULL", acknowledged: true } })).status, 403, "bot không tự nâng quyền");
+    assert.equal((await call("declareCapability", OWNER, { params: { id: w.asstId }, body: { mode: "DECLARED_FULL", acknowledged: true } })).status, 200);
+    const on = await call("setDispatch", OWNER, { params: { id: w.asstId }, body: { enabled: true } });
+    assert.equal(on.status, 200, JSON.stringify(on));
+    const [a] = await db.query<any>(`SELECT capability_mode,capability_ack_by,capability_snapshot FROM lumi_assistants WHERE id=$1`, [w.asstId]);
+    assert.deepEqual([a.capability_mode, a.capability_ack_by], ["DECLARED_FULL", "web:owner@test"]);
+    assert.deepEqual(a.capability_snapshot.tools, ["terminal", "web", "browser", "outputs.submit"], "ảnh chụp công cụ được ghi lại");
+    await call("declareCapability", OWNER, { params: { id: w.asstId }, body: { mode: "RESTRICTED" } });
+    assert.equal((await db.query<any>(`SELECT dispatch_enabled FROM lumi_assistants WHERE id=$1`, [w.asstId]))[0].dispatch_enabled, false, "đổi chế độ ⇒ phải bật lại có kiểm tra");
+    assert.ok((await db.query<any>(`SELECT 1 FROM audit_events WHERE action='assistant.capability_declared' AND after_json->>'assistantId'=$1`, [w.asstId])).length >= 2);
+  });
+});
+
+describe("pg-server: tự chủ — quyền cấp trước, hỏi Chủ, nhật ký", () => {
+  it("không có quyền ⇒ ASK; hỏi lại cùng tham số không chất đống; Chủ duyệt ⇒ dùng ĐÚNG MỘT LẦN; sai tham số ⇒ từ chối", async () => {
+    const w = await world();
+    const a = await act(w);
+    assert.equal(a.decision, "ASK"); assert.equal((a as any).basis, "NO_GRANT");
+    const again = await act(w);
+    assert.equal((again as any).requestId, (a as any).requestId, "cùng tham số = cùng yêu cầu");
+    assert.equal((await db.query<any>(`SELECT count(*)::int n FROM lumi_action_requests WHERE assistant_id=$1`, [w.asstId]))[0].n, 1);
+    const rid = (a as any).requestId as string;
+    assert.equal((await act(w, { requestId: rid })).decision, "ASK", "chưa duyệt thì vẫn chờ");
+    await assert.rejects(decideActionRequest(db, "bot:x", rid, "APPROVE", undefined, clock), (e: any) => e.code === "FORBIDDEN");
+    assert.equal((await decideActionRequest(db, OWNER_REF, rid, "APPROVE", undefined, clock)).alreadyProcessed, false);
+    assert.equal((await decideActionRequest(db, OWNER_REF, rid, "APPROVE", undefined, clock)).alreadyProcessed, true);
+    await rejectsCode(decideActionRequest(db, OWNER_REF, rid, "DENY", "đổi ý", clock), "ALREADY_DECIDED");
+    assert.equal((await act(w, { requestId: rid, amount: 31 })).decision, "DENY", "đổi số tiền ⇒ không dùng được quyền đã duyệt");
+    assert.equal((await act(w, { requestId: rid })).decision, "ALLOW");
+    const second = await act(w, { requestId: rid });
+    assert.deepEqual([second.decision, (second as any).reason], ["DENY", "REQUEST_CONSUMED"]);
+  });
+
+  it("quyền cấp trước có hạn mức, thời hạn, tài khoản, đơn vị tiền; vượt phạm vi ⇒ hỏi lại; thu hồi ⇒ hết hiệu lực", async () => {
+    const w = await world();
+    const g = await createGrant(db, OWNER_REF, { assistantId: w.asstId, projectId: w.projectId, accountRef: "google-ads:111", actionType: "ADS_SPEND", currency: "USD", perActionMax: 40, budgetTotal: 100, countLimit: 5, askIfAmountOver: 35, validUntil: inDays(7) }, clock);
+    assert.equal((await act(w, { amount: 30 })).decision, "ALLOW");
+    assert.equal((await act(w, { amount: 36 })).decision, "ASK", "trên ngưỡng phải hỏi");
+    assert.equal(((await act(w, { amount: 36 })) as any).basis, "ASK_CONDITION");
+    assert.equal(((await act(w, { amount: 41 })) as any).basis, "OVER_LIMIT");
+    assert.equal(((await act(w, { amount: undefined })) as any).basis, "OVER_LIMIT", "quyền có hạn mức tiền không bao giờ phủ hành động không nêu số tiền");
+    assert.equal(((await act(w, { currency: "VND" })) as any).basis, "OVER_LIMIT", "sai đơn vị tiền");
+    assert.equal(((await act(w, { accountRef: "google-ads:999" })) as any).basis, "NO_GRANT", "tài khoản khác");
+    assert.equal(((await act(w, { actionType: "DELETE_CAMPAIGN" })) as any).basis, "NO_GRANT", "loại hành động khác");
+    assert.equal((await act(w, { amount: 35 })).decision, "ALLOW");
+    assert.equal((await act(w, { amount: 30 })).decision, "ALLOW"); // spent 95 → this one brings 95? (30+35+30=95)
+    assert.equal(((await act(w, { amount: 10 })) as any).basis, "BUDGET_LIMIT", "95+10 > 100");
+    const [row] = await db.query<any>(`SELECT spent::float s,count_used FROM lumi_grants WHERE id=$1`, [g.id]);
+    assert.deepEqual([row.s, row.count_used], [95, 3]);
+    // expiry and revoke
+    const w2 = await world();
+    const g2 = await createGrant(db, OWNER_REF, { assistantId: w2.asstId, projectId: w2.projectId, accountRef: "wp:site", actionType: "PUBLISH_POST", validUntil: inDays(1) }, clock);
+    assert.equal((await act(w2, { accountRef: "wp:site", actionType: "PUBLISH_POST", amount: undefined, currency: undefined })).decision, "ALLOW", "quyền không tiền: không cần số tiền");
+    assert.equal(((await act(w2, { accountRef: "wp:site", actionType: "PUBLISH_POST", amount: undefined, currency: undefined, now: inDays(2) })) as any).basis, "GRANT_EXPIRED");
+    await revokeGrant(db, OWNER_REF, g2.id, clock);
+    assert.equal(((await act(w2, { accountRef: "wp:site", actionType: "PUBLISH_POST", amount: undefined, currency: undefined, summary: "đăng lại" })) as any).basis, "NO_GRANT");
+    // validation + who can grant
+    await assert.rejects(createGrant(db, "web:admin@test", { assistantId: w.asstId, projectId: w.projectId, accountRef: "a", actionType: "b", validUntil: inDays(1) }, clock), (e: any) => e.code === "FORBIDDEN");
+    await assert.rejects(createGrant(db, OWNER_REF, { assistantId: w.asstId, projectId: w.projectId, accountRef: "a", actionType: "b", validUntil: inDays(400) }, clock), (e: any) => e.code === "VALIDATION_ERROR");
+    await assert.rejects(createGrant(db, OWNER_REF, { assistantId: w.asstId, projectId: w.projectId, accountRef: "a", actionType: "b", perActionMax: 5, validUntil: inDays(1) }, clock), (e: any) => e.code === "VALIDATION_ERROR", "hạn mức tiền cần đơn vị tiền");
+  });
+
+  it("10 yêu cầu SONG SONG trên 10 kết nối: ngân sách không bao giờ bị vượt (đúng 3 ALLOW với 100 USD và 30 USD/lần)", async () => {
+    const w = await world();
+    const g = await createGrant(db, OWNER_REF, { assistantId: w.asstId, projectId: w.projectId, accountRef: "google-ads:111", actionType: "ADS_SPEND", currency: "USD", budgetTotal: 100, validUntil: inDays(1) }, clock);
+    const rs = await Promise.all(Array.from({ length: 10 }, (_, i) => act(w, { params: { n: i }, summary: `lần ${i}` })));
+    assert.equal(rs.filter((r) => r.decision === "ALLOW").length, 3);
+    assert.equal(rs.filter((r) => r.decision === "ASK").length, 7);
+    const [row] = await db.query<any>(`SELECT spent::float s,count_used FROM lumi_grants WHERE id=$1`, [g.id]);
+    assert.deepEqual([row.s, row.count_used], [90, 3]);
+  });
+
+  it("công tắc dừng, trợ lý tạm dừng, dự án chưa kích hoạt ⇒ DENY; mọi quyết định vào nhật ký chỉ-thêm", async () => {
+    const w = await world();
+    await createGrant(db, OWNER_REF, { assistantId: w.asstId, projectId: w.projectId, accountRef: "x", actionType: "Y", validUntil: inDays(1) }, clock);
+    const ok1 = await act(w, { accountRef: "x", actionType: "Y", amount: undefined, currency: undefined });
+    assert.equal(ok1.decision, "ALLOW");
+    await call("setFlag", OWNER, { body: { key: "emergency_stop", value: true } });
+    assert.deepEqual([(await act(w, { accountRef: "x", actionType: "Y", amount: undefined, currency: undefined, summary: "s2" })).decision, ((await act(w, { accountRef: "x", actionType: "Y", amount: undefined, currency: undefined, summary: "s2" })) as any).reason], ["DENY", "EMERGENCY_STOP"]);
+    await call("setFlag", OWNER, { body: { key: "emergency_stop", value: false } });
+    await db.query(`UPDATE lumi_assistants SET dispatch_paused=true WHERE id=$1`, [w.asstId]);
+    assert.equal(((await act(w, { accountRef: "x", actionType: "Y", amount: undefined, currency: undefined })) as any).reason, "ASSISTANT_PAUSED");
+    await db.query(`UPDATE lumi_assistants SET dispatch_paused=false WHERE id=$1`, [w.asstId]);
+    await db.query(`UPDATE lumi_projects SET status='PROPOSED' WHERE id=$1`, [w.projectId]);
+    assert.equal(((await act(w, { accountRef: "x", actionType: "Y", amount: undefined, currency: undefined })) as any).reason, "PROJECT_NOT_ACTIVE");
+    await assert.rejects(createGrant(db, OWNER_REF, { assistantId: w.asstId, projectId: w.projectId, accountRef: "z", actionType: "Y", validUntil: inDays(1) }, clock), (e: any) => e.code === "INVALID_TRANSITION", "không cấp quyền trên đề xuất");
+    const log = await db.query<any>(`SELECT outcome FROM lumi_action_log WHERE assistant_id=$1 ORDER BY at`, [w.asstId]);
+    assert.ok(log.length >= 4 && log[0].outcome === "ALLOW");
+    await assert.rejects(db.query(`UPDATE lumi_action_log SET reason='sửa lén' WHERE assistant_id=$1`, [w.asstId]), /append-only/);
+    await assert.rejects(db.query(`DELETE FROM lumi_action_log WHERE assistant_id=$1`, [w.asstId]), /append-only/);
+  });
+
+  it("API: chỉ OWNER cấp quyền/duyệt; bot bị 403 ở mọi đường của chủ", async () => {
+    const w = await world();
+    const body = { assistant_id: w.asstId, project_id: w.projectId, account_ref: "a", action_type: "B", valid_until: inDays(1).toISOString() };
+    for (const who of [w.bot, VIEWER, ADMIN]) assert.equal((await call("createGrant", who, { body })).status, 403);
+    const g = await call("createGrant", OWNER, { body });
+    assert.equal(g.status, 201, JSON.stringify(g));
+    assert.equal((await call("revokeGrant", w.bot, { params: { id: g.data.grant_id } })).status, 403);
+    assert.equal((await call("revokeGrant", OWNER, { params: { id: g.data.grant_id } })).status, 200);
+    const q = await act(w, { accountRef: "zz" });
+    assert.equal((await call("decideAction", w.bot, { params: { id: (q as any).requestId }, body: { decision: "APPROVE" } })).status, 403);
+    assert.equal((await call("decideAction", OWNER, { params: { id: (q as any).requestId }, body: { decision: "DENY" } })).status, 400, "từ chối cần ghi chú");
+    assert.equal((await call("decideAction", OWNER, { params: { id: (q as any).requestId }, body: { decision: "DENY", note: "không cần" } })).status, 200);
+  });
+});
+
+describe("pg-server: tự chủ — việc con, đề xuất dự án, điểm dừng/tiếp tục", () => {
+  it("việc con: mặc định TẮT, có giới hạn, chỉ một cấp, idempotent, chỉ trên lượt chạy của chính trợ lý, không lên bảng chính", async () => {
+    const w = await world();
+    const t = await webTask(w); await dispatchAll(w);
+    const run = await runOf(t.id);
+    await call("ack", w.bot, { params: { runId: run.id } });
+    await assert.rejects(addPlanItem(db, { assistantId: w.asstId, runId: run.id, title: "Bước 1", now: clock }), (e: any) => e.data?.reason === "SUBTASKS_DISABLED");
+    await setAutonomyLimits(db, OWNER_REF, w.asstId, { maxSubtasks: 3 }, clock);
+    const a = await addPlanItem(db, { assistantId: w.asstId, runId: run.id, title: "Tìm 5 offer", now: clock });
+    const again = await addPlanItem(db, { assistantId: w.asstId, runId: run.id, title: "  tìm 5 OFFER ", now: clock });
+    assert.deepEqual([a.alreadyProcessed, again.alreadyProcessed, again.item.code], [false, true, a.item.code]);
+    await addPlanItem(db, { assistantId: w.asstId, runId: run.id, title: "So sánh", now: clock });
+    await addPlanItem(db, { assistantId: w.asstId, runId: run.id, title: "Chọn 1", now: clock });
+    await assert.rejects(addPlanItem(db, { assistantId: w.asstId, runId: run.id, title: "Quá giới hạn", now: clock }), (e: any) => e.code === "SUBTASK_LIMIT");
+    await assert.rejects(addPlanItem(db, { assistantId: "00000000-0000-4000-8000-000000000000", runId: run.id, title: "Của người khác", now: clock }), (e: any) => e.code === "NOT_FOUND");
+    assert.equal((await updatePlanItem(db, { assistantId: w.asstId, runId: run.id, code: a.item.code, state: "RUNNING", now: clock })).alreadyProcessed, false);
+    await updatePlanItem(db, { assistantId: w.asstId, runId: run.id, code: a.item.code, state: "COMPLETED", note: "xong", now: clock });
+    assert.equal((await updatePlanItem(db, { assistantId: w.asstId, runId: run.id, code: a.item.code, state: "COMPLETED", now: clock })).alreadyProcessed, true);
+    await assert.rejects(updatePlanItem(db, { assistantId: w.asstId, runId: run.id, code: a.item.code, state: "FAILED", now: clock }), (e: any) => e.code === "INVALID_TRANSITION");
+    const st = await buildDbState(db, { actorRef: OWNER_REF, email: "owner@test", role: "OWNER" }, { hermesMode: "test", now: clock });
+    const card = st.tasks.find((x) => x.id === t.code)!;
+    assert.equal(card.real!.children.length, 3);
+    assert.equal(st.tasks.filter((x) => x.id.startsWith("DL-") && card.real!.children.some((c) => c.code === x.id)).length, 0, "việc con không lên bảng chính");
+    await call("submitOutput", w.bot, { params: { id: t.id }, body: { run_id: run.id, content: "Xong", idempotency_key: `k-${uniq()}` } });
+    await assert.rejects(addPlanItem(db, { assistantId: w.asstId, runId: run.id, title: "Sau khi đóng", now: clock }), (e: any) => e.code === "INVALID_TRANSITION", "lượt chạy đã đóng");
+  });
+
+  it("đề xuất dự án tách khỏi kích hoạt: bot chỉ tạo ĐỀ XUẤT; không cấp được quyền trên đề xuất; chỉ OWNER kích hoạt; lặp lại idempotent", async () => {
+    const w = await world();
+    const p1 = await proposeProject(db, { assistantId: w.asstId, name: `Ngách thử ${w.slug}`, area: "YOUTUBE", goal: "Kênh về ...", evidence: "Từ khóa X có 1.2M lượt tìm/tháng (nguồn Y)", now: clock });
+    const p2 = await proposeProject(db, { assistantId: w.asstId, name: `ngách thử ${w.slug}`, area: "YOUTUBE", goal: "Kênh về ...", evidence: "Từ khóa X có 1.2M lượt tìm/tháng (nguồn Y)", now: clock });
+    assert.deepEqual([p1.alreadyProcessed, p2.alreadyProcessed, p2.project.id], [false, true, p1.project.id]);
+    assert.equal((await db.query<any>(`SELECT status FROM lumi_projects WHERE id=$1`, [p1.project.id]))[0].status, "PROPOSED");
+    await assert.rejects(createGrant(db, OWNER_REF, { assistantId: w.asstId, projectId: p1.project.id, accountRef: "a", actionType: "b", validUntil: inDays(1) }, clock), (e: any) => e.code === "INVALID_TRANSITION");
+    await assert.rejects(proposeProject(db, { assistantId: w.asstId, name: "x", area: "YOUTUBE", goal: "g", evidence: "ngắn", now: clock }), (e: any) => e.code === "VALIDATION_ERROR");
+    assert.equal((await call("decideProposal", w.bot, { params: { id: p1.project.id }, body: { decision: "ACTIVATE" } })).status, 403);
+    assert.equal((await call("decideProposal", VIEWER, { params: { id: p1.project.id }, body: { decision: "ACTIVATE" } })).status, 403);
+    assert.equal((await call("decideProposal", OWNER, { params: { id: p1.project.id }, body: { decision: "ACTIVATE" } })).status, 200);
+    assert.equal((await decideProposal(db, OWNER_REF, p1.project.id, "ACTIVATE", clock)).alreadyProcessed, true);
+    assert.equal((await db.query<any>(`SELECT status FROM lumi_projects WHERE id=$1`, [p1.project.id]))[0].status, "ACTIVE");
+    await createGrant(db, OWNER_REF, { assistantId: w.asstId, projectId: p1.project.id, accountRef: "a", actionType: "b", validUntil: inDays(1) }, clock); // now allowed
+    const rej = await proposeProject(db, { assistantId: w.asstId, name: `Ngách khác ${w.slug}`, area: "AFFILIATE", goal: "Mục tiêu thử", evidence: "bằng chứng đủ dài", now: clock });
+    await decideProposal(db, OWNER_REF, rej.project.id, "REJECT", clock);
+    await assert.rejects(decideProposal(db, OWNER_REF, rej.project.id, "ACTIVATE", clock), (e: any) => e.code === "INVALID_TRANSITION");
+  });
+
+  it("điểm dừng → lần chạy tiếp (trong giới hạn) → khi hết lượt thì chờ Chủ quyết định; việc dài không thành bot trả lời ngắn", async () => {
+    const w = await world();
+    await setAutonomyLimits(db, OWNER_REF, w.asstId, { maxContinuations: 2 }, clock);
+    const t = await webTask(w, "Nghiên cứu dài"); await dispatchAll(w);
+    let run = await runOf(t.id);
+    const step = async (final: boolean, content: string) => {
+      await call("ack", w.bot, { params: { runId: run.id } });
+      const ctxText = (await handleRpc(ctx(), w.bot as any, { jsonrpc: "2.0", id: 1, method: "tools/call", params: { name: "knowledge_context", arguments: { run_id: run.id } } })).result.content[0].text as string;
+      const r = await handleRpc(ctx(), w.bot as any, { jsonrpc: "2.0", id: 2, method: "tools/call", params: { name: "outputs_submit", arguments: { run_id: run.id, content, final } } });
+      return { ctxText, text: r.result.content[0].text as string };
+    };
+    const s1 = await step(false, "Điểm dừng 1: đã khảo sát 20 offer");
+    assert.match(s1.text, /điểm dừng/i);
+    assert.deepEqual([(await taskOf(t.id)).status, (await runOf(t.id)).run_kind, (await runOf(t.id)).state], ["QUEUED", "CONTINUATION", "PENDING"]);
+    assert.equal((await db.query<any>(`SELECT state FROM lumi_task_runs WHERE id=$1`, [run.id]))[0].state, "SUCCEEDED");
+    await dispatchAll(w); run = await runOf(t.id);
+    const s2 = await step(false, "Điểm dừng 2: loại còn 6 offer");
+    assert.match(s2.ctxText, /Điểm dừng trước[\s\S]*Điểm dừng 1/, "lần tiếp tục thấy điểm dừng cũ");
+    await dispatchAll(w); run = await runOf(t.id);
+    const s3 = await step(false, "Điểm dừng 3: còn 2 offer");
+    assert.match(s3.text, /hết số lần tiếp tục/);
+    const held = await taskOf(t.id);
+    assert.deepEqual([held.status, held.needs_decision, held.hold_reason], ["ON_HOLD", true, "CONTINUATION_LIMIT"]);
+    assert.equal((await db.query<any>(`SELECT count(*)::int n FROM lumi_task_outputs WHERE task_id=$1 AND state='PROGRESS'`, [t.id]))[0].n, 3);
+    assert.equal((await db.query<any>(`SELECT count(*)::int n FROM lumi_task_outputs WHERE task_id=$1 AND state='SUBMITTED'`, [t.id]))[0].n, 0, "điểm dừng không phải đầu ra để duyệt");
+    // the owner can continue: retry runs a new run; a FINAL submit then goes to review
+    const rr = await call("startRun", OWNER, { params: { id: t.id }, key: `c-${uniq()}-xxxx`, body: { mode: "RETRY", expected_status: "ON_HOLD" } });
+    assert.equal(rr.status, 201, JSON.stringify(rr));
+    await dispatchAll(w); run = await runOf(t.id);
+    const fin = await step(true, "Kết quả cuối: chọn offer A vì ...");
+    assert.match(fin.text, /Đã nộp bản/);
+    assert.equal((await taskOf(t.id)).status, "WAITING_REVIEW");
+  });
+});

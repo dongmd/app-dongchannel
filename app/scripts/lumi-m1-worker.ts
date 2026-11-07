@@ -11,6 +11,7 @@ import { ackRun, submitOutput, type HermesPort, type NotifyPort } from "../src/l
 import { connectLumi, postgresDb } from "../src/lib/lumi-m1/pg-adapter";
 import { SimulatedHermes } from "../src/lib/lumi-m1/hermes-port";
 import { workerCycle } from "../src/lib/lumi-m1/worker";
+import { planLimits, submitPlanVersion } from "../src/lib/lumi-m1/plans";
 import { SshHermes } from "../src/lib/lumi-m1/ssh-hermes";
 
 const url = process.env.DATABASE_URL;
@@ -30,10 +31,33 @@ class SimWithAssistant extends SimulatedHermes {
     if (res.kind === "accepted") {
       setTimeout(async () => {
         try {
-          const [r] = await db.query<{ slug: string; task_id: string; run_kind: string; revision_round: number; title: string }>(
-            `SELECT a.slug,r.task_id,r.run_kind,t.revision_round,t.title FROM lumi_task_runs r JOIN lumi_assistants a ON a.id=r.assistant_id JOIN tasks t ON t.id=r.task_id WHERE r.id=$1`, [run.runId]);
+          const [r] = await db.query<{ slug: string; task_id: string; run_kind: string; revision_round: number; title: string; plan_id: string | null; plan_task_key: string | null }>(
+            `SELECT a.slug,r.task_id,r.run_kind,t.revision_round,t.title,t.plan_id,t.plan_task_key FROM lumi_task_runs r JOIN lumi_assistants a ON a.id=r.assistant_id JOIN tasks t ON t.id=r.task_id WHERE r.id=$1`, [run.runId]);
           if (!r) return;
           await ackRun(db, r.slug, run.runId, new Date(), `sim-${run.runId.slice(0, 8)}`);
+          if (r.plan_id && !r.plan_task_key) {
+            // PLANNING run: the fake assistant authors a canned, clearly labelled Plan & Cost (IMP-01). It proves wiring only.
+            setTimeout(async () => {
+              try {
+                const slug = r.slug;
+                const body = {
+                  schema: 1, summary: `[MÔ PHỎNG] Kế hoạch mẫu do adapter giả tạo cho «${r.title}». Nội dung không có giá trị kinh doanh.`,
+                  opportunity: { evidence: [{ claim: "[MÔ PHỎNG] bằng chứng giả", ref: "mô phỏng", as_of: new Date().toISOString().slice(0, 10) }], confidence: "LOW" },
+                  scope: { in: ["[MÔ PHỎNG] nghiên cứu"], out: ["chạy quảng cáo"] },
+                  deliverables: [{ key: "dossier", title: "Hồ sơ mô phỏng", acceptance: "Có đầu ra mô phỏng" }],
+                  tasks: [
+                    { key: "t1", title: "[MÔ PHỎNG] Việc 1", description: "Việc giả", deliverable_key: "dossier", assignee_slug: slug, expected_output: "Đầu ra giả", acceptance: "Có đầu ra", due_in_days: 3, budget_alloc: { amount: 30, currency: "USD" }, depends_on: [] },
+                    { key: "t2", title: "[MÔ PHỎNG] Việc 2", description: "Việc giả", deliverable_key: "dossier", assignee_slug: slug, expected_output: "Đầu ra giả", acceptance: "Có đầu ra", due_in_days: 5, budget_alloc: { amount: 20, currency: "USD" }, depends_on: [] },
+                  ],
+                  milestones: [{ key: "m1", after_task_key: "t1", label: "Xong việc 1" }],
+                  cost: { currency: "USD", ceiling_requested: 100, lines: [{ category: "TOOL", low: 5, base: 10, high: 20, source: "ESTIMATED", as_of: new Date().toISOString().slice(0, 10), confidence: "LOW" }], unknown_note: "Chi phí AI chưa đo" },
+                  prepare_spent: { amount: null, note: "chưa đo" }, grants_requested: [], stop_conditions: ["Dừng nếu không có đầu ra"], risks: ["Dữ liệu giả"], alternatives: ["Không làm"],
+                };
+                await submitPlanVersion(db, { runId: run.runId, botSlug: slug, body, now: new Date(), limits: planLimits() });
+              } catch (e) { console.error("[sim-assistant] plan", String(e)); }
+            }, 2000);
+            return;
+          }
           setTimeout(async () => {
             await submitOutput(db, { taskId: r.task_id, runId: run.runId, actorRef: `bot:${r.slug}`, content: `[MÔ PHỎNG] Bản trả lời cho «${r.title}» (lần chạy ${r.run_kind}, vòng sửa ${r.revision_round}). Nội dung giả do adapter mô phỏng tạo ra.`, idempotencyKey: `sim:${run.runId}`, now: new Date() });
           }, 3000);

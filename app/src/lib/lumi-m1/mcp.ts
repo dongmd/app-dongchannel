@@ -12,6 +12,8 @@
 import { createHash } from "node:crypto";
 import { ackRun, LumiError } from "./core";
 import { handle, type ApiCtx, type Principal } from "./handlers";
+import { addPlanItem, proposeProject, requestAction, taskPlanContext, updatePlanItem } from "./autonomy";
+import { submitPlanVersion } from "./plans";
 
 export const MCP_TOOLS = [
   {
@@ -22,7 +24,32 @@ export const MCP_TOOLS = [
   {
     name: "outputs_submit",
     description: "Nộp đầu ra (một lần duy nhất) cho đúng lượt chạy được giao. Không có quyền duyệt hay hoàn thành việc.",
-    inputSchema: { type: "object", properties: { run_id: { type: "string" }, content: { type: "string", description: "Nội dung đầu ra, tối đa 20000 ký tự" } }, required: ["run_id", "content"], additionalProperties: false },
+    inputSchema: { type: "object", properties: { run_id: { type: "string" }, content: { type: "string", description: "Nội dung đầu ra, tối đa 20000 ký tự" }, final: { type: "boolean", description: "true (mặc định) = đầu ra cuối để Chủ duyệt. false = ĐIỂM DỪNG: lưu tiến độ và hệ thống mở lần chạy tiếp (trong giới hạn)." } }, required: ["run_id", "content"], additionalProperties: false },
+  },
+  {
+    name: "plan_add",
+    description: "Ghi một bước của kế hoạch thành việc con của việc đang làm (một cấp, có giới hạn số lượng). Dùng để lập kế hoạch và báo tiến độ.",
+    inputSchema: { type: "object", properties: { run_id: { type: "string" }, title: { type: "string" }, description: { type: "string" } }, required: ["run_id", "title"], additionalProperties: false },
+  },
+  {
+    name: "plan_update",
+    description: "Cập nhật trạng thái một việc con của bạn: RUNNING, COMPLETED, FAILED hoặc SKIPPED, kèm ghi chú ngắn.",
+    inputSchema: { type: "object", properties: { run_id: { type: "string" }, code: { type: "string", description: "Mã việc con, ví dụ DL-012" }, state: { type: "string", enum: ["RUNNING", "COMPLETED", "FAILED", "SKIPPED"] }, note: { type: "string" } }, required: ["run_id", "code", "state"], additionalProperties: false },
+  },
+  {
+    name: "project_propose",
+    description: "Đề xuất một cơ hội/dự án MỚI ở trạng thái ĐỀ XUẤT (kèm bằng chứng). Chưa kích hoạt, chưa chi tiền, chưa cam kết gì; Chủ quyết định kích hoạt.",
+    inputSchema: { type: "object", properties: { run_id: { type: "string" }, name: { type: "string" }, area: { type: "string", enum: ["AFFILIATE", "YOUTUBE", "WEBSITE", "OTHER"] }, goal: { type: "string" }, evidence: { type: "string", description: "Bằng chứng và nguồn, tối thiểu 10 ký tự" } }, required: ["run_id", "name", "area", "goal", "evidence"], additionalProperties: false },
+  },
+  {
+    name: "actions_request",
+    description: "XIN QUYỀN trước một hành động ra bên ngoài (chi tiền, đăng, nộp đăng ký, xóa…). Trả ĐƯỢC PHÉP (trong quyền Chủ đã cấp), CẦN CHỦ QUYẾT ĐỊNH hoặc KHÔNG ĐƯỢC. Chỉ thực hiện khi được phép. Dự án lấy từ việc đang làm.",
+    inputSchema: { type: "object", properties: { run_id: { type: "string" }, action_type: { type: "string" }, account_ref: { type: "string", description: "Tài khoản/đối tượng, ví dụ google-ads:123, wordpress:dongchannel.com" }, amount: { type: "number" }, currency: { type: "string" }, summary: { type: "string" }, params: { type: "object" }, request_id: { type: "string", description: "Mã yêu cầu đã được Chủ duyệt, để dùng quyền một lần" } }, required: ["run_id", "action_type", "account_ref", "summary"], additionalProperties: true },
+  },
+  {
+    name: "plan_submit_version",
+    description: "Chỉ khi việc của bạn là LẬP PLAN & COST: nộp một phiên bản kế hoạch (body theo lược đồ v1, xem mô tả việc). Công cụ KIỂM LƯỢC ĐỒ và trả danh sách trường lỗi nếu sai — sửa và gọi lại trong cùng lượt. Không có quyền duyệt kế hoạch hay chi tiền; Chủ duyệt.",
+    inputSchema: { type: "object", properties: { run_id: { type: "string" }, body: { type: "object", description: "Plan & Cost v1 (schema=1): summary, opportunity, scope, deliverables, tasks, milestones, cost, prepare_spent, grants_requested=[], stop_conditions, risks, alternatives" } }, required: ["run_id", "body"], additionalProperties: true },
   },
 ] as const;
 
@@ -58,6 +85,38 @@ export async function intakeFromChat(ctx: ApiCtx, p: Extract<Principal, { kind: 
 }
 
 async function callTool(ctx: ApiCtx, p: Extract<Principal, { kind: "bot" }>, name: string, args: any, _opts: McpOptions) {
+  if (name === "plan_submit_version") {
+    const runId = typeof args?.run_id === "string" ? args.run_id : "";
+    if (!UUID.test(runId)) return text("run_id không hợp lệ.", true);
+    try {
+      const r = await submitPlanVersion(ctx.db, { runId, botSlug: p.slug, body: args?.body, now: ctx.now() });
+      return text(r.alreadyProcessed ? `Lượt này đã nộp phiên bản ${r.version.version} trước đó; không nộp lại. Dừng.` : `Đã nộp phiên bản ${r.version.version}, chờ Chủ duyệt. Dừng lại, không làm gì thêm.`);
+    } catch (e) {
+      if (e instanceof LumiError && e.code === "VALIDATION_ERROR") return text(`Body KHÔNG hợp lệ, chưa lưu gì. Sửa các trường sau rồi gọi lại plan_submit_version:\n${((e.data.errors as string[]) ?? []).map((x) => `- ${x}`).join("\n")}`, true);
+      if (e instanceof LumiError) return text(`Không nộp được: ${e.code}${e.data && Object.keys(e.data).length ? " " + JSON.stringify(e.data) : ""}`, true);
+      throw e;
+    }
+  }
+  if (["plan_add", "plan_update", "project_propose", "actions_request"].includes(name)) {
+    const runId = typeof args?.run_id === "string" ? args.run_id : "";
+    if (!UUID.test(runId)) return text("run_id không hợp lệ.", true);
+    const [run] = await ctx.db.query<any>(`SELECT r.id,r.state,r.task_id,r.assistant_id,a.slug,t.project_id FROM lumi_task_runs r JOIN lumi_assistants a ON a.id=r.assistant_id JOIN tasks t ON t.id=r.task_id WHERE r.id=$1`, [runId]);
+    if (!run || run.slug !== p.slug) return text("Không tìm thấy lượt chạy được giao cho bạn.", true);
+    if (!["DISPATCHED", "DISPATCH_UNCERTAIN", "RUNNING"].includes(run.state)) return text(`Lượt chạy không còn mở (trạng thái ${run.state}). Dừng ngay.`, true);
+    const s = (v: unknown) => (typeof v === "string" ? v : "");
+    try {
+      if (name === "plan_add") { const r = await addPlanItem(ctx.db, { assistantId: run.assistant_id, runId, title: s(args.title), description: s(args.description) || undefined, now: ctx.now() }); return text(`${r.alreadyProcessed ? "Đã có" : "Đã ghi"} việc con ${r.item.code} (${r.item.status}).`); }
+      if (name === "plan_update") { const r = await updatePlanItem(ctx.db, { assistantId: run.assistant_id, runId, code: s(args.code), state: s(args.state) as any, note: s(args.note) || undefined, now: ctx.now() }); return text(r.alreadyProcessed ? "Trạng thái đã đúng như vậy." : "Đã cập nhật."); }
+      if (name === "project_propose") { const r = await proposeProject(ctx.db, { assistantId: run.assistant_id, name: s(args.name), area: s(args.area), goal: s(args.goal), evidence: s(args.evidence), now: ctx.now() }); return text(`${r.alreadyProcessed ? "Đề xuất trùng tên đã có" : "Đã ghi đề xuất"} (trạng thái ĐỀ XUẤT; chưa kích hoạt, Chủ quyết định).`); }
+      const d = await requestAction(ctx.db, { assistantId: run.assistant_id, projectId: run.project_id, accountRef: s(args.account_ref), actionType: s(args.action_type), amount: typeof args.amount === "number" ? args.amount : undefined, currency: s(args.currency) || undefined, summary: s(args.summary), params: args.params, taskId: run.task_id, runId, requestId: s(args.request_id) || undefined, now: ctx.now() });
+      if (d.decision === "ALLOW") return text(`ĐƯỢC PHÉP (${d.reason}). Thực hiện đúng phạm vi đã xin, không hơn.`);
+      if (d.decision === "ASK") return text(`CẦN CHỦ QUYẾT ĐỊNH (${d.basis}). Mã yêu cầu ${d.requestId}. KHÔNG thực hiện hành động này. Làm tiếp phần việc khác; khi Chủ đã duyệt, gọi lại với request_id này và đúng các tham số cũ.`);
+      return text(`KHÔNG ĐƯỢC PHÉP (${d.reason}). Dừng hành động này.`, true);
+    } catch (e) {
+      if (e instanceof LumiError) return text(`Không thực hiện được: ${e.code}${e.data && Object.keys(e.data).length ? " " + JSON.stringify(e.data) : ""}`, true);
+      throw e;
+    }
+  }
   if (name === "knowledge_context" || name === "outputs_submit") {
     const runId = typeof args?.run_id === "string" ? args.run_id : "";
     if (!UUID.test(runId)) return text("run_id không hợp lệ.", true);
@@ -73,12 +132,17 @@ async function callTool(ctx: ApiCtx, p: Extract<Principal, { kind: "bot" }>, nam
         prev = `\nBản trước (v${o?.version}):\n${o?.content ?? ""}\nLý do chủ yêu cầu sửa: ${ap?.reason ?? "(không ghi)"}`;
       }
       const instr = run.instruction_snapshot?.instruction ? `\nHướng dẫn thêm: ${run.instruction_snapshot.instruction}` : "";
-      return text(`Việc ${run.code} (${run.run_kind}) — dự án ${run.project ?? "?"}\nTiêu đề: ${run.title}\nMô tả: ${run.description ?? "(không có)"}\nĐầu ra mong đợi: ${run.expected_output ?? "(không nêu)"}${instr}${prev}\nKhi xong, gọi outputs_submit đúng MỘT lần với run_id=${runId}.`);
+      const plan = await taskPlanContext(ctx.db, run.task_id);
+      const cps = plan.checkpoints.length ? `\nĐiểm dừng trước (tiếp tục từ đây, đừng làm lại):\n${plan.checkpoints.map((c: any) => `- v${c.version}: ${c.content}`).join("\n")}` : "";
+      const items = plan.items.length ? `\nKế hoạch hiện có:\n${plan.items.map((i: any) => `- ${i.code} [${i.status}] ${i.title}`).join("\n")}` : "";
+      return text(`Việc ${run.code} (${run.run_kind}) — dự án ${run.project ?? "?"}\nTiêu đề: ${run.title}\nMô tả: ${run.description ?? "(không có)"}\nĐầu ra mong đợi: ${run.expected_output ?? "(không nêu)"}${instr}${prev}${cps}${items}\nKhi xong, gọi outputs_submit (final=true) đúng MỘT lần với run_id=${runId}. Việc dài: gọi outputs_submit với final=false để lưu điểm dừng.`);
     }
     const content = typeof args?.content === "string" ? args.content : "";
     if (!content.trim() || content.length > 20000) return text("content rỗng hoặc quá 20000 ký tự.", true);
-    const r = await handle("submitOutput", ctx, { principal: p, params: { id: run.task_id }, body: { run_id: runId, content, idempotency_key: `mcp:run:${runId}` }, headers: noHeaders });
+    const r = await handle("submitOutput", ctx, { principal: p, params: { id: run.task_id }, body: { run_id: runId, content, idempotency_key: `mcp:run:${runId}`, final: args?.final === false ? false : true }, headers: noHeaders });
     if (r.error) return text(`Không nộp được: ${r.error.code}`, true);
+    if (r.data.checkpoint === "CONTINUING") return text(`Đã lưu điểm dừng (bản ${r.data.version}). Hệ thống sẽ mở lần chạy tiếp; dừng lượt này.`);
+    if (r.data.checkpoint === "LIMIT_REACHED") return text(`Đã lưu điểm dừng (bản ${r.data.version}) nhưng hết số lần tiếp tục cho phép: việc chuyển sang chờ Chủ quyết định. Dừng lại.`);
     return text(r.data.late ? "Đã lưu kết quả muộn (lượt chạy đã đóng); chủ sẽ quyết định có dùng hay không." : r.data.already_processed ? "Lượt chạy này đã nộp trước đó; không nộp lại." : `Đã nộp bản ${r.data.version}. Dừng lại, không làm gì thêm.`);
   }
   return text(`Công cụ không tồn tại: ${name}`, true);
@@ -102,6 +166,7 @@ export async function handleRpc(ctx: ApiCtx, principal: Extract<Principal, { kin
       try { return reply(await callTool(ctx, principal, String(msg.params?.name), msg.params?.arguments ?? {}, opts)); }
       catch (e) {
         if (e instanceof LumiError) return reply(text(`Lỗi ${e.code}`, true));
+        console.error("[mcp] tool error", (e as Error)?.message ?? e); // server log only (no secrets in SQL errors); the model gets a generic text
         return reply(text("Lỗi hệ thống", true)); // never leak internals to the model
       }
     }

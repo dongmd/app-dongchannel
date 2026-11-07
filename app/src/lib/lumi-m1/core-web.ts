@@ -12,10 +12,13 @@ export async function upsertActor(db: Db, actorRef: string, role: Role, channel 
   await db.query(`INSERT INTO lumi_actors(actor_ref,role,channel) VALUES ($1,$2,$3) ON CONFLICT (actor_ref) DO UPDATE SET role=EXCLUDED.role`, [actorRef, role, channel]);
 }
 
-export async function createTask(
-  db: Db,
-  a: { actorRef: string; clientRequestId: string; projectId: string; assigneeId?: string; assigneeActorRef?: string; title: string; description?: string; due?: string; expectedOutput?: string; now: Date },
-) {
+export interface NewTask {
+  actorRef: string; clientRequestId: string; projectId: string; assigneeId?: string; assigneeActorRef?: string; title: string; description?: string; due?: string; expectedOutput?: string; now: Date;
+  /** IMP-01 (TDD 14.11.B): a task that belongs to a plan. `sourceKey` replaces the default `web:<id>` idempotency key. */
+  plan?: { planId: string; planVersion: number | null; planTaskKey: string | null; acceptance?: string | null; sourceKey: string; source: string };
+}
+
+export async function createTask(db: Db, a: NewTask) {
   await requireRole(db, a.actorRef, ["OWNER", "ADMIN"]);
   const missing: string[] = [];
   if (!a.clientRequestId) missing.push("client_request_id");
@@ -23,8 +26,13 @@ export async function createTask(
   if (!a.assigneeId && !a.assigneeActorRef) missing.push("assignee_id");
   if (!a.title || a.title.trim().length < 3) missing.push("title");
   if (missing.length) throw new LumiError("VALIDATION_ERROR", 400, { missing });
-  const sourceKey = `web:${a.clientRequestId}`;
-  return db.tx(async (t) => {
+  return db.tx((t) => createTaskInTx(t, a));
+}
+
+/** The body of createTask, usable inside a caller's transaction (plans create several tasks atomically). Role is checked by the caller. */
+export async function createTaskInTx(t: Db, a: NewTask) {
+  const sourceKey = a.plan?.sourceKey ?? `web:${a.clientRequestId}`;
+  {
     const prior = await t.query<any>(`SELECT id,code,status FROM tasks WHERE source_key=$1`, [sourceKey]);
     if (prior[0]) return { task: prior[0], alreadyProcessed: true as const };
     const [proj] = await t.query<any>(`SELECT * FROM lumi_projects WHERE id=$1 AND status='ACTIVE'`, [a.projectId]);
@@ -50,16 +58,16 @@ export async function createTask(
       }
     }
     const [task] = await t.query<any>(
-      `INSERT INTO tasks (code,profile_slug,title,description,status,review_status,project_id,owner_kind,owner_assistant_id,owner_actor_ref,source_key,due_at,expected_output,created_at,updated_at)
-       VALUES ('DL-'||lpad(nextval('lumi_task_code_seq')::text,3,'0'),$1,$2,$3,$4::task_status,'NONE',$5,$6,$7,$8,$9,$10,$11,$12,$12) RETURNING id,code,status`,
-      [asst?.hermes_profile ?? "unassigned", a.title.trim(), a.description ?? null, status, proj.id, asst ? "BOT" : "HUMAN", asst?.id ?? null, asst ? null : a.assigneeActorRef, sourceKey, dueAt, a.expectedOutput ?? null, iso(a.now)],
+      `INSERT INTO tasks (code,profile_slug,title,description,status,review_status,project_id,owner_kind,owner_assistant_id,owner_actor_ref,source_key,due_at,expected_output,created_at,updated_at,plan_id,plan_version,plan_task_key,acceptance)
+       VALUES ('DL-'||lpad(nextval('lumi_task_code_seq')::text,3,'0'),$1,$2,$3,$4::task_status,'NONE',$5,$6,$7,$8,$9,$10,$11,$12,$12,$13,$14,$15,$16) RETURNING id,code,status`,
+      [asst?.hermes_profile ?? "unassigned", a.title.trim(), a.description ?? null, status, proj.id, asst ? "BOT" : "HUMAN", asst?.id ?? null, asst ? null : a.assigneeActorRef, sourceKey, dueAt, a.expectedOutput ?? null, iso(a.now), a.plan?.planId ?? null, a.plan?.planVersion ?? null, a.plan?.planTaskKey ?? null, a.plan?.acceptance ?? null],
     );
-    await activity(t, task.id, "task.created", a.now, { source: "WEB", by: a.actorRef });
+    await activity(t, task.id, "task.created", a.now, { source: a.plan?.source ?? "WEB", by: a.actorRef, ...(a.plan ? { planId: a.plan.planId, planTaskKey: a.plan.planTaskKey } : {}) });
     if (asst && status === "QUEUED") await createRun(t, task.id, asst, "INITIAL", a.now, { text: a.description ?? a.title, title: a.title, expected_output: a.expectedOutput ?? null, due: dueAt });
     if (!asst) await enqueueNotify(t, `notify:assign:${task.id}`, { type: "HUMAN_ASSIGNED", taskCode: task.code, to: a.assigneeActorRef }, a.now);
-    await audit(t, "task.created", a.actorRef, { taskId: task.id, source: "WEB" }, a.now);
+    await audit(t, "task.created", a.actorRef, { taskId: task.id, source: a.plan?.source ?? "WEB" }, a.now);
     return { task, alreadyProcessed: false as const };
-  });
+  }
 }
 
 /** TDD 8.6.8 — only transitions without a dedicated endpoint. */

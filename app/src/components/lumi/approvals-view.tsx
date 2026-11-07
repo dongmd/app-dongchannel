@@ -9,12 +9,12 @@ import type { Memory, MemoryScope } from "@/lib/lumi/types";
 import { useLumi } from "./lumi-provider";
 import { Empty, fmtTime, LumiLink } from "./ui";
 
-type Tab = "memory" | "output" | "action";
+type Tab = "memory" | "output" | "action" | "plan";
 
 export function ApprovalsView() {
   const { state } = useLumi();
   const sp = useSearchParams();
-  const initial = (["memory", "output", "action"] as const).find((t) => t === sp.get("tab")) ?? "memory";
+  const initial = (["memory", "output", "action", "plan"] as const).find((t) => t === sp.get("tab")) ?? "memory";
   const [tab, setTab] = useState<Tab>(initial);
   const [pid, setPid] = useState(sp.get("project") ?? "");
   const focusId = sp.get("id");
@@ -30,7 +30,7 @@ export function ApprovalsView() {
           Ba loại phê duyệt tách riêng: ghi nhớ, đầu ra công việc và hành động bên ngoài. Duyệt loại này không tự duyệt loại khác.
         </p>
         <p style={{ margin: "6px 0 0" }} data-testid="approvals-total">
-          <strong>Tổng toàn bộ: {all.total} mục</strong> <span className="muted">({all.memory} ghi nhớ + {all.output} đầu ra + {all.action} hành động bên ngoài)</span>
+          <strong>Tổng toàn bộ: {all.total + (state.real?.plansPending?.length ?? 0)} mục</strong> <span className="muted">({all.memory} ghi nhớ + {all.output} đầu ra + {all.action} hành động bên ngoài{state.real?.plansPending ? ` + ${state.real.plansPending.length} kế hoạch` : ""})</span>
         </p>
       </div>
       <div className="l-row">
@@ -47,10 +47,29 @@ export function ApprovalsView() {
         <button role="tab" aria-selected={tab === "memory"} onClick={() => setTab("memory")}>Ghi nhớ ({c.memory})</button>
         <button role="tab" aria-selected={tab === "output"} onClick={() => setTab("output")}>Đầu ra công việc ({c.output})</button>
         <button role="tab" aria-selected={tab === "action"} onClick={() => setTab("action")}>Hành động bên ngoài ({c.action})</button>
+        {state.real && <button role="tab" aria-selected={tab === "plan"} onClick={() => setTab("plan")} data-testid="tab-plan-btn">Kế hoạch ({state.real.plansPending?.length ?? 0})</button>}
       </div>
       {tab === "memory" && <MemoryTab focusId={focusId} pid={pid} />}
       {tab === "output" && <OutputTab pid={pid} />}
       {tab === "action" && <ActionTab focusId={focusId} pid={pid} />}
+      {tab === "plan" && <PlanTab />}
+    </div>
+  );
+}
+
+function PlanTab() {
+  const { state } = useLumi();
+  const list = state.real?.plansPending ?? [];
+  return (
+    <div className="l-grid" style={{ gap: 12 }} data-testid="tab-plan">
+      {list.length === 0 && <Empty>Không có phiên bản kế hoạch nào đang chờ duyệt.</Empty>}
+      {list.map((p) => (
+        <div key={`${p.planId}:${p.version}`} className="l-card" data-testid={`pending-plan-${p.code}`}>
+          <strong>{p.code} · phiên bản {p.version}</strong> <span className="muted">— {p.goalTitle}</span>
+          <div className="small muted">Nộp {fmtTime(p.submittedAt)}. Duyệt theo hai bước: xem nội dung và phạm vi, rồi xác nhận.</div>
+          <div style={{ marginTop: 8 }}><LumiLink href={`/lumi/plans/${p.planId}`} className="l-btn primary sm">Xem và duyệt</LumiLink></div>
+        </div>
+      ))}
     </div>
   );
 }

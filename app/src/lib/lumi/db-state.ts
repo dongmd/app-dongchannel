@@ -8,8 +8,10 @@
  *     đều do lõi quyết định. Thao tác chưa có trong M1 trả lỗi rõ ràng, không giả vờ thành công.
  */
 import type { Db, HermesPort } from "../lumi-m1/core";
+import { decideActionRequest, decideProposal } from "../lumi-m1/autonomy";
 import { LumiError, cancelDraft, confirmDraft, decide, listOpenDrafts, patchDraft, startRun, cancelTask, upsertActorRef } from "../lumi-m1/core";
 import { createTask } from "../lumi-m1/core-web";
+import { pendingPlans } from "../lumi-m1/plans";
 import { OWNER_ID } from "./types";
 import type { Action, Result } from "./engine";
 import type { DemoState, HistoryEvent, Member, Output, Project, RealRun, Task, TaskStatus, TgDraft } from "./types";
@@ -43,7 +45,7 @@ export async function buildDbState(db: Db, user: DbUser, o: DbStateOpts): Promis
   const assistants = await db.query<any>(`SELECT id,slug,name,description,role_label,avatar,kind,connection_state,dispatch_enabled,hermes_profile,created_at FROM lumi_assistants WHERE status='ACTIVE' ORDER BY created_at`);
   const projectsRaw = await db.query<any>(`SELECT id,slug,name,area,goal,pm_actor_ref,pm_assistant_id FROM lumi_projects WHERE status='ACTIVE' ORDER BY created_at`);
   const tasksRaw = await db.query<any>(
-    `SELECT t.*, a.slug AS a_slug, a.name AS a_name, p.slug AS p_slug FROM tasks t JOIN lumi_projects p ON p.id=t.project_id LEFT JOIN lumi_assistants a ON a.id=t.owner_assistant_id ORDER BY t.created_at`,
+    `SELECT t.*, a.slug AS a_slug, a.name AS a_name, p.slug AS p_slug FROM tasks t JOIN lumi_projects p ON p.id=t.project_id LEFT JOIN lumi_assistants a ON a.id=t.owner_assistant_id WHERE t.parent_task_id IS NULL ORDER BY t.created_at`,
   );
   const ids = tasksRaw.map((t: any) => t.id);
   const any = (arr: string[]) => (arr.length ? arr : ["00000000-0000-0000-0000-000000000000"]);
@@ -52,7 +54,11 @@ export async function buildDbState(db: Db, user: DbUser, o: DbStateOpts): Promis
   const actsRaw = await db.query<any>(`SELECT task_id,event_type,payload_redacted,occurred_at FROM task_activities WHERE task_id = ANY($1::uuid[]) ORDER BY occurred_at,created_at`, [any(ids)]);
   const runsRaw = await db.query<any>(`SELECT task_id,attempt_no,run_kind,state,remote_stop_state,error_code,created_at,acked_at FROM lumi_task_runs WHERE task_id = ANY($1::uuid[]) ORDER BY attempt_no`, [any(ids)]);
   const flags = await db.query<any>(`SELECT key,value FROM lumi_system_flags`);
+  const childRaw = await db.query<any>(`SELECT t.code,t.title,t.status::text AS status,t.hold_reason,t.parent_task_id FROM tasks t WHERE t.parent_task_id = ANY($1::uuid[]) ORDER BY t.created_at`, [any(ids)]);
+  const reqRaw = await db.query<any>(`SELECT r.id,r.action_type,r.account_ref,r.amount,r.currency,r.summary,r.basis,r.requested_at,p.slug AS p_slug,a.name AS a_name,t.code AS t_code FROM lumi_action_requests r JOIN lumi_projects p ON p.id=r.project_id JOIN lumi_assistants a ON a.id=r.assistant_id LEFT JOIN tasks t ON t.id=r.task_id WHERE r.state='PENDING' AND r.expires_at > $1 ORDER BY r.requested_at`, [now.toISOString()]);
+  const propRaw = await db.query<any>(`SELECT p.id,p.slug,p.name,p.area,p.goal,p.proposal,a.name AS a_name,p.created_at FROM lumi_projects p LEFT JOIN lumi_assistants a ON a.id=p.proposed_by_assistant_id WHERE p.status='PROPOSED' ORDER BY p.created_at`);
   const drafts = await listOpenDrafts(db, now);
+  const plansPendingRows = await pendingPlans(db);
 
   const projectIdBySlug = new Map(projectsRaw.map((p: any) => [p.id, p.slug]));
   const slugOfAssistant = new Map(assistants.map((a: any) => [a.id, a.slug]));
@@ -77,7 +83,7 @@ export async function buildDbState(db: Db, user: DbUser, o: DbStateOpts): Promis
     const ownerName = t.owner_kind === "BOT" ? (t.a_name ?? "Trợ lý") : (t.owner_actor_ref ?? user.email);
     const web = String(t.source_key ?? "").startsWith("web:");
     const myRuns = runsRaw.filter((r: any) => r.task_id === t.id);
-    const myOuts = outsRaw.filter((x: any) => x.task_id === t.id && !["LATE_SAVED", "DISCARDED"].includes(x.state));
+    const myOuts = outsRaw.filter((x: any) => x.task_id === t.id && !["LATE_SAVED", "DISCARDED", "PROGRESS"].includes(x.state));
     const myAppr = apprRaw.filter((x: any) => x.task_id === t.id);
     const history: HistoryEvent[] = [];
     let n = 0;
@@ -137,6 +143,8 @@ export async function buildDbState(db: Db, user: DbUser, o: DbStateOpts): Promis
         uuid: t.id, status: t.status, needsDecision: t.needs_decision === true, revisionRound: t.revision_round,
         ...(t.error_code ? { errorCode: t.error_code } : {}), ...(t.error_message ? { errorMessage: t.error_message } : {}), ...(t.hold_reason ? { holdReason: t.hold_reason } : {}),
         runs, lateOutputs: outsRaw.filter((x: any) => x.task_id === t.id && x.state === "LATE_SAVED").length,
+        children: childRaw.filter((c: any) => c.parent_task_id === t.id).map((c: any) => ({ code: c.code, title: c.title, status: c.status, ...(c.hold_reason ? { note: c.hold_reason } : {}) })),
+        checkpoints: outsRaw.filter((x: any) => x.task_id === t.id && x.state === "PROGRESS").length,
       },
     } satisfies Task;
   });
@@ -149,13 +157,19 @@ export async function buildDbState(db: Db, user: DbUser, o: DbStateOpts): Promis
   }));
   const flag = (k: string) => flags.find((f: any) => f.key === k)?.value === true;
   const state: DemoState = {
-    schema: 1, rev: 0, resetAt: new Date(0).toISOString(), members: [owner, ...bots], projects, tasks, outputs, memories: [], actions: [],
+    schema: 1, rev: 0, resetAt: new Date(0).toISOString(), members: [owner, ...bots], projects, tasks, outputs, memories: [],
+    actions: [
+      ...reqRaw.map((r: any) => ({ id: `req:${r.id}`, projectId: r.p_slug, ...(r.t_code ? { taskId: r.t_code } : {}), title: `${r.a_name} xin quyền: ${r.action_type} trên ${r.account_ref}${r.amount != null ? ` (${r.amount} ${r.currency ?? ""})` : ""}`, detail: `${r.summary} — lý do hỏi: ${r.basis}`, requestedBy: r.a_name, at: iso(r.requested_at)!, status: "pending" as const })),
+      ...propRaw.map((r: any) => ({ id: `prop:${r.id}`, projectId: r.slug, title: `Đề xuất dự án: ${r.name} (${AREA[r.area] ?? r.area})`, detail: `Mục tiêu: ${r.goal}. Bằng chứng: ${r.proposal?.evidence ?? ""}. Kích hoạt chỉ mở dự án, chưa chi tiền hay cam kết gì ra ngoài.`, requestedBy: r.a_name ?? "trợ lý", at: iso(r.created_at)!, status: "pending" as const })),
+    ],
     tgDrafts, tgMessages: [], tgAwaiting: {}, videos: [], adResults: [], seq: { task: tasks.length, member: 0, id: 0 },
     mode: "db",
     real: {
       role: user.role, email: user.email, m1Enabled: flag("m1_enabled"), emergencyStop: flag("emergency_stop"), hermesMode: o.hermesMode,
       assistants: assistants.map((a: any) => ({ id: a.id, name: a.name, slug: a.slug, connection_state: a.connection_state, dispatch_enabled: a.dispatch_enabled, hermes_profile: a.hermes_profile })),
       ...(o.telegramBot ? { telegramBot: o.telegramBot } : {}),
+      plansEnabled: flag("plans_enabled"),
+      plansPending: plansPendingRows.map((r: any) => ({ planId: r.plan_id, code: r.code, version: r.version, goalTitle: r.goal_title, submittedAt: iso(r.submitted_at)! })),
     },
   };
   state.rev = djb2(JSON.stringify(state)); // đổi khi dữ liệu đổi: giao diện kéo lại mỗi 2 giây và chỉ cập nhật khi rev khác
@@ -254,6 +268,18 @@ export async function applyDbAction(db: Db, user: DbUser, a: Action, now: Date =
           await patchDraft(db, user.actorRef, a.draftId, d.version, { assigneeId: s.id }, now);
         }
         return { ok: true };
+      }
+      case "action.review": {
+        const [kind, id] = a.id.split(":");
+        if (kind === "req") {
+          const r = await decideActionRequest(db, user.actorRef, id!, a.decision === "approve" ? "APPROVE" : "DENY", a.decision === "approve" ? undefined : "Chủ từ chối trên giao diện", now);
+          return r.alreadyProcessed ? { ok: true, code: "already", message: "Đã xử lý trước đó." } : { ok: true };
+        }
+        if (kind === "prop") {
+          const r = await decideProposal(db, user.actorRef, id!, a.decision === "approve" ? "ACTIVATE" : "REJECT", now);
+          return r.alreadyProcessed ? { ok: true, code: "already", message: "Đã xử lý trước đó." } : { ok: true };
+        }
+        return bad("Mã không hợp lệ.");
       }
       default:
         return bad(NOT_IN_M1);

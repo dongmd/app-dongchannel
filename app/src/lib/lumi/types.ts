@@ -149,6 +149,9 @@ export interface RealTask {
   revisionRound: number;
   runs: RealRun[];
   lateOutputs: number;
+  /** Việc con (kế hoạch) do trợ lý ghi và số điểm dừng đã lưu. */
+  children: { code: string; title: string; status: string; note?: string }[];
+  checkpoints: number;
 }
 /** Bối cảnh thật của phiên: vai trò, công tắc, trợ lý và chế độ Hermes. */
 export interface RealContext {
@@ -159,6 +162,9 @@ export interface RealContext {
   hermesMode: string;
   assistants: { id: string; name: string; slug: string; connection_state: string; dispatch_enabled: boolean; hermes_profile: string | null }[];
   telegramBot?: string;
+  /** IMP-01: tính năng kế hoạch bật chưa, và các phiên bản kế hoạch đang chờ Chủ duyệt. */
+  plansEnabled?: boolean;
+  plansPending?: { planId: string; code: string; version: number; goalTitle: string; submittedAt: string }[];
 }
 
 export interface OutputSection {

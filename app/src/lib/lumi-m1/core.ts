@@ -111,10 +111,16 @@ export async function setDispatchEnabled(db: Db, hermes: HermesPort, actorRef: s
     if (missing.length) throw new LumiError("CONFIG_INCOMPLETE", 422, { missing });
     if (a.connection_state !== "VERIFIED") throw new LumiError("CONFIG_INCOMPLETE", 422, { missing: ["connection_state(VERIFIED)"] });
     if (!a.hermes_profile) throw new LumiError("CONFIG_INCOMPLETE", 422, { missing: ["hermes_profile"] });
-    const tools = await hermes.readProfileTools(a.hermes_profile);
-    if (tools === null) throw new LumiError("PROFILE_TOOLS_UNKNOWN", 422);
-    const extra = tools.filter((t) => !a.tool_allowlist.includes(t));
-    if (extra.length) throw new LumiError("PROFILE_EXCEEDS_ALLOWLIST", 422, { extra });
+    if (a.capability_mode === "DECLARED_FULL") {
+      // The owner declared that this assistant keeps ALL its tools (TDD 8.11). We do not refuse it for having them; we require the
+      // explicit acknowledgement that is recorded in the audit log. Tools are NOT the authority to act outside: that is grants (8.11.3).
+      if (!a.capability_ack_at) throw new LumiError("CONFIG_INCOMPLETE", 422, { missing: ["capability_ack"] });
+    } else {
+      const tools = await hermes.readProfileTools(a.hermes_profile);
+      if (tools === null) throw new LumiError("PROFILE_TOOLS_UNKNOWN", 422);
+      const extra = tools.filter((t) => !a.tool_allowlist.includes(t));
+      if (extra.length) throw new LumiError("PROFILE_EXCEEDS_ALLOWLIST", 422, { extra });
+    }
   }
   await db.tx(async (t) => {
     await t.query(`UPDATE lumi_assistants SET dispatch_enabled=$2 WHERE id=$1`, [assistantId, enabled]);
@@ -252,7 +258,7 @@ async function confirmDraftTx(db: Db, actorRef: string, draftId: string, now: Da
 }
 
 // ───────────────────────── runs and outbox
-export async function createRun(t: Db, taskId: string, asst: any, kind: "INITIAL" | "RETRY" | "REVISION" | "REASSIGN", now: Date, instruction: Record<string, unknown>) {
+export async function createRun(t: Db, taskId: string, asst: any, kind: "INITIAL" | "RETRY" | "REVISION" | "REASSIGN" | "CONTINUATION", now: Date, instruction: Record<string, unknown>) {
   if (asst.max_runs_per_day != null) {
     const [c] = await t.query<{ n: string }>(`SELECT count(*)::text AS n FROM lumi_task_runs WHERE assistant_id=$1 AND created_at >= date_trunc('day',$2::timestamptz)`, [asst.id, iso(now)]);
     if (Number(c!.n) >= asst.max_runs_per_day) throw new LumiError("DAILY_CAP", 409, { max_runs_per_day: asst.max_runs_per_day });
@@ -338,10 +344,11 @@ export async function processOutbox(db: Db, deps: { hermes: HermesPort & Partial
   if (row.kind !== "DISPATCH_RUN") { await finishOutbox(db, row, { to: "DEAD", error: `unknown kind ${row.kind}` }, now); return { kind: row.kind, outcome: "dead" }; }
 
   const runId = row.aggregate_id;
-  const [run] = await db.query<any>(`SELECT r.*, t.code AS task_code, t.status AS task_status FROM lumi_task_runs r JOIN tasks t ON t.id=r.task_id WHERE r.id=$1`, [runId]);
+  const [run] = await db.query<any>(`SELECT r.*, t.code AS task_code, t.status AS task_status, CASE WHEN t.plan_task_key IS NOT NULL THEN pl.status END AS plan_status FROM lumi_task_runs r JOIN tasks t ON t.id=r.task_id LEFT JOIN lumi_plans pl ON pl.id=t.plan_id WHERE r.id=$1`, [runId]);
   const [a] = await db.query<any>(`SELECT * FROM lumi_assistants WHERE id=$1`, [run.assistant_id]);
   if (run.state !== "PENDING") { await finishOutbox(db, row, { to: "DONE" }, now); return { kind: row.kind, outcome: "skipped_not_pending" }; } // never resend a run Hermes may already have
-  if ((await flag(db, "emergency_stop")) || !(await flag(db, "m1_enabled")) || a.dispatch_paused || !a.dispatch_enabled) {
+  // IMP-01: a TASK run of a plan paused for budget adjustment is deferred (like dispatch_paused), never sent. Planning runs are NOT deferred: the owner must be able to raise the ceiling.
+  if ((await flag(db, "emergency_stop")) || !(await flag(db, "m1_enabled")) || a.dispatch_paused || !a.dispatch_enabled || run.plan_status === "PAUSED_ADJUSTMENT") {
     await finishOutbox(db, row, { to: "DEFER", delaySec: 30 }, now);
     return { kind: row.kind, outcome: "deferred" };
   }
@@ -414,7 +421,7 @@ export async function reap(db: Db, now: Date) {
 }
 
 // ───────────────────────── outputs (TDD 8.6.5, 8.7)
-export async function submitOutput(db: Db, a: { taskId: string; runId?: string; actorRef: string; content: string; idempotencyKey: string; now: Date }) {
+export async function submitOutput(db: Db, a: { taskId: string; runId?: string; actorRef: string; content: string; idempotencyKey: string; now: Date; final?: boolean }) {
   return db.tx(async (t) => {
     const [task] = await t.query<any>(`SELECT * FROM tasks WHERE id=$1 FOR UPDATE`, [a.taskId]);
     if (!task) throw new LumiError("NOT_FOUND", 404);
@@ -440,6 +447,22 @@ export async function submitOutput(db: Db, a: { taskId: string; runId?: string; 
       return { output: o, alreadyProcessed: false as const, late: true as const };
     }
     if (!["QUEUED", "RUNNING"].includes(task.status)) throw new LumiError("INVALID_TRANSITION", 409, { state: task.status });
+    if (run && a.final === false) {
+      // CHECKPOINT (not for review): the run ends here, the work continues in a NEW run, within max_continuations (TDD 8.11.6).
+      const [asst] = await t.query<any>(`SELECT * FROM lumi_assistants WHERE id=$1`, [run.assistant_id]);
+      const [o] = await t.query<any>(`INSERT INTO lumi_task_outputs (task_id,run_id,version,content,submitted_by,idempotency_key,state,created_at) VALUES ($1,$2,$3,$4,$5,$6,'PROGRESS',$7) RETURNING *`, [a.taskId, run.id, v, a.content, a.actorRef, a.idempotencyKey, iso(a.now)]);
+      await t.query(`UPDATE lumi_task_runs SET state='SUCCEEDED',finished_at=$2,started_at=coalesce(started_at,$2),checkpoint=$3 WHERE id=$1`, [run.id, iso(a.now), a.content]);
+      const used = (await t.query<{ n: string }>(`SELECT count(*)::text AS n FROM lumi_task_runs WHERE task_id=$1 AND run_kind='CONTINUATION'`, [a.taskId]))[0]!.n;
+      await activity(t, a.taskId, "output.checkpoint", a.now, { version: v, continuations: Number(used) });
+      if (Number(used) < asst.max_continuations) {
+        await createRun(t, a.taskId, asst, "CONTINUATION", a.now, { continuation_of: run.id, title: task.title });
+        await t.query(`UPDATE tasks SET status='QUEUED',needs_decision=false,updated_at=$2 WHERE id=$1`, [a.taskId, iso(a.now)]);
+        return { output: o, alreadyProcessed: false as const, late: false as const, checkpoint: "CONTINUING" as const };
+      }
+      await t.query(`UPDATE tasks SET status='ON_HOLD',hold_reason='CONTINUATION_LIMIT',needs_decision=true,updated_at=$2 WHERE id=$1`, [a.taskId, iso(a.now)]);
+      await enqueueNotify(t, `notify:hold:${o.id}`, { type: "NEEDS_DECISION", taskCode: task.code, reason: "CONTINUATION_LIMIT" }, a.now);
+      return { output: o, alreadyProcessed: false as const, late: false as const, checkpoint: "LIMIT_REACHED" as const };
+    }
     const [o] = await t.query<any>(`INSERT INTO lumi_task_outputs (task_id,run_id,version,content,submitted_by,idempotency_key,state,created_at) VALUES ($1,$2,$3,$4,$5,$6,'SUBMITTED',$7) RETURNING *`, [a.taskId, a.runId ?? null, v, a.content, a.actorRef, a.idempotencyKey, iso(a.now)]);
     if (task.current_output_id) await t.query(`UPDATE lumi_task_outputs SET state='SUPERSEDED' WHERE id=$1 AND state='SUBMITTED'`, [task.current_output_id]);
     if (run) await t.query(`UPDATE lumi_task_runs SET state='SUCCEEDED',finished_at=$2,started_at=coalesce(started_at,$2) WHERE id=$1`, [run.id, iso(a.now)]);
