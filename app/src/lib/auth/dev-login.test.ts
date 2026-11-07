@@ -4,6 +4,12 @@ import { spawnSync } from "node:child_process";
 import { isDevLoginEnabled } from "./dev-login";
 
 const L = "http://localhost:3100";
+/** Inherit the machine's own environment (HOME/TMPDIR/PATH are needed by tsx on Linux) but remove everything that decides the gate, then apply the case under test. */
+function cleanEnv(over: Record<string, string>): NodeJS.ProcessEnv {
+  const base: Record<string, string | undefined> = { ...process.env };
+  for (const k of ["NODE_ENV", "LUMI_DEV_LOGIN", "NEXTAUTH_URL", "LUMI_DATA", "DONGLUMI_PREVIEW", "GOOGLE_CLIENT_ID", "GOOGLE_CLIENT_SECRET"]) delete base[k];
+  return { ...base, DATABASE_URL: "postgres://x:y@127.0.0.1:1/z", NEXTAUTH_SECRET: "t".repeat(40), ...over } as unknown as NodeJS.ProcessEnv;
+}
 describe("dev login gate", () => {
   it("needs a non-production NODE_ENV, LUMI_DEV_LOGIN=1 and a local NEXTAUTH_URL", () => {
     assert.equal(isDevLoginEnabled({ NODE_ENV: "development", LUMI_DEV_LOGIN: "1", NEXTAUTH_URL: L }), true);
@@ -22,7 +28,7 @@ describe("dev login gate", () => {
     const run = (env: Record<string, string>) => {
       const r = spawnSync(process.execPath, ["--import", "tsx", "--conditions=react-server", "-e", probe], {
         cwd: process.cwd(), encoding: "utf8", timeout: 60_000,
-        env: { PATH: process.env.PATH ?? "", SystemRoot: process.env.SystemRoot ?? "", DATABASE_URL: "postgres://x:y@127.0.0.1:1/z", NEXTAUTH_SECRET: "t".repeat(40), ...env } as unknown as NodeJS.ProcessEnv,
+        env: cleanEnv(env),
       });
       return (r.stdout.split(String.fromCharCode(10)).find((l) => l.startsWith("PROVIDERS ")) ?? `NONE ${r.stderr.slice(0, 200)}`).slice(10);
     };
