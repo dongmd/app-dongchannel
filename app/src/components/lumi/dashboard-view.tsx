@@ -24,7 +24,7 @@ import { VIDEO_STATUSES, type Video as VideoRecord, type VideoStatus } from "@/l
 import { Avatar } from "./avatar";
 import { ProjectModal, ResultsModal } from "./dashboard-forms";
 import { useLumi } from "./lumi-provider";
-import { Empty, fmtTime, LumiLink, StatusBadge } from "./ui";
+import { Empty, fmtTime, LumiLink, StatusBadge, NewOutputBadge } from "./ui";
 
 const KIND_LABEL = { output: "Đầu ra công việc", memory: "Đề xuất ghi nhớ", action: "Hành động bên ngoài" } as const;
 const KIND_TONE = { output: "amber", memory: "purple", action: "red" } as const;
@@ -132,11 +132,39 @@ export function DashboardView() {
 }
 
 // ───────────── A. Cần tôi xử lý ─────────────
+/** DSH-02: how many priority items each group shows before "Xem tất cả". A display preference of this browser, not a business policy. */
+const PRIORITY_KEY = "lumi.dash.priorityN";
+const PRIORITY_CHOICES = [3, 5, 10];
+function usePriorityN(): [number, (n: number) => void] {
+  const [n, setN] = useState(3);
+  useEffect(() => { try { const v = Number(localStorage.getItem(PRIORITY_KEY)); if (PRIORITY_CHOICES.includes(v)) setN(v); } catch { /* private mode: keep the default */ } }, []);
+  return [n, (v) => { setN(v); try { localStorage.setItem(PRIORITY_KEY, String(v)); } catch { /* ignore */ } }];
+}
+
+/** DSH-08: every block says where its numbers come from, for which period, when they were refreshed, and warns when they may be stale. */
+function SourceNote({ kind }: { kind: "live" | "results" }) {
+  const { state, sync } = useLumi();
+  const [, tick] = useState(0);
+  useEffect(() => { const t = setInterval(() => tick((x) => x + 1), 5000); return () => clearInterval(t); }, []);
+  const age = Math.round((Date.now() - sync.lastOkAt) / 1000);
+  const stale = sync.failing || age > 20;
+  const db = state.mode === "db";
+  const src = db ? (kind === "live" ? "đếm trực tiếp từ PostgreSQL (đo)" : "chưa nối dữ liệu quảng cáo/kênh thật — không có số nào ở đây là đo thật") : kind === "live" ? "dữ liệu mô phỏng (preview)" : "nhập tay, mô phỏng";
+  const period = kind === "live" ? "tại lúc cập nhật" : db ? "—" : "theo bộ lọc khoảng ngày";
+  return (
+    <p className="small muted" style={{ margin: "8px 0 0" }} data-testid="source-note">
+      Nguồn: {src} · Kỳ: {period} · Cập nhật {new Date(sync.lastOkAt).toLocaleTimeString("vi-VN")}
+      {stale && <span className="l-badge amber" style={{ marginLeft: 6 }} data-testid="stale-warning">Số liệu có thể đã cũ: {sync.failing ? "mất kết nối tới máy chủ" : `${age} giây chưa làm mới`}</span>}
+    </p>
+  );
+}
+
 function NeedsMe({ f }: { f: DashFilter }) {
   const { state } = useLumi();
   const items = pendingItems(state, f);
   const c = pendingCounts(state, f.projectId, f.memberId);
-  const groups = (["output", "memory", "action"] as const).map((k) => ({ k, rows: items.filter((i) => i.kind === k) }));
+  const [priN, setPriN] = usePriorityN();
+  const groups = (["output", "memory", "action"] as const).map((k) => ({ k, rows: items.filter((i) => i.kind === k).sort((a, b) => Date.parse(b.at) - Date.parse(a.at)) }));
   return (
     <section className="l-card l-dash-a" aria-labelledby="da-h" data-testid="block-needs-me">
       <div className="l-row" style={{ justifyContent: "space-between", marginBottom: 6 }}>
@@ -151,6 +179,9 @@ function NeedsMe({ f }: { f: DashFilter }) {
           {state.real!.plansPending!.map((p) => <LumiLink key={p.planId} href={`/lumi/plans/${p.planId}`} className="l-chiplink amber">{p.code} v{p.version}</LumiLink>)}
         </div>
       )}
+      <label className="small l-row" style={{ gap: 6, margin: "0 0 6px" }}>Hiện tối đa
+        <select className="l-select" style={{ width: "auto", padding: "2px 6px" }} value={priN} onChange={(e) => setPriN(Number(e.target.value))} data-testid="dash-priority-n" aria-label="Số mục ưu tiên mỗi nhóm">{PRIORITY_CHOICES.map((v) => <option key={v} value={v}>{v}</option>)}</select>
+        mục mỗi nhóm (mới nhất trước)</label>
       {c.total === 0 ? (
         <div className="l-row" style={{ color: "var(--l-green)", padding: "8px 0" }}><CheckCircle2 size={18} /> Không có gì chờ bạn quyết{f.projectId || f.memberId ? " trong phạm vi đang lọc" : ""}.</div>
       ) : (
@@ -166,12 +197,16 @@ function NeedsMe({ f }: { f: DashFilter }) {
             {rows.length === 0 ? (
               <div className="small muted" style={{ padding: "2px 0 4px" }}>Không có.</div>
             ) : (
-              rows.map((it) => <PendingRow key={it.key} it={it} />)
+              <>
+                {rows.slice(0, priN).map((it) => <PendingRow key={it.key} it={it} />)}
+                {rows.length > priN && <LumiLink href={approvalsHref(k, f.projectId)} className="l-btn sm" data-testid={`see-all-${k}`}>Xem tất cả ({rows.length}) <ArrowRight size={11} style={{ display: "inline" }} /></LumiLink>}
+              </>
             )}
             {k === "action" && rows.length > 0 && <div className="small muted" style={{ marginTop: 2 }}>Duyệt nội dung quảng cáo và cho phép chạy quảng cáo là hai quyết định độc lập.</div>}
           </div>
         ))
       )}
+      <SourceNote kind="live" />
     </section>
   );
 }
@@ -180,7 +215,7 @@ function PendingRow({ it }: { it: PendingItem }) {
   return (
     <div className="l-pend" data-testid="pending-row" data-kind={it.kind}>
       <div style={{ minWidth: 0 }}>
-        <div className="small muted">{it.projectName} · {it.assistant} · {fmtTime(it.at)}</div>
+        <div className="small muted">{it.kind === "output" && <NewOutputBadge />} {it.projectName} · {it.assistant} · {fmtTime(it.at)}</div>
         <div className="l-clamp2" style={{ fontWeight: 650 }} title={it.title}>{it.title}</div>
         <div className="small">{it.waiting}</div>
       </div>
@@ -265,6 +300,7 @@ function RunningProjects({ f, onAddProject }: { f: DashFilter; onAddProject: () 
           {open.length > 6 && <button className="l-btn ghost sm" onClick={() => setShowAll((v) => !v)}>{showAll ? "Thu gọn" : `Hiện thêm ${open.length - 6} việc`}</button>}
         </div>
       )}
+      <SourceNote kind="live" />
     </section>
   );
 }
@@ -326,6 +362,7 @@ function AffiliateCard({ f }: { f: DashFilter }) {
         </details>
       )}
       <ResultsModal open={formOpen} onClose={() => setFormOpen(false)} {...(f.projectId ? { defaultProjectId: f.projectId } : {})} />
+      <SourceNote kind="results" />
     </section>
   );
 }
@@ -395,6 +432,7 @@ function YoutubeCard({ f }: { f: DashFilter }) {
           <p className="small muted" style={{ margin: "6px 0 0" }}>Đếm theo video: nhiều việc của cùng một video chỉ tính là một video.</p>
         </>
       )}
+      <SourceNote kind="results" />
     </section>
   );
 }
@@ -464,6 +502,7 @@ function TelegramRecent({ f }: { f: DashFilter }) {
         </div>
       )}
       <p className="small muted" style={{ margin: "8px 0 0" }}>Cùng bản ghi với Telegram và Kanban: duyệt hay yêu cầu sửa ở bất kỳ đâu đều cập nhật dòng này.</p>
+      <SourceNote kind="live" />
     </section>
   );
 }

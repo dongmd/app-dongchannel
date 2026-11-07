@@ -5,7 +5,7 @@ import type { Route } from "next";
 import { useEffect, useRef, type ReactNode } from "react";
 import { X } from "lucide-react";
 
-import { STATUS_LABEL } from "@/lib/lumi/selectors";
+import { NEW_OUTPUT_LABEL, STATUS_LABEL } from "@/lib/lumi/selectors";
 import type { Task, TaskStatus } from "@/lib/lumi/types";
 
 export function LumiLink({ href, children, ...rest }: { href: string; children: ReactNode } & Omit<React.AnchorHTMLAttributes<HTMLAnchorElement>, "href">) {
@@ -98,4 +98,9 @@ export function Drawer({ open, onClose, title, children }: { open: boolean; onCl
 
 export function Empty({ children }: { children: ReactNode }) {
   return <p className="muted" style={{ padding: "10px 2px" }}>{children}</p>;
+}
+
+/** DSH-03: the same badge everywhere an output is waiting for the owner (Dashboard, Chờ duyệt, task list, task panel). */
+export function NewOutputBadge() {
+  return <span className="l-badge amber" data-testid="new-output-badge">{NEW_OUTPUT_LABEL}</span>;
 }

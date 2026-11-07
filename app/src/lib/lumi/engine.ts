@@ -46,6 +46,7 @@ export type Action =
   | { type: "task.comment"; taskId: string; text: string; via: Via }
   | { type: "task.requestRevision"; taskId: string; text: string; via: Via; version?: number }
   | { type: "task.approveOutput"; taskId: string; via: Via; version?: number }
+  | { type: "task.rejectOutput"; taskId: string; text: string; via: Via; version?: number }
   | { type: "memory.review"; id: string; decision: "accept" | "reject"; text?: string; scope?: MemoryScope }
   | { type: "action.review"; id: string; decision: "approve" | "reject" }
   | { type: "tg.send"; chat: Chat; text: string }
@@ -568,6 +569,8 @@ function dispatch(s: DemoState, a: Action, nowMs: number): Result {
       return requestRevision(s, nowMs, a.taskId, a.text, a.via, a.version);
     case "task.approveOutput":
       return approveOutput(s, nowMs, a.taskId, a.via, a.version);
+    case "task.rejectOutput":
+      return fail("invalid", "Từ chối đầu ra kèm lý do chỉ có ở chế độ dữ liệu thật.");
     case "memory.review": {
       const m = s.memories.find((x) => x.id === a.id);
       if (!m) return fail("not_found", "Không thấy ghi nhớ.");

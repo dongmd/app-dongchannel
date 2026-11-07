@@ -2,13 +2,13 @@
 /** Client helpers for the IMP-01 screens (company, plan). Talks to /api/v1/lumi/* with the signed-in session. */
 export interface ApiResult<T = any> { ok: boolean; status: number; data: T | null; error: { code: string; message: string; details?: any } | null }
 
-export async function lumiApi<T = any>(path: string, o: { method?: "GET" | "POST"; body?: unknown; key?: string } = {}): Promise<ApiResult<T>> {
+export async function lumiApi<T = any>(path: string, o: { method?: "GET" | "POST" | "PATCH"; body?: unknown; key?: string } = {}): Promise<ApiResult<T>> {
   try {
     const method = o.method ?? "GET";
     const res = await fetch(path, {
       method, credentials: "same-origin", cache: "no-store",
-      headers: { ...(method === "POST" ? { "content-type": "application/json" } : {}), ...(o.key ? { "idempotency-key": o.key } : {}) },
-      ...(method === "POST" ? { body: JSON.stringify(o.body ?? {}) } : {}),
+      headers: { ...(method !== "GET" ? { "content-type": "application/json" } : {}), ...(o.key ? { "idempotency-key": o.key } : {}) },
+      ...(method !== "GET" ? { body: JSON.stringify(o.body ?? {}) } : {}),
     });
     const j = await res.json().catch(() => null);
     return { ok: res.ok, status: res.status, data: j?.data ?? null, error: j?.error ?? (res.ok ? null : { code: "HTTP_" + res.status, message: "Lỗi " + res.status }) };

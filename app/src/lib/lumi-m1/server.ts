@@ -43,7 +43,7 @@ function allow(key: string): boolean {
 }
 
 export function lumiCtx(): ApiCtx {
-  return { db: lumiDb(), hermes: lumiHermes(), now: () => new Date(), allow };
+  return { db: lumiDb(), hermes: lumiHermes(), now: () => new Date(), allow, pingHermes: async () => (await import("@/lib/hermes/status")).pingHermesStatus() };
 }
 
 export async function resolvePrincipal(req: NextRequest): Promise<{ principal: Principal | null; invalidToken: boolean }> {

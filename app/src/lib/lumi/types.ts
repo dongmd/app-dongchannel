@@ -27,6 +27,8 @@ export interface Member {
 
 export interface Project {
   id: string;
+  /** Chế độ dữ liệu thật: mã UUID trong PostgreSQL (id ở trên là slug dùng cho đường dẫn). API ghi nhận UUID. */
+  uuid?: string;
   name: string;
   area: string; // "Affiliate" | "YouTube" | ...
   goal: string;
@@ -164,6 +166,8 @@ export interface RealContext {
   telegramBot?: string;
   /** IMP-01: tính năng kế hoạch bật chưa, và các phiên bản kế hoạch đang chờ Chủ duyệt. */
   plansEnabled?: boolean;
+  /** IMP-02: số thông báo chưa đọc của chính người đăng nhập (hộp thông báo ở Quản trị). */
+  notifUnread?: number;
   plansPending?: { planId: string; code: string; version: number; goalTitle: string; submittedAt: string }[];
 }
 

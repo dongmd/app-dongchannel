@@ -9,6 +9,8 @@ export const STATUS_LABEL = {
   done: "Hoàn tất",
 } as const;
 
+/** DSH-03: ONE label for an output that is waiting for the owner; it disappears as soon as the output is approved. */
+export const NEW_OUTPUT_LABEL = "Đầu ra mới nhận";
 export const SCOPE_LABEL = { project: "Riêng dự án", area: "Dùng chung một mảng", personal: "Cá nhân" } as const;
 
 export const byTimeDesc = <T extends { at?: string; updatedAt?: string }>(a: T, b: T) =>

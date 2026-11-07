@@ -1,5 +1,6 @@
 "use client";
 
+import { ProjectAdmin } from "./project-admin";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import type { Route } from "next";
 import { useState } from "react";
@@ -66,6 +67,7 @@ export function ProjectView({ id }: { id: string }) {
         <div className="l-row" style={{ gap: 8 }}>
           <h1>{proj.name}</h1>
           <span className="l-badge blue">{proj.area}</span>
+          <ProjectAdmin projectId={proj.uuid ?? proj.id} name={proj.name} goal={proj.goal} />
         </div>
         <p className="muted" style={{ margin: "4px 0 0", maxWidth: 820 }}>{proj.goal}</p>
       </div>

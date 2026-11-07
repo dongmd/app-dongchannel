@@ -26,6 +26,9 @@ import { SimulatedHermes } from "./hermes-port";
 import { drainM1 } from "./drain";
 import { processOutbox } from "./core";
 import { drainPlans, setPlansEnabled } from "./plans";
+import { createAssistant } from "./assistants";
+import { setPolicy } from "./policies";
+import { createProject } from "./projects";
 import { handleRpc } from "./mcp";
 
 const nodeRequire = createRequire(path.join(process.cwd(), "package.json"));
@@ -107,7 +110,7 @@ describe("rollback rehearsal (PostgreSQL server, previous release code, syntheti
   });
 
   it("2. sau khi áp 0039–0044, bản cũ vẫn chạy trên CSDL đã migrate với dữ liệu cũ (cổng bước 3)", async () => {
-    await replayMigrations(srv.sql, "0044", "0039"); // all of this release's migrations: the old code must still run on the fully migrated schema
+    await replayMigrations(srv.sql, "0045", "0039"); // all of this release's migrations: the old code must still run on the fully migrated schema
     const cols = await q(`SELECT column_name FROM information_schema.columns WHERE table_name='tasks' AND column_name IN ('project_id','owner_kind','description')`);
     assert.equal(cols.length, 3);
     const s = oldSmoke();
@@ -205,7 +208,11 @@ describe("rollback rehearsal (PostgreSQL server, previous release code, syntheti
     const [v] = await q(`SELECT content_hash FROM lumi_plan_versions WHERE plan_id=$1 AND version=1`, [planId]);
     assert.equal((await call("decidePlan", OWNER, { params: { id: planId }, body: { version: 1, content_hash: v.content_hash, decision: "APPROVE" } })).status, 200);
     assert.equal((await call("recordLedger", OWNER, { params: { id: planId }, key: "rb-ledger-00000001", body: { category: "TOOL", amount: 7, currency: "USD", source: "MANUAL" } })).status, 201);
-    const counts = async () => (await q(`SELECT (SELECT count(*)::int FROM lumi_goals) g,(SELECT count(*)::int FROM lumi_plans) p,(SELECT count(*)::int FROM lumi_plan_versions) v,(SELECT count(*)::int FROM lumi_ledger_entries) l,(SELECT count(*)::int FROM lumi_budgets) b`))[0];
+    // IMP-02 data too: an assistant created through the new screens, a project, a versioned policy
+    await createAssistant(db, { actorRef: "web:owner@test", key: "rb-asst-00000001", input: { slug: "rb-imp02", name: "Trợ lý IMP-02 diễn tập", roleLabel: "Thử", toolAllowlist: ["outputs.submit"], hermesProfile: "rb-imp02", limits: { runDeadlineSeconds: 600, ackDeadlineSeconds: 60, maxRunFailures: 1, maxTransportAttempts: 1, maxRevisionRounds: 1, maxRunsPerDay: 5 } }, now: clock });
+    await createProject(db, { actorRef: "web:owner@test", key: "rb-proj-00000001", input: { name: "Dự án IMP-02 diễn tập", area: "OTHER" }, now: clock });
+    await setPolicy(db, { actorRef: "web:owner@test", key: "currency", value: "USD", now: clock });
+    const counts = async () => (await q(`SELECT (SELECT count(*)::int FROM lumi_goals) g,(SELECT count(*)::int FROM lumi_plans) p,(SELECT count(*)::int FROM lumi_plan_versions) v,(SELECT count(*)::int FROM lumi_ledger_entries) l,(SELECT count(*)::int FROM lumi_budgets) b,(SELECT count(*)::int FROM lumi_policies) pol,(SELECT count(*)::int FROM lumi_assistants) asst,(SELECT count(*)::int FROM lumi_projects) prj`))[0];
     const c0 = await counts();
     const d = await drainPlans(db, "web:owner@test", clock);
     assert.equal(d.plansPaused, 1);

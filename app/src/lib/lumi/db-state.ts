@@ -7,6 +7,7 @@
  *  2. `applyDbAction`: ánh xạ thao tác trên giao diện sang lõi M1 thật (cùng đường với API /api/v1): quyền, chống trùng, kiểm toán
  *     đều do lõi quyết định. Thao tác chưa có trong M1 trả lỗi rõ ràng, không giả vờ thành công.
  */
+import { unreadNotifications } from "../lumi-m1/admin-status";
 import type { Db, HermesPort } from "../lumi-m1/core";
 import { decideActionRequest, decideProposal } from "../lumi-m1/autonomy";
 import { LumiError, cancelDraft, confirmDraft, decide, listOpenDrafts, patchDraft, startRun, cancelTask, upsertActorRef } from "../lumi-m1/core";
@@ -59,6 +60,7 @@ export async function buildDbState(db: Db, user: DbUser, o: DbStateOpts): Promis
   const propRaw = await db.query<any>(`SELECT p.id,p.slug,p.name,p.area,p.goal,p.proposal,a.name AS a_name,p.created_at FROM lumi_projects p LEFT JOIN lumi_assistants a ON a.id=p.proposed_by_assistant_id WHERE p.status='PROPOSED' ORDER BY p.created_at`);
   const drafts = await listOpenDrafts(db, now);
   const plansPendingRows = await pendingPlans(db);
+  const notifUnread = await unreadNotifications(db, `web:${user.email}`).catch(() => 0);
 
   const projectIdBySlug = new Map(projectsRaw.map((p: any) => [p.id, p.slug]));
   const slugOfAssistant = new Map(assistants.map((a: any) => [a.id, a.slug]));
@@ -72,6 +74,7 @@ export async function buildDbState(db: Db, user: DbUser, o: DbStateOpts): Promis
     hermes: a.connection_state === "VERIFIED" && a.dispatch_enabled ? ("connected" as const) : ("none" as const), createdAt: iso(a.created_at)!,
   }));
   const projects: Project[] = projectsRaw.map((p: any) => ({
+    uuid: p.id,
     id: p.slug, name: p.name, area: AREA[p.area] ?? "Khác", goal: p.goal ?? "",
     pmId: p.pm_assistant_id ? botId(slugOfAssistant.get(p.pm_assistant_id) ?? "") : OWNER_ID, status: "active" as const,
   }));
@@ -169,6 +172,7 @@ export async function buildDbState(db: Db, user: DbUser, o: DbStateOpts): Promis
       assistants: assistants.map((a: any) => ({ id: a.id, name: a.name, slug: a.slug, connection_state: a.connection_state, dispatch_enabled: a.dispatch_enabled, hermes_profile: a.hermes_profile })),
       ...(o.telegramBot ? { telegramBot: o.telegramBot } : {}),
       plansEnabled: flag("plans_enabled"),
+      notifUnread,
       plansPending: plansPendingRows.map((r: any) => ({ planId: r.plan_id, code: r.code, version: r.version, goalTitle: r.goal_title, submittedAt: iso(r.submitted_at)! })),
     },
   };
@@ -234,6 +238,17 @@ export async function applyDbAction(db: Db, user: DbUser, a: Action, now: Date =
           if (e instanceof LumiError) return { ok: true, message: `Đã ghi yêu cầu sửa nhưng chưa giao được cho trợ lý: ${MSG[e.code] ?? e.code}` };
           throw e;
         }
+      }
+      case "task.rejectOutput": {
+        // PRJ-08: REJECT closes THIS version (different from "yêu cầu sửa"): the task goes to "Bị từ chối" where the owner can retry (new run) or cancel. A reason is mandatory.
+        const t = await taskRow(db, a.taskId);
+        if (!t) return bad("Không thấy việc.", "not_found");
+        if (!t.current_output_id) return bad("Việc chưa có đầu ra.", "stale");
+        if (a.text.trim().length < 3) return bad("Cần ghi lý do từ chối (tối thiểu 3 ký tự).");
+        const [o] = await db.query<any>(`SELECT id,version FROM lumi_task_outputs WHERE id=$1`, [t.current_output_id]);
+        if (a.version !== undefined && a.version !== o.version) return bad("Đã có bản mới hơn, hãy tải lại.", "stale");
+        const r = await decide(db, { actorRef: user.actorRef, outputId: o.id, objectVersion: o.version, decision: "REJECT", reason: a.text, channel: "WEB", now });
+        return r.alreadyProcessed ? { ok: true, code: "already", message: "Đã xử lý trước đó, không làm lại." } : { ok: true };
       }
       case "task.retry": {
         const t = await taskRow(db, a.taskId);

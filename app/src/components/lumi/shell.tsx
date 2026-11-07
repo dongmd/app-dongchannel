@@ -1,7 +1,7 @@
 "use client";
 
 import { usePathname } from "next/navigation";
-import { Bell, Brain, CalendarDays, Building2, FolderKanban, Menu, MessageCircle, Plus, RotateCcw, Sparkles, Target } from "lucide-react";
+import { Bell, Brain, CalendarDays, Building2, FolderKanban, ListChecks, Menu, MessageCircle, Plus, RotateCcw, Server, Sparkles, Target, Users } from "lucide-react";
 import { useState, type ReactNode } from "react";
 
 import { pendingBreakdown, pendingCounts } from "@/lib/lumi/selectors";
@@ -51,11 +51,13 @@ export function Shell({ children }: { children: ReactNode }) {
             <Plus size={16} /> Việc mới
           </button>
           <nav className="l-nav" onClick={(e) => (e.target as HTMLElement).closest("a") && close()}>
+            <div className="group">Điều hành</div>
             <LumiLink href="/lumi" aria-current={cur("/lumi", true) ? "page" : undefined}>
               <CalendarDays size={17} /> Hôm nay
             </LumiLink>
-            <LumiLink href="/lumi/office" aria-current={cur("/lumi/office") ? "page" : undefined}>
-              <Building2 size={17} /> Văn phòng
+            <LumiLink href="/lumi/approvals" aria-current={cur("/lumi/approvals") ? "page" : undefined} title={`${pendingBreakdown(counts)}${plansPending ? ` + ${plansPending} kế hoạch` : ""}`}>
+              <Bell size={17} /> Chờ duyệt
+              {totalPending > 0 && <span className="count" aria-label={`${pendingBreakdown(counts)}${plansPending ? ` + ${plansPending} kế hoạch` : ""}`} data-testid="nav-pending-count">{totalPending} mục</span>}
             </LumiLink>
             <LumiLink href="/lumi/projects" aria-current={path === "/lumi/projects" ? "page" : undefined}>
               <FolderKanban size={17} /> Dự án
@@ -69,26 +71,38 @@ export function Shell({ children }: { children: ReactNode }) {
                   </LumiLink>
                 ))}
             </div>
+            <LumiLink href="/lumi/tasks" aria-current={cur("/lumi/tasks") ? "page" : undefined} data-testid="nav-tasks">
+              <ListChecks size={17} /> Việc xuyên dự án
+            </LumiLink>
+            <div className="group">Công ty</div>
+            {real && (
+              <LumiLink href="/lumi/company" aria-current={cur("/lumi/company") || cur("/lumi/plans") ? "page" : undefined} data-testid="nav-company">
+                <Target size={17} /> Tổng quan công ty
+              </LumiLink>
+            )}
+            {real && (
+              <LumiLink href="/lumi/org" aria-current={cur("/lumi/org") ? "page" : undefined} data-testid="nav-org">
+                <Users size={17} /> Tổ chức
+              </LumiLink>
+            )}
+            <LumiLink href="/lumi/office" aria-current={cur("/lumi/office") ? "page" : undefined}>
+              <Building2 size={17} /> Văn phòng
+            </LumiLink>
+            <div className="group">Nghiệp vụ</div>
             <LumiLink href="/lumi/memory" aria-current={cur("/lumi/memory") ? "page" : undefined}>
               <Brain size={17} /> Bộ nhớ
             </LumiLink>
-            <LumiLink href="/lumi/approvals" aria-current={cur("/lumi/approvals") ? "page" : undefined} title={`${pendingBreakdown(counts)}${plansPending ? ` + ${plansPending} kế hoạch` : ""}`}>
-              <Bell size={17} /> Chờ duyệt
-              {totalPending > 0 && <span className="count" aria-label={`${pendingBreakdown(counts)}${plansPending ? ` + ${plansPending} kế hoạch` : ""}`} data-testid="nav-pending-count">{totalPending} mục</span>}
-            </LumiLink>
-            {real && (
-              <>
-                <div className="group">Công ty</div>
-                <LumiLink href="/lumi/company" aria-current={cur("/lumi/company") || cur("/lumi/plans") ? "page" : undefined} data-testid="nav-company">
-                  <Target size={17} /> Tổng quan công ty
-                </LumiLink>
-              </>
-            )}
-            <div className="group">{real ? "Kênh" : "Mô phỏng"}</div>
+            <div className="group">Hệ thống</div>
             <LumiLink href="/lumi/telegram" aria-current={cur("/lumi/telegram") ? "page" : undefined}>
               <MessageCircle size={17} /> {real ? "Telegram & kết nối" : "Telegram mô phỏng"}
               {real && state.tgDrafts.length > 0 && <span className="count" aria-label="Bản nháp chờ xác nhận">{state.tgDrafts.length} nháp</span>}
             </LumiLink>
+            {real && (
+              <LumiLink href="/lumi/admin" aria-current={cur("/lumi/admin") ? "page" : undefined} data-testid="nav-admin">
+                <Server size={17} /> Quản trị &amp; thông báo
+                {(state.real?.notifUnread ?? 0) > 0 && <span className="count" aria-label="Thông báo chưa đọc" data-testid="nav-notif-count">{state.real!.notifUnread} mới</span>}
+              </LumiLink>
+            )}
             <div className="group">Chức năng cũ</div>
             <button className="item" onClick={() => setLegacyOpen((v) => !v)} aria-expanded={legacyOpen}>
               Mở danh sách ({LEGACY.length})

@@ -9,6 +9,7 @@
  * HONEST SCOPE: `requestAction` is a decision point the assistant must call through an app tool. It does NOT, by itself, stop a
  * terminal/browser from acting with credentials the profile already holds (TDD 8.11.4 lists exactly what is and is not enforced).
  */
+import { getPolicy } from "./policies";
 import { createHash, randomUUID } from "node:crypto";
 import { LumiError, activity, audit, createRun, enqueueNotify, flag, requireRole, type Db, type HermesPort } from "./core";
 
@@ -267,11 +268,16 @@ export async function decideProposal(db: Db, actorRef: string, projectId: string
   if (actorRef.startsWith("bot:")) throw new LumiError("FORBIDDEN", 403);
   await requireRole(db, actorRef, ["OWNER"]);
   return db.tx(async (t) => {
-    const [p] = await t.query<any>(`SELECT id,status FROM lumi_projects WHERE id=$1 FOR UPDATE`, [projectId]);
+    const [p] = await t.query<any>(`SELECT id,status,created_at FROM lumi_projects WHERE id=$1 FOR UPDATE`, [projectId]);
     if (!p) throw new LumiError("NOT_FOUND", 404);
     const target = decision === "ACTIVATE" ? "ACTIVE" : "REJECTED";
     if (p.status === target) return { alreadyProcessed: true as const };
     if (p.status !== "PROPOSED") throw new LumiError("INVALID_TRANSITION", 409, { status: p.status });
+    if (decision === "ACTIVATE") {
+      // CMP-03: when the owner has set a proposal lifetime, an expired proposal can no longer be activated (no policy set = no expiry; the system invents no number).
+      const ttl = await getPolicy(t, "proposal_ttl_days");
+      if (ttl && now.getTime() - new Date(p.created_at).getTime() > Number(ttl.value) * 86400_000) throw new LumiError("GONE", 410, { reason: "proposal_expired", ttl_days: Number(ttl.value) });
+    }
     await t.query(`UPDATE lumi_projects SET status=$2,decided_by=$3,decided_at=$4 WHERE id=$1`, [projectId, target, actorRef, iso(now)]);
     await audit(t, `project.${decision.toLowerCase()}`, actorRef, { taskId: "", projectId }, now);
     return { alreadyProcessed: false as const };

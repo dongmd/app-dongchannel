@@ -29,6 +29,8 @@ interface Ctx {
   closeMemberForm: () => void;
   navOpen: boolean;
   setNavOpen: (v: boolean) => void;
+  /** DSH-08: when the state was last fetched successfully and whether the last fetch failed (numbers may then be stale). */
+  sync: { lastOkAt: number; failing: boolean };
 }
 
 const LumiContext = createContext<Ctx | null>(null);
@@ -46,6 +48,7 @@ export function LumiProvider({ initial, children }: { initial: DemoState; childr
   const [newTask, setNewTask] = useState<Ctx["newTask"]>({ open: false, preset: {} });
   const [memberForm, setMemberForm] = useState<MemberFormState>({ open: false });
   const [navOpen, setNavOpen] = useState(false);
+  const [sync, setSync] = useState({ lastOkAt: Date.now(), failing: false });
 
   const apply = useCallback((s: DemoState) => {
     revRef.current = s.rev;
@@ -65,11 +68,12 @@ export function LumiProvider({ initial, children }: { initial: DemoState; childr
       if (stop || document.visibilityState !== "visible") return;
       try {
         const res = await fetch("/api/lumi/state", { cache: "no-store" });
-        if (!res.ok) return;
+        if (!res.ok) { setSync((x) => ({ ...x, failing: true })); return; }
         const s = (await res.json()) as DemoState;
+        setSync({ lastOkAt: Date.now(), failing: false });
         if (s.rev !== revRef.current) apply(s);
       } catch {
-        /* mất kết nối tạm thời: lần sau thử lại */
+        setSync((x) => ({ ...x, failing: true })); // mất kết nối tạm thời: giữ số cũ nhưng BÁO là cũ; lần sau thử lại
       }
     };
     const id = setInterval(poll, 2000);
@@ -128,8 +132,9 @@ export function LumiProvider({ initial, children }: { initial: DemoState; childr
       closeMemberForm: () => setMemberForm({ open: false }),
       navOpen,
       setNavOpen,
+      sync,
     }),
-    [state, dispatch, reset, toast, newTask, memberForm, navOpen],
+    [state, dispatch, reset, toast, newTask, memberForm, navOpen, sync],
   );
 
   return (

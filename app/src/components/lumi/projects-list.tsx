@@ -1,15 +1,25 @@
 "use client";
 
 import { approvalsHref, pendingBreakdown, pendingCounts, projectSummary } from "@/lib/lumi/selectors";
+import { useState } from "react";
+import { Plus } from "lucide-react";
 import { Avatar } from "./avatar";
+import { ProjectModal } from "./dashboard-forms";
 import { useLumi } from "./lumi-provider";
 import { LumiLink } from "./ui";
 
 export function ProjectsList() {
   const { state } = useLumi();
+  const [adding, setAdding] = useState(false);
+  const canAdd = state.mode !== "db" || state.real?.role === "OWNER";
   return (
     <div className="l-grid" style={{ gap: 16 }}>
-      <h1>Dự án</h1>
+      <div className="l-row" style={{ justifyContent: "space-between" }}>
+        <h1>Dự án</h1>
+        {canAdd && <button className="l-btn primary" onClick={() => setAdding(true)} data-testid="project-new"><Plus size={15} /> Dự án mới</button>}
+      </div>
+      <ProjectModal open={adding} onClose={() => setAdding(false)} />
+      {state.projects.filter((p) => p.status === "active").length === 0 && <p className="muted" data-testid="projects-empty">Chưa có dự án nào.{canAdd ? " Bấm «Dự án mới» để tạo." : ""}</p>}
       <div className="l-grid cols2">
         {state.projects.filter((p) => p.status === "active").map((p) => {
           const s = projectSummary(state, p.id);

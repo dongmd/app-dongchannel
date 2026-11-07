@@ -87,12 +87,28 @@ const hermes = real
   : new SimWithAssistant();
 const notify: NotifyPort = { async send(payload) { console.log("[notify-stub] NOT sent (Telegram chưa nối):", JSON.stringify(payload)); return { delivered: false, reason: "stub: Telegram chưa nối, không gửi gì" }; } };
 
+let lastBeat = 0; let lastSnap = 0; let lastError: string | null = null;
+const lane = real ? "real" : "sim";
+const putFlag = (key: string, value: unknown) =>
+  db.query(`INSERT INTO lumi_system_flags(key,value,set_by,set_at) VALUES ($1,$2::jsonb,$3,now()) ON CONFLICT (key) DO UPDATE SET value=EXCLUDED.value,set_by=EXCLUDED.set_by,set_at=EXCLUDED.set_at`, [key, JSON.stringify(value), `worker:${lane}`]);
+/** ADM-07: a heartbeat (every ~30 s) and, for the real lane, a read-only snapshot of every Hermes profile (every ~60 s). The Admin screen shows "mất tín hiệu" when they stop. */
+async function beat() {
+  const now = Date.now();
+  if (now - lastBeat >= 30_000) { lastBeat = now; await putFlag(`worker_status:${lane}`, { at: new Date().toISOString(), mode: hermesMode, serves: laneSlugs, pid: process.pid, lastError }); }
+  if (hermes instanceof SshHermes && now - lastSnap >= 60_000) {
+    lastSnap = now;
+    const profiles = await (hermes as SshHermes).readProfileStatus();
+    if (profiles) await putFlag("hermes_status", { at: new Date().toISOString(), profiles });
+  }
+}
+
 async function tick() {
   const r = await workerCycle(db, { hermes, notify, heartbeatMs: 10_000, hermesMode, slugs: laneSlugs.length ? laneSlugs : undefined }, workerId);
+  lastError = null;
   if (r.results.length || r.reaped.uncertain || r.reaped.timedOut) console.log(new Date().toISOString(), JSON.stringify(r));
 }
 (async () => {
   console.log(`[worker ${workerId}] mode=${real ? "REAL Hermes (test profile only)" : "SIMULATED (fake Hermes boundary)"} serves=${laneSlugs.length ? laneSlugs.join(",") : "(all, local db)"}`);
   if (once) { await tick(); await sql.end(); return; }
-  for (;;) { await tick().catch((e) => console.error("[worker]", String(e))); await new Promise((r) => setTimeout(r, 2000)); }
+  for (;;) { await tick().catch((e) => { lastError = String(e).slice(0, 200); console.error("[worker]", String(e)); }); await beat().catch((e) => console.error("[worker] heartbeat", String(e))); await new Promise((r) => setTimeout(r, 2000)); }
 })();

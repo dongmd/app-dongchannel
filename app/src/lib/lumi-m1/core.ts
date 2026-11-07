@@ -6,6 +6,7 @@
  * Nothing here talks to Hermes or Telegram: those are injected (`HermesPort`, `NotifyPort`). That is deliberate — the
  * integration contract with Hermes is still a spike (TDD 16 U1–U4, U16).
  */
+import type { ProfileStatus } from "../lumi/admin";
 import { randomUUID } from "node:crypto";
 
 export interface Db {
@@ -95,6 +96,8 @@ export interface HermesPort {
     | { kind: "rejected"; transient: boolean; message: string }
     | { kind: "uncertain"; message: string }
   >;
+  /** Optional: gateway/Telegram/cron state per profile for the Admin screen (never tokens). null = could not read. */
+  readProfileStatus?(): Promise<ProfileStatus[] | null>;
 }
 /** Optional: really stop a run on the Hermes side. confirmed=true only when the remote process is verified gone. */
 export type StopResult = { confirmed: boolean; message?: string };
@@ -104,7 +107,7 @@ export interface NotifyPort {
   send(payload: Record<string, unknown>): Promise<void | { delivered: boolean; reason?: string }>;
 }
 
-export async function setDispatchEnabled(db: Db, hermes: HermesPort, actorRef: string, assistantId: string, enabled: boolean, now: Date) {
+export async function setDispatchEnabled(db: Db, hermes: HermesPort, actorRef: string, assistantId: string, enabled: boolean, now: Date, opts: { trustVerifiedWithinMs?: number } = {}) {
   await requireRole(db, actorRef, ["OWNER"]);
   const [a] = await db.query<any>(`SELECT * FROM lumi_assistants WHERE id=$1`, [assistantId]);
   if (!a) throw new LumiError("NOT_FOUND", 404);
@@ -117,6 +120,8 @@ export async function setDispatchEnabled(db: Db, hermes: HermesPort, actorRef: s
       // The owner declared that this assistant keeps ALL its tools (TDD 8.11). We do not refuse it for having them; we require the
       // explicit acknowledgement that is recorded in the audit log. Tools are NOT the authority to act outside: that is grants (8.11.3).
       if (!a.capability_ack_at) throw new LumiError("CONFIG_INCOMPLETE", 422, { missing: ["capability_ack"] });
+    } else if (opts.trustVerifiedWithinMs && a.connection_checked_at && now.getTime() - new Date(a.connection_checked_at).getTime() <= opts.trustVerifiedWithinMs) {
+      // REAL mode: the web process cannot reach Hermes; the worker's connection check (same rule: profile tools within the allowlist) is the evidence.
     } else {
       const tools = await hermes.readProfileTools(a.hermes_profile);
       if (tools === null) throw new LumiError("PROFILE_TOOLS_UNKNOWN", 422);
@@ -289,15 +294,16 @@ export async function createRun(t: Db, taskId: string, asst: any, kind: "INITIAL
 export interface OutboxRow {
   id: string; kind: string; aggregate_id: string; payload: any; attempts: number; max_attempts: number; lease_owner: string; lease_epoch: number;
 }
-/** `slugs` (optional) restricts DISPATCH_RUN/STOP_RUN rows to runs of those assistants, so a worker bound to one adapter (simulated OR real) never claims,
+/** `slugs` (optional) restricts DISPATCH_RUN/STOP_RUN/VERIFY_ASSISTANT rows to those assistants, so a worker bound to one adapter (simulated OR real) never claims,
  *  fails or resends the other lane's runs. Rows of other kinds (notifications) are claimable by anyone. */
 export async function claimOutbox(db: Db, worker: string, leaseSeconds: number, now: Date, slugs?: string[]): Promise<OutboxRow | null> {
   const r = await db.query<OutboxRow>(
     `UPDATE lumi_outbox SET state='LEASED',lease_owner=$1,lease_epoch=lease_epoch+1,lease_expires_at=$3::timestamptz + make_interval(secs => $2),attempts=attempts+1
      WHERE id=(SELECT id FROM lumi_outbox WHERE state IN ('PENDING','LEASED') AND next_attempt_at <= $3::timestamptz
                AND (lease_expires_at IS NULL OR lease_expires_at < $3::timestamptz)
-               AND ($4::text[] IS NULL OR kind NOT IN ('DISPATCH_RUN','STOP_RUN')
-                    OR EXISTS (SELECT 1 FROM lumi_task_runs r JOIN lumi_assistants a ON a.id=r.assistant_id WHERE r.id::text = lumi_outbox.aggregate_id::text AND a.slug = ANY($4::text[])))
+               AND ($4::text[] IS NULL OR kind NOT IN ('DISPATCH_RUN','STOP_RUN','VERIFY_ASSISTANT')
+                    OR (kind IN ('DISPATCH_RUN','STOP_RUN') AND EXISTS (SELECT 1 FROM lumi_task_runs r JOIN lumi_assistants a ON a.id=r.assistant_id WHERE r.id::text = lumi_outbox.aggregate_id::text AND a.slug = ANY($4::text[])))
+                    OR (kind = 'VERIFY_ASSISTANT' AND EXISTS (SELECT 1 FROM lumi_assistants a2 WHERE a2.id::text = lumi_outbox.aggregate_id::text AND a2.slug = ANY($4::text[]))))
                ORDER BY next_attempt_at FOR UPDATE SKIP LOCKED LIMIT 1)
      RETURNING id,kind,aggregate_id,payload,attempts,max_attempts,lease_owner,lease_epoch`,
     [worker, leaseSeconds, iso(now), slugs && slugs.length ? slugs : null],
@@ -332,6 +338,37 @@ export async function enqueueNotify(db: Db, key: string, payload: Record<string,
   await db.query(`INSERT INTO lumi_outbox (kind,dedupe_key,payload,max_attempts,next_attempt_at,created_at) VALUES ('TELEGRAM_NOTIFY',$1,$2::jsonb,$3,$4,$4) ON CONFLICT (dedupe_key) DO NOTHING`, [key, JSON.stringify(payload), maxAttempts, iso(now)]);
 }
 
+/** IMP-02 (OFC-04): the REAL connection check. Runs on the worker host (the only place that can reach Hermes) and is the ONLY writer of connection_state=VERIFIED. */
+async function verifyAssistantRow(db: Db, hermes: HermesPort, row: OutboxRow, now: Date) {
+  const [a] = await db.query<any>(`SELECT * FROM lumi_assistants WHERE id=$1`, [row.aggregate_id]);
+  let state: "VERIFIED" | "FAILED" = "FAILED"; let err: string | null = null; let tools: string[] | null = null;
+  if (!a || a.status !== "ACTIVE") err = "ASSISTANT_NOT_ACTIVE";
+  else if (!a.hermes_profile) err = "NO_PROFILE";
+  else {
+    try { tools = await hermes.readProfileTools(a.hermes_profile); } catch { tools = null; }
+    if (tools === null) err = "PROFILE_TOOLS_UNKNOWN: profile không tồn tại hoặc không đọc được từ Hermes";
+    else if (a.capability_mode === "DECLARED_FULL") { if (a.capability_ack_at) state = "VERIFIED"; else err = "capability_ack: chưa có xác nhận công cụ rộng"; }
+    else {
+      const extra = tools.filter((t) => !a.tool_allowlist.includes(t));
+      const needed = ["knowledge.context", "outputs.submit"].filter((t) => !tools!.includes(t));
+      if (extra.length) err = `PROFILE_EXCEEDS_ALLOWLIST: ${extra.join(", ")}`;
+      else if (needed.length) err = `MISSING_TOOLS: ${needed.join(", ")}`;
+      else state = "VERIFIED";
+    }
+  }
+  return db.tx(async (t) => {
+    const mine = await t.query(`SELECT 1 FROM lumi_outbox WHERE id=$1 AND lease_owner=$2 AND lease_epoch=$3 AND state='LEASED'`, [row.id, row.lease_owner, row.lease_epoch]);
+    if (mine.length !== 1) return { kind: row.kind, outcome: "lost_lease" };
+    if (a) {
+      // a failed check on an assistant that was dispatching switches dispatch OFF (never keep sending to something that no longer verifies)
+      await t.query(`UPDATE lumi_assistants SET connection_state=$2,connection_checked_at=$3,connection_error=$4,dispatch_enabled=CASE WHEN $2='VERIFIED' THEN dispatch_enabled ELSE false END WHERE id=$1`, [a.id, state, iso(now), err]);
+      await audit(t, "assistant.verified", "system:worker", { assistantId: a.id, state, error: err, tools }, now);
+    }
+    await finishOutbox(t, row, { to: "DONE", note: state === "VERIFIED" ? undefined : `VERIFY_FAILED: ${err}` }, now);
+    return { kind: row.kind, outcome: state === "VERIFIED" ? "verified" : "verify_failed" };
+  });
+}
+
 export async function processOutbox(db: Db, deps: { hermes: HermesPort & Partial<HermesStopPort>; notify: NotifyPort; clock?: () => Date; heartbeatMs?: number; slugs?: string[] }, worker: string, now: Date, leaseSeconds = 60): Promise<{ kind: string; outcome: string } | null> {
   const row = await claimOutbox(db, worker, leaseSeconds, now, deps.slugs);
   if (!row) return null;
@@ -348,6 +385,7 @@ export async function processOutbox(db: Db, deps: { hermes: HermesPort & Partial
       return { kind: row.kind, outcome: dead ? "dead" : "retry" };
     }
   }
+  if (row.kind === "VERIFY_ASSISTANT") return verifyAssistantRow(db, deps.hermes, row, now);
   if (row.kind === "STOP_RUN") {
     // The app stopped WAITING when it enqueued this; here we try to stop the REMOTE run and only claim "CONFIRMED" when verified.
     const runId = row.aggregate_id;

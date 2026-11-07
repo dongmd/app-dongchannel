@@ -7,7 +7,7 @@ import { Check, X } from "lucide-react";
 import { outputOfTask, ownerLabel, pendingBreakdown, pendingCounts, project, SCOPE_LABEL } from "@/lib/lumi/selectors";
 import type { Memory, MemoryScope } from "@/lib/lumi/types";
 import { useLumi } from "./lumi-provider";
-import { Empty, fmtTime, LumiLink } from "./ui";
+import { Empty, fmtTime, LumiLink, NewOutputBadge } from "./ui";
 
 type Tab = "memory" | "output" | "action" | "plan";
 
@@ -152,7 +152,7 @@ function OutputTab({ pid }: { pid: string }) {
         <LumiLink key={t.id} href={`/lumi/projects/${t.projectId}?task=${t.id}&v=${outputOfTask(state, t)?.versions.length ?? 1}`} className="l-card click">
           <div className="l-row" style={{ justifyContent: "space-between" }}>
             <strong className="l-clamp2" title={t.title}>{t.title}</strong>
-            <span className="l-badge amber">Chờ duyệt</span>
+            <span className="l-row" style={{ gap: 6 }}><NewOutputBadge /><span className="l-badge amber">Chờ duyệt</span></span>
           </div>
           <div className="small muted">{project(state, t.projectId)?.name} · {ownerLabel(state, t)} · {t.source.label} · {fmtTime(t.updatedAt)}</div>
           <div className="small" style={{ marginTop: 4 }}>Mở để đọc, góp ý, yêu cầu sửa hoặc duyệt nội dung. Duyệt đầu ra không bật chiến dịch hay đăng bài.</div>

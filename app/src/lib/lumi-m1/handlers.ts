@@ -15,6 +15,10 @@ import {
 } from "./core";
 import { createTask, transitionTask, upsertActor } from "./core-web";
 import { createGrant, declareCapability, decideActionRequest, decideProposal, revokeGrant, setAutonomyLimits } from "./autonomy";
+import { archiveProject, createProject, updateProject, type ProjectInput } from "./projects";
+import { listPolicies, setPolicy } from "./policies";
+import { buildAdminStatus, markNotificationsSeen } from "./admin-status";
+import { archiveAssistant, createAssistant, listAssistants, requestVerify, updateAssistant, type AssistantInput } from "./assistants";
 import { cancelPlan, closeGoal, companyOverview, createGoal, createPlan, decidePlan, getPlanDetail, reconcileLedger, recordLedger, revisePlan, setPlansEnabled, type PlanDecision } from "./plans";
 
 export type Principal =
@@ -29,6 +33,8 @@ export interface ApiCtx {
   allow?: (key: string) => boolean;
   /** Draft lifetime for intake (seconds). */
   draftTtlSeconds?: number;
+  /** Read-only probe of the public Hermes status endpoint (Admin screen). */
+  pingHermes?: () => Promise<any>;
 }
 export interface ApiReq {
   principal: Principal | null;
@@ -70,6 +76,12 @@ const MESSAGES: Record<string, string> = {
   PROJECT_NOT_ACTIVE: "Dự án không còn hoạt động",
   RUN_NOT_OPEN: "Lượt chạy không còn mở",
   NOT_LEAD: "Bạn không phải trưởng kế hoạch",
+  SLUG_TAKEN: "Mã (slug) trợ lý đã được dùng",
+  NAME_TAKEN: "Tên đã được dùng",
+  PROFILE_TAKEN: "Profile Hermes này đã gắn với một trợ lý khác",
+  IN_FLIGHT: "Trợ lý đang có lượt chạy dở; dừng hoặc chờ xong rồi mới lưu trữ",
+  POLICY_NOT_SET: "Chưa đặt chính sách cần cho bước này",
+  PROJECT_BUSY: "Dự án còn việc mở, kế hoạch hoặc mục tiêu đang chạy; xử lý xong rồi mới lưu trữ",
 };
 
 export function fail(e: unknown): ApiRes {
@@ -107,6 +119,36 @@ const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 function uuid(v: unknown, name: string): string {
   if (typeof v !== "string" || !UUID.test(v)) throw new LumiError("VALIDATION_ERROR", 400, { missing: [`${name}(uuid)`] });
   return v;
+}
+
+
+/** snake_case request body -> AssistantInput (only the supplied fields when `partial`). */
+function assistantBody(b: any, partial: boolean): Partial<AssistantInput> {
+  const l = b?.limits;
+  const out: Partial<AssistantInput> = {};
+  if (b?.slug !== undefined) out.slug = b.slug;
+  if (b?.name !== undefined) out.name = b.name;
+  if (b?.role_label !== undefined) out.roleLabel = b.role_label;
+  if (b?.description !== undefined) out.description = b.description;
+  if (b?.avatar !== undefined) out.avatar = b.avatar;
+  if (b?.kind !== undefined) out.kind = b.kind;
+  if (b?.hermes_profile !== undefined) out.hermesProfile = b.hermes_profile === "" ? null : b.hermes_profile;
+  if (b?.tool_allowlist !== undefined) out.toolAllowlist = b.tool_allowlist;
+  if (b?.project_ids !== undefined) out.projectIds = Array.isArray(b.project_ids) ? b.project_ids.map((x: unknown) => uuid(x, "project_id")) : undefined;
+  if (l !== undefined) out.limits = { runDeadlineSeconds: l.run_deadline_seconds, ackDeadlineSeconds: l.ack_deadline_seconds, maxRunFailures: l.max_run_failures, maxTransportAttempts: l.max_transport_attempts, maxRevisionRounds: l.max_revision_rounds, maxRunsPerDay: l.max_runs_per_day };
+  void partial;
+  return out;
+}
+
+function projectBody(b: any): Partial<ProjectInput> {
+  const out: Partial<ProjectInput> = {};
+  if (b?.name !== undefined) out.name = b.name;
+  if (b?.area !== undefined) out.area = b.area;
+  if (b?.goal !== undefined) out.goal = b.goal === "" ? null : b.goal;
+  if (b?.pm_assistant_id !== undefined) out.pmAssistantId = b.pm_assistant_id === "" ? null : (b.pm_assistant_id === null ? null : uuid(b.pm_assistant_id, "pm_assistant_id"));
+  if (b?.pm_actor_ref !== undefined) out.pmActorRef = b.pm_actor_ref === "" ? null : b.pm_actor_ref;
+  if (b?.member_ids !== undefined) out.memberIds = Array.isArray(b.member_ids) ? b.member_ids.map((x: unknown) => uuid(x, "member_id")) : undefined;
+  return out;
 }
 
 /** Every page of the contract. `bot-or-user` operations pick behaviour by principal kind. */
@@ -231,10 +273,70 @@ export const HANDLERS: Record<string, (ctx: ApiCtx, req: ApiReq) => Promise<ApiR
     return r.alreadyProcessed ? processed({}) : ok({});
   },
   // Admin: switch dispatch on/off for an assistant (OWNER; refuses when execution config / profile tools are not acceptable)
+  // IMP-02 — assistants (ORG-02, OFC-02, OFC-04). Read: any signed-in role (no secrets are stored). Write: OWNER only (checked in the domain).
+  async listAssistants(ctx, req) {
+    const u = userOnly(req.principal);
+    return ok({ assistants: await listAssistants(ctx.db), role: u.role });
+  },
+  async createAssistant(ctx, req) {
+    const u = userOnly(req.principal);
+    const r = await createAssistant(ctx.db, { actorRef: u.actorRef, key: idemKey(req), input: assistantBody(req.body, false) as AssistantInput, now: ctx.now() });
+    return r.alreadyProcessed ? processed({ assistant: r.assistant }) : ok({ assistant: r.assistant }, 201);
+  },
+  async updateAssistant(ctx, req) {
+    const u = userOnly(req.principal);
+    const r = await updateAssistant(ctx.db, { actorRef: u.actorRef, id: uuid(req.params.id, "assistant_id"), patch: assistantBody(req.body, true), now: ctx.now() });
+    return ok({ assistant: r.assistant, connection_reset: r.connectionReset });
+  },
+  async archiveAssistant(ctx, req) {
+    const u = userOnly(req.principal);
+    const r = await archiveAssistant(ctx.db, { actorRef: u.actorRef, id: uuid(req.params.id, "assistant_id"), now: ctx.now() });
+    return r.alreadyProcessed ? processed({ assistant: r.assistant, transferred: 0 }) : ok({ assistant: r.assistant, transferred: r.transferred });
+  },
+  async verifyAssistant(ctx, req) {
+    const u = userOnly(req.principal);
+    return ok(await requestVerify(ctx.db, { actorRef: u.actorRef, id: uuid(req.params.id, "assistant_id"), now: ctx.now() }), 202);
+  },
+  // IMP-02 — projects (PRJ-01) and owner policies (CMP-03). Write: OWNER only (domain). Read of policies: any signed-in role.
+  async createProject(ctx, req) {
+    const u = userOnly(req.principal);
+    const r = await createProject(ctx.db, { actorRef: u.actorRef, key: idemKey(req), input: projectBody(req.body) as ProjectInput, now: ctx.now() });
+    return r.alreadyProcessed ? processed({ project: r.project }) : ok({ project: r.project }, 201);
+  },
+  async updateProject(ctx, req) {
+    const u = userOnly(req.principal);
+    return ok(await updateProject(ctx.db, { actorRef: u.actorRef, id: uuid(req.params.id, "project_id"), patch: projectBody(req.body), now: ctx.now() }));
+  },
+  async archiveProject(ctx, req) {
+    const u = userOnly(req.principal);
+    const r = await archiveProject(ctx.db, { actorRef: u.actorRef, id: uuid(req.params.id, "project_id"), now: ctx.now() });
+    return r.alreadyProcessed ? processed({ project: r.project }) : ok({ project: r.project });
+  },
+  async listPolicies(ctx, req) {
+    const u = userOnly(req.principal);
+    return ok({ ...(await listPolicies(ctx.db)), role: u.role });
+  },
+  async setPolicy(ctx, req) {
+    const u = userOnly(req.principal);
+    const b = req.body; need(b, ["key"]);
+    if (b.value === undefined) throw new LumiError("VALIDATION_ERROR", 400, { missing: ["value"] });
+    const r = await setPolicy(ctx.db, { actorRef: u.actorRef, key: String(b.key), scope: str(b.scope), value: b.value, note: str(b.note), now: ctx.now() });
+    return r.alreadyProcessed ? processed({ version: r.version }) : ok({ version: r.version }, 201);
+  },
+  // IMP-02 — Admin screen (ADM-01/05/07/08): observed facts only. Any signed-in role may read; marking notifications seen is per person.
+  async adminStatus(ctx, req) {
+    const u = userOnly(req.principal);
+    return ok(await buildAdminStatus(ctx.db, { actorRef: u.actorRef, role: u.role, pingHermes: ctx.pingHermes, now: ctx.now() }));
+  },
+  async notificationsSeen(ctx, req) {
+    const u = userOnly(req.principal);
+    await markNotificationsSeen(ctx.db, u.actorRef, ctx.now());
+    return ok({ seen: true });
+  },
   async setDispatch(ctx, req) {
     const u = userOnly(req.principal);
     const b = req.body; need(b, ["enabled"]);
-    await setDispatchEnabled(ctx.db, ctx.hermes, u.actorRef, uuid(req.params.id, "assistant_id"), b.enabled === true, ctx.now());
+    await setDispatchEnabled(ctx.db, ctx.hermes, u.actorRef, uuid(req.params.id, "assistant_id"), b.enabled === true, ctx.now(), process.env.LUMI_HERMES_MODE === "ssh" ? { trustVerifiedWithinMs: 7 * 24 * 3600_000 } : {});
     return ok({ enabled: b.enabled === true });
   },
   async setFlag(ctx, req) {
@@ -258,6 +360,13 @@ export const HANDLERS: Record<string, (ctx: ApiCtx, req: ApiReq) => Promise<ApiR
     const b = req.body;
     await setAutonomyLimits(ctx.db, u.actorRef, uuid(req.params.id, "assistant_id"), { maxContinuations: b.max_continuations, maxSubtasks: b.max_subtasks }, ctx.now());
     return ok({});
+  },
+  async listGrants(ctx, req) {
+    userOnly(req.principal);
+    const rows = await ctx.db.query<any>(
+      `SELECT g.id,g.project_id,p.name AS project_name,g.account_ref,g.action_type,g.currency,g.per_action_max,g.budget_total,g.spent,g.count_limit,g.count_used,g.ask_if_amount_over,g.valid_from,g.valid_until,g.state,g.note,g.created_by,g.revoked_at
+         FROM lumi_grants g JOIN lumi_projects p ON p.id=g.project_id WHERE g.assistant_id=$1 ORDER BY g.state, g.valid_until DESC`, [uuid(req.params.id, "assistant_id")]);
+    return ok({ grants: rows });
   },
   async createGrant(ctx, req) {
     const u = userOnly(req.principal);

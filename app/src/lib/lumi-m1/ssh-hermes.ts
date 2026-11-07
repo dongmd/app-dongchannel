@@ -16,6 +16,40 @@
 import { execFile } from "node:child_process";
 import type { HermesPort, HermesStopPort, StopResult } from "./core";
 import { parseHermesToolsList } from "./hermes-tools";
+import type { ProfileStatus } from "../lumi/admin";
+
+const STATUS_PY = `
+import json, os
+base = "/opt/data/profiles"
+out = []
+for d in sorted(os.listdir(base)):
+    p = os.path.join(base, d)
+    if not os.path.isdir(p):
+        continue
+    gw = None; tg = None
+    try:
+        s = json.load(open(os.path.join(p, "gateway_state.json")))
+        gw = s.get("gateway_state"); tg = ((s.get("platforms") or {}).get("telegram") or {}).get("state")
+        try:
+            raw = open(os.path.join(p, "gateway.pid")).read().strip()
+            pid = int(json.loads(raw).get("pid")) if raw.startswith("{") else int(raw)
+            if not os.path.exists("/proc/%d" % pid):
+                gw = "stopped (tien trinh khong con)"; tg = None
+        except Exception:
+            pass
+    except Exception:
+        pass
+    cron = []
+    try:
+        j = json.load(open(os.path.join(p, "cron", "jobs.json")))
+        jobs = j.get("jobs", []) if isinstance(j, dict) else j
+        for x in jobs:
+            cron.append({k: x.get(k) for k in ("name", "enabled", "last_run_at", "last_status", "last_error", "next_run_at")})
+    except Exception:
+        pass
+    out.append({"profile": d, "gateway": gw, "telegram": tg, "cron": cron})
+print(json.dumps(out))
+`;
 
 export type ExecFn = (file: string, args: string[], timeoutMs: number) => Promise<{ code: number; stdout: string; stderr: string }>;
 export interface SshHermesOptions { exec?: ExecFn; host: string; container?: string; profile: string; maxTurns: number; runDeadlineSeconds: number; connectTimeoutSeconds?: number }
@@ -42,6 +76,14 @@ export class SshHermes implements HermesPort, HermesStopPort {
     return (this.o.exec ?? defaultExec)("ssh", ["-o", "BatchMode=yes", "-o", `ConnectTimeout=${this.o.connectTimeoutSeconds ?? 10}`, this.o.host, remote], timeoutMs);
   }
   private dx(cmd: string) { return `docker exec ${this.o.container ?? "hermes"} sh -c '${cmd.replace(/'/g, `'\\''`)}'`; }
+
+  /** Read-only status of every Hermes profile (gateway, Telegram, cron). Only whitelisted fields are extracted inside the container; no token leaves it. */
+  async readProfileStatus(): Promise<ProfileStatus[] | null> {
+    const b64 = Buffer.from(STATUS_PY, "utf8").toString("base64");
+    const r = await this.ssh(this.dx(`echo ${b64} | base64 -d | python3`), 45_000);
+    if (r.code !== 0) return null;
+    try { const parsed = JSON.parse(r.stdout.trim().split("\n").pop() ?? ""); return Array.isArray(parsed) ? (parsed as ProfileStatus[]) : null; } catch { return null; }
+  }
 
   async readProfileTools(profile: string): Promise<string[] | null> {
     const r = await this.ssh(`docker exec ${this.o.container ?? "hermes"} hermes -p ${profile.replace(/[^a-z0-9_-]/gi, "")} tools list`, 60_000);

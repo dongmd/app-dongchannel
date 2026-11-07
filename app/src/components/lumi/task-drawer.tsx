@@ -7,7 +7,7 @@ import { Check, MessageSquarePlus, Pencil, Plug } from "lucide-react";
 import { canReceiveTasks } from "@/lib/lumi/engine";
 import { outputOfTask, ownerLabel, project } from "@/lib/lumi/selectors";
 import { useLumi } from "./lumi-provider";
-import { Drawer, fmtFull, LumiLink, SourceBadge, StatusBadge } from "./ui";
+import { Drawer, fmtFull, LumiLink, SourceBadge, StatusBadge, NewOutputBadge } from "./ui";
 
 const VIA_LABEL = { web: "Web", telegram: "Telegram", system: "Hệ thống" } as const;
 const EVENT_LABEL: Record<string, string> = {
@@ -63,6 +63,7 @@ export function TaskDetail({ taskId }: { taskId: string | null }) {
       <div className="l-row" style={{ gap: 6 }}>
         <span className="muted small">{task.id}</span>
         <StatusBadge status={task.status} />
+        {task.status === "review" && <NewOutputBadge />}
         <SourceBadge task={task} />
         {task.waitingConnection && <span className="l-badge amber">Chờ kết nối trợ lý</span>}
       </div>
@@ -178,7 +179,19 @@ export function TaskDetail({ taskId }: { taskId: string | null }) {
                 >
                   <Pencil size={14} /> Gửi yêu cầu sửa
                 </button>
+                {state.mode === "db" && (
+                  <button
+                    className="l-btn danger"
+                    disabled={busy || revise.trim().length < 3}
+                    title="Từ chối đóng bản này (khác «yêu cầu sửa»); việc chuyển sang «Từ chối» để bạn thử lại hoặc hủy. Cần lý do ở ô trên."
+                    data-testid="reject-output"
+                    onClick={() => run(async () => { const r = await dispatch({ type: "task.rejectOutput", taskId: task.id, text: revise, via: "web", version: latest }); if (r.ok) setRevise(""); })}
+                  >
+                    Từ chối bản này
+                  </button>
+                )}
               </div>
+              {state.mode === "db" && <p className="small muted" style={{ margin: "6px 0 0" }}>Lý do ở ô trên dùng cho cả «Gửi yêu cầu sửa» và «Từ chối bản này». Từ chối cần lý do (≥ 3 ký tự).</p>}
             </div>
           )}
         </div>

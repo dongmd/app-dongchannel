@@ -3,6 +3,7 @@
 import { useEffect, useState } from "react";
 
 import { CURRENCIES, type Currency } from "@/lib/lumi/types";
+import { errText, lumiApi, newKey } from "@/lib/lumi/plans-client";
 import { useLumi } from "./lumi-provider";
 import { Modal } from "./ui";
 
@@ -95,23 +96,39 @@ export function ResultsModal({ open, onClose, defaultProjectId }: { open: boolea
 
 /** Thêm dự án mới: Dashboard, Dự án và Văn phòng đọc từ cùng danh sách nên dự án mới hiện ngay. */
 export function ProjectModal({ open, onClose }: { open: boolean; onClose: () => void }) {
-  const { dispatch, toast } = useLumi();
+  const { state, dispatch, toast } = useLumi();
+  const real = state.mode === "db";
   const [name, setName] = useState("");
   const [area, setArea] = useState("Affiliate");
   const [goal, setGoal] = useState("");
   const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+  const [key, setKey] = useState("");
   useEffect(() => {
     if (!open) return;
     setName("");
     setArea("Affiliate");
     setGoal("");
     setBusy(false);
+    setErr(null);
+    setKey(newKey());
   }, [open]);
 
   async function submit(e: React.FormEvent) {
     e.preventDefault();
     if (busy) return;
     setBusy(true);
+    setErr(null);
+    if (real) {
+      // Real-data mode: the API is the only writer (OWNER only, unique name, idempotent on the key); the list refreshes by polling.
+      const areaMap: Record<string, string> = { Affiliate: "AFFILIATE", YouTube: "YOUTUBE", Website: "WEBSITE", "Khác": "OTHER" };
+      const r = await lumiApi("/api/v1/lumi/projects", { method: "POST", key, body: { name, area: areaMap[area] ?? "OTHER", goal } });
+      setBusy(false);
+      if (!r.ok) { setErr(errText(r.error)); return; }
+      toast(`Đã thêm dự án ${name}.`);
+      onClose();
+      return;
+    }
     const r = await dispatch({ type: "project.create", name, area, goal });
     setBusy(false);
     if (r.ok) {
@@ -128,10 +145,12 @@ export function ProjectModal({ open, onClose }: { open: boolean; onClose: () => 
         <select id="pj-area" className="l-select" value={area} onChange={(e) => setArea(e.target.value)}>
           <option value="Affiliate">Affiliate</option>
           <option value="YouTube">YouTube</option>
+          {real ? <option value="Website">Website</option> : null}
           <option value="Khác">Khác</option>
         </select>
         <label className="l-label" htmlFor="pj-goal">Mục tiêu</label>
         <textarea id="pj-goal" className="l-textarea" value={goal} onChange={(e) => setGoal(e.target.value)} />
+        {err && <div className="l-note" role="alert" data-testid="pj-error" style={{ marginTop: 8 }}>{err}</div>}
         <div className="l-row" style={{ justifyContent: "flex-end", marginTop: 14 }}>
           <button type="button" className="l-btn" onClick={onClose}>Hủy</button>
           <button type="submit" className="l-btn primary" disabled={busy || !name.trim()}>Thêm dự án</button>
