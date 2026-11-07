@@ -5,6 +5,7 @@
  * worker host, which can reach Hermes) and executing (dispatch_enabled + runs).
  * No secret is ever stored here: tokens/keys live in the Hermes profile, outside the app (OFC-04).
  */
+import { toolsAboveLevel } from "./levels";
 import { createHash, randomUUID } from "node:crypto";
 import { activity, audit, KNOWN_TOOLS, LumiError, requireRole, type Db } from "./core";
 
@@ -128,6 +129,10 @@ async function updateAssistantTx(db: Db, a: { actorRef: string; id: string; patc
     }
     const profileChanged = p.hermesProfile !== undefined && p.hermesProfile !== cur.hermes_profile;
     const toolsChanged = p.toolAllowlist !== undefined && JSON.stringify([...p.toolAllowlist].sort()) !== JSON.stringify([...(cur.tool_allowlist as string[])].sort());
+    if (toolsChanged && cur.capability_mode !== "DECLARED_FULL") {
+      const above = toolsAboveLevel(cur.execution_level ?? 0, p.toolAllowlist as string[], cur.capability_mode);
+      if (above.length) throw new LumiError("LEVEL_BELOW_TOOLS", 409, { tools: above, level: cur.execution_level ?? 0 }); // raise the execution level first (owner, audited)
+    }
     const l = p.limits;
     await t.query(
       `UPDATE lumi_assistants SET name=coalesce($2,name),role_label=coalesce($3,role_label),description=coalesce($4,description),avatar=coalesce($5,avatar),

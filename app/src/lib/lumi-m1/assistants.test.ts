@@ -8,6 +8,7 @@ import assert from "node:assert/strict";
 import { freshDb } from "./testdb";
 import { LumiError, claimOutbox, processOutbox, setDispatchEnabled, type HermesPort, type NotifyPort } from "./core";
 import { createTask } from "./core-web";
+import { setExecutionLevel } from "./roster";
 import { archiveAssistant, createAssistant, listAssistants, requestVerify, updateAssistant, validateAssistantInput, type AssistantInput } from "./assistants";
 
 const T0 = new Date("2026-11-07T08:00:00Z");
@@ -74,6 +75,9 @@ describe("IMP-02 trợ lý: tạo, sửa, lưu trữ, kiểm tra kết nối (l�
     assert.equal(r1.connectionReset, false);
     row = (await w.db.query<any>(`SELECT * FROM lumi_assistants WHERE id=$1`, [a.id]))[0];
     assert.deepEqual([row.name, row.max_runs_per_day, row.connection_state, row.dispatch_enabled], ["Trợ lý A (mới)", 5, "VERIFIED", true]);
+    // IMP-03 (OFC-03): a tool above the granted execution level is refused until the owner raises the level (audited)
+    await assert.rejects(updateAssistant(w.db, { actorRef: OWNER, id: a.id, patch: { toolAllowlist: ["knowledge.context", "outputs.submit", "web"] }, now: at(11) }), (e: any) => e instanceof LumiError && e.code === "LEVEL_BELOW_TOOLS");
+    await setExecutionLevel(w.db, { actorRef: OWNER, assistantId: a.id, level: 1, now: at(11) });
     const r2 = await updateAssistant(w.db, { actorRef: OWNER, id: a.id, patch: { toolAllowlist: ["knowledge.context", "outputs.submit", "web"] }, now: at(11) });
     assert.equal(r2.connectionReset, true);
     row = (await w.db.query<any>(`SELECT * FROM lumi_assistants WHERE id=$1`, [a.id]))[0];

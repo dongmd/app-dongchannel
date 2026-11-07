@@ -42,6 +42,13 @@ export function ProjectAdmin({ projectId, name, goal }: { projectId: string; nam
         <form className="l-grid" style={{ gap: 10 }} onSubmit={save} data-testid="project-edit-form">
           <label className="l-label">Tên dự án<input className="l-input" value={n} onChange={(e) => setN(e.target.value)} required minLength={3} maxLength={100} data-testid="pe-name" /></label>
           <label className="l-label">Mục tiêu<textarea className="l-textarea" rows={3} value={g} onChange={(e) => setG(e.target.value)} maxLength={1000} data-testid="pe-goal" /></label>
+          {state.projects.find((p) => p.uuid === projectId)?.pmAuto !== undefined && (
+            <label className="small l-row" style={{ gap: 6 }}>
+              <input type="checkbox" checked={state.projects.find((p) => p.uuid === projectId)?.pmAuto === true} data-testid="pe-pm-auto"
+                onChange={async (e) => { const r = await lumiApi(`/api/v1/lumi/projects/${projectId}/pm-auto`, { method: "POST", body: { on: e.target.checked } }); toast(r.ok ? (e.target.checked ? "PM bot được tự áp dụng đề xuất đổi người nhận trong dự án này." : "PM bot chỉ đề xuất; Chủ duyệt từng thay đổi.") : `Không thực hiện được: ${errText(r.error)}`); }} />
+              PM bot tự áp dụng đề xuất đổi người nhận (mặc định tắt: Chủ duyệt từng thay đổi)
+            </label>
+          )}
           {err && <div className="l-note" role="alert" data-testid="pe-error">{err}</div>}
           <div className="l-row" style={{ justifyContent: "space-between", gap: 8 }}>
             {confirmArchive

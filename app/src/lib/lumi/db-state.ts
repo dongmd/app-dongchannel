@@ -44,7 +44,7 @@ function djb2(s: string): number {
 export async function buildDbState(db: Db, user: DbUser, o: DbStateOpts): Promise<DemoState> {
   const now = o.now ?? new Date();
   const assistants = await db.query<any>(`SELECT id,slug,name,description,role_label,avatar,kind,connection_state,dispatch_enabled,hermes_profile,created_at FROM lumi_assistants WHERE status='ACTIVE' ORDER BY created_at`);
-  const projectsRaw = await db.query<any>(`SELECT id,slug,name,area,goal,pm_actor_ref,pm_assistant_id FROM lumi_projects WHERE status='ACTIVE' ORDER BY created_at`);
+  const projectsRaw = await db.query<any>(`SELECT id,slug,name,area,goal,pm_actor_ref,pm_assistant_id,pm_auto_reassign FROM lumi_projects WHERE status='ACTIVE' ORDER BY created_at`);
   const tasksRaw = await db.query<any>(
     `SELECT t.*, a.slug AS a_slug, a.name AS a_name, p.slug AS p_slug FROM tasks t JOIN lumi_projects p ON p.id=t.project_id LEFT JOIN lumi_assistants a ON a.id=t.owner_assistant_id WHERE t.parent_task_id IS NULL ORDER BY t.created_at`,
   );
@@ -74,7 +74,7 @@ export async function buildDbState(db: Db, user: DbUser, o: DbStateOpts): Promis
     hermes: a.connection_state === "VERIFIED" && a.dispatch_enabled ? ("connected" as const) : ("none" as const), createdAt: iso(a.created_at)!,
   }));
   const projects: Project[] = projectsRaw.map((p: any) => ({
-    uuid: p.id,
+    uuid: p.id, pmAuto: p.pm_auto_reassign === true,
     id: p.slug, name: p.name, area: AREA[p.area] ?? "Khác", goal: p.goal ?? "",
     pmId: p.pm_assistant_id ? botId(slugOfAssistant.get(p.pm_assistant_id) ?? "") : OWNER_ID, status: "active" as const,
   }));

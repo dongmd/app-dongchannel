@@ -13,12 +13,14 @@ import {
   ackRun, adoptLateOutput, cancelTask, confirmDraft, createDraft, decide, discardLateOutput, LumiError, patchDraft, roleOf,
   setDispatchEnabled, setFlag, startRun, submitOutput, acceptHumanTask, type Db, type HermesPort, type Role,
 } from "./core";
-import { createTask, transitionTask, upsertActor } from "./core-web";
+import { transitionTask, upsertActor } from "./core-web";
 import { createGrant, declareCapability, decideActionRequest, decideProposal, revokeGrant, setAutonomyLimits } from "./autonomy";
 import { archiveProject, createProject, updateProject, type ProjectInput } from "./projects";
 import { listPolicies, setPolicy } from "./policies";
 import { buildAdminStatus, markNotificationsSeen } from "./admin-status";
 import { archiveAssistant, createAssistant, listAssistants, requestVerify, updateAssistant, type AssistantInput } from "./assistants";
+import { addDependency, answerHandoff, cancelHandoff, clearRecheck, decideChange, listChangeProposals, proposeHandoff, removeDependency, reopenTask, setProjectPmAuto, taskCoordination } from "./coordination";
+import { archiveRole, createAppointment, createBotCase, createRole, createTaskWithRole, decideBotCase, endAppointment, evaluateStaff, listRoster, setExecutionLevel, setSkill, transferAppointment } from "./roster";
 import { cancelPlan, closeGoal, companyOverview, createGoal, createPlan, decidePlan, getPlanDetail, reconcileLedger, recordLedger, revisePlan, setPlansEnabled, type PlanDecision } from "./plans";
 
 export type Principal =
@@ -81,6 +83,19 @@ const MESSAGES: Record<string, string> = {
   PROFILE_TAKEN: "Profile Hermes này đã gắn với một trợ lý khác",
   IN_FLIGHT: "Trợ lý đang có lượt chạy dở; dừng hoặc chờ xong rồi mới lưu trữ",
   POLICY_NOT_SET: "Chưa đặt chính sách cần cho bước này",
+  DEP_CYCLE: "Phụ thuộc này tạo vòng lặp giữa các việc",
+  DEP_CROSS_PROJECT: "Hai việc phải cùng một dự án",
+  DEP_DOWNSTREAM_STARTED: "Việc phía sau đã chạy, không thể thêm phụ thuộc",
+  DEP_UPSTREAM_CLOSED: "Việc phía trên đã đóng (hủy/từ chối)",
+  CHECK_FAILED: "Bên nhận chưa đủ điều kiện nhận việc",
+  ALREADY_HANDED_OFF: "Việc này đã được bàn giao",
+  NOT_PM: "Chỉ PM của dự án này mới được đề xuất",
+  LEVEL_TOO_LOW: "Mức quyền thực thi của trợ lý chưa cho phép tự bàn giao",
+  ROLE_NOT_HELD: "Trợ lý không đang giữ vai trò này",
+  ROLE_IN_USE: "Vai trò còn người đang giữ; kết thúc bổ nhiệm trước",
+  ALREADY_APPOINTED: "Đã có bổ nhiệm đang hiệu lực cho vai trò, trợ lý và phạm vi này",
+  LEVEL_NEEDS_FULL: "Mức 3 chỉ dành cho trợ lý chế độ công cụ rộng do Chủ khai báo",
+  LEVEL_BELOW_TOOLS: "Danh sách công cụ của trợ lý vượt mức quyền này; bỏ bớt công cụ trước",
   PROJECT_BUSY: "Dự án còn việc mở, kế hoạch hoặc mục tiêu đang chạy; xử lý xong rồi mới lưu trữ",
 };
 
@@ -211,7 +226,7 @@ export const HANDLERS: Record<string, (ctx: ApiCtx, req: ApiReq) => Promise<ApiR
     if (!b.assignee_id && !b.assignee_actor_ref) throw new LumiError("VALIDATION_ERROR", 400, { missing: ["assignee_id"] });
     const key = idemKey(req);
     if (b.client_request_id && b.client_request_id !== key) throw new LumiError("VALIDATION_ERROR", 400, { missing: ["client_request_id(must equal Idempotency-Key)"] });
-    const r = await createTask(ctx.db, { actorRef: u.actorRef, clientRequestId: key, projectId: uuid(b.project_id, "project_id"), assigneeId: b.assignee_id ? uuid(b.assignee_id, "assignee_id") : undefined, assigneeActorRef: str(b.assignee_actor_ref), title: String(b.title), description: str(b.description), due: str(b.due), expectedOutput: str(b.expected_output), now: ctx.now() });
+    const r = await createTaskWithRole(ctx.db, { roleId: b.role_id ? uuid(b.role_id, "role_id") : undefined, requiredSkill: str(b.required_skill), actorRef: u.actorRef, clientRequestId: key, projectId: uuid(b.project_id, "project_id"), assigneeId: b.assignee_id ? uuid(b.assignee_id, "assignee_id") : undefined, assigneeActorRef: str(b.assignee_actor_ref), title: String(b.title), description: str(b.description), due: str(b.due), expectedOutput: str(b.expected_output), now: ctx.now() });
     return r.alreadyProcessed ? processed({ task: r.task }) : ok({ task: r.task }, 201);
   },
   // 8.6.5 — bot (with run_id) or the HUMAN assignee (session, no run_id)
@@ -457,6 +472,109 @@ export const HANDLERS: Record<string, (ctx: ApiCtx, req: ApiReq) => Promise<ApiR
     if (!Array.isArray(b.entry_ids)) throw new LumiError("VALIDATION_ERROR", 400, { missing: ["entry_ids(array)"] });
     const r = await reconcileLedger(ctx.db, { actorRef: u.actorRef, planId: uuid(req.params.id, "plan_id"), entryIds: b.entry_ids.map((x: unknown) => uuid(x, "entry_id")), reconciliationKey: String(b.reconciliation_key), now: ctx.now() });
     return ok(r);
+  },
+  // ── IMP-03: coordination (PRJ-07, PLN-05/06/07, OFC-05). Task-level dependencies, handoffs between bots (always through the app), PM proposals.
+  async addDependency(ctx, req) {
+    const u = userOnly(req.principal); need(req.body, ["depends_on_task_id"]);
+    const r = await addDependency(ctx.db, { actorRef: u.actorRef, taskId: uuid(req.params.id, "task_id"), dependsOnId: uuid(req.body.depends_on_task_id, "depends_on_task_id"), now: ctx.now() });
+    return r.alreadyProcessed ? processed({ held: r.held }) : ok({ held: r.held }, 201);
+  },
+  async removeDependency(ctx, req) {
+    const u = userOnly(req.principal); need(req.body, ["depends_on_task_id"]);
+    return ok(await removeDependency(ctx.db, { actorRef: u.actorRef, taskId: uuid(req.params.id, "task_id"), dependsOnId: uuid(req.body.depends_on_task_id, "depends_on_task_id"), now: ctx.now() }));
+  },
+  async reopenTask(ctx, req) {
+    const u = userOnly(req.principal); need(req.body, ["reason"]);
+    return ok(await reopenTask(ctx.db, { actorRef: u.actorRef, taskId: uuid(req.params.id, "task_id"), reason: String(req.body.reason), now: ctx.now() }));
+  },
+  async clearRecheck(ctx, req) {
+    const u = userOnly(req.principal);
+    return ok(await clearRecheck(ctx.db, { actorRef: u.actorRef, taskId: uuid(req.params.id, "task_id"), now: ctx.now() }));
+  },
+  async taskCoordination(ctx, req) {
+    userOnly(req.principal);
+    return ok(await taskCoordination(ctx.db, uuid(req.params.id, "task_id")));
+  },
+  async proposeHandoff(ctx, req) {
+    const u = userOnly(req.principal); const b = req.body; need(b, ["to_assistant_id", "title", "request"]);
+    const r = await proposeHandoff(ctx.db, { sourceTaskId: uuid(req.params.id, "task_id"), toAssistantId: uuid(b.to_assistant_id, "to_assistant_id"), title: String(b.title), request: String(b.request), expectedOutput: str(b.expected_output), acceptance: str(b.acceptance), requiredSkill: str(b.required_skill), by: { actorRef: u.actorRef }, idempotencyKey: idemKey(req), now: ctx.now() });
+    return r.alreadyProcessed ? processed({ handoff: r.handoff, task: r.task }) : ok({ handoff: r.handoff, task: r.task }, 201);
+  },
+  async answerHandoff(ctx, req) {
+    const u = userOnly(req.principal); need(req.body, ["text"]);
+    return ok(await answerHandoff(ctx.db, { actorRef: u.actorRef, handoffId: uuid(req.params.id, "handoff_id"), text: String(req.body.text), now: ctx.now() }));
+  },
+  async cancelHandoff(ctx, req) {
+    const u = userOnly(req.principal); need(req.body, ["reason"]);
+    return ok(await cancelHandoff(ctx.db, { actorRef: u.actorRef, handoffId: uuid(req.params.id, "handoff_id"), reason: String(req.body.reason), now: ctx.now() }));
+  },
+  async listChanges(ctx, req) {
+    userOnly(req.principal);
+    return ok({ proposals: await listChangeProposals(ctx.db) });
+  },
+  async decideChange(ctx, req) {
+    const u = userOnly(req.principal); need(req.body, ["decision"]);
+    if (!["APPROVE", "REJECT"].includes(req.body.decision)) throw new LumiError("VALIDATION_ERROR", 400, { missing: ["decision"] });
+    return ok(await decideChange(ctx.db, { actorRef: u.actorRef, proposalId: uuid(req.params.id, "proposal_id"), decision: req.body.decision, now: ctx.now() }));
+  },
+  async setPmAuto(ctx, req) {
+    const u = userOnly(req.principal); need(req.body, ["on"]);
+    return ok(await setProjectPmAuto(ctx.db, { actorRef: u.actorRef, projectId: uuid(req.params.id, "project_id"), on: req.body.on === true, now: ctx.now() }));
+  },
+  // ── IMP-03: organization (ORG-03/05/07, OFC-03). Write: OWNER only (domain); read: any signed-in role.
+  async listRoster(ctx, req) {
+    const u = userOnly(req.principal);
+    return ok({ ...(await listRoster(ctx.db)), role: u.role });
+  },
+  async createRole(ctx, req) {
+    const u = userOnly(req.principal); const b = req.body; need(b, ["name"]);
+    return ok(await createRole(ctx.db, { actorRef: u.actorRef, name: String(b.name), department: str(b.department), description: str(b.description), now: ctx.now() }), 201);
+  },
+  async archiveRole(ctx, req) {
+    const u = userOnly(req.principal);
+    const r = await archiveRole(ctx.db, { actorRef: u.actorRef, roleId: uuid(req.params.id, "role_id"), now: ctx.now() });
+    return r.alreadyProcessed ? processed({}) : ok({});
+  },
+  async createAppointment(ctx, req) {
+    const u = userOnly(req.principal); const b = req.body; need(b, ["role_id", "assistant_id"]);
+    const dt = (v: unknown, n: string) => { if (v === undefined || v === null || v === "") return undefined; const x = new Date(String(v)); if (Number.isNaN(x.getTime())) throw new LumiError("VALIDATION_ERROR", 400, { missing: [`${n}(invalid)`] }); return x; };
+    if (b.scope !== undefined && !["COMPANY", "PROJECT", "PLAN"].includes(b.scope)) throw new LumiError("VALIDATION_ERROR", 400, { missing: ["scope"] });
+    return ok(await createAppointment(ctx.db, { actorRef: u.actorRef, input: { roleId: uuid(b.role_id, "role_id"), assistantId: uuid(b.assistant_id, "assistant_id"), scope: b.scope, scopeRef: b.scope_ref ? uuid(b.scope_ref, "scope_ref") : undefined, effectiveFrom: dt(b.effective_from, "effective_from"), effectiveTo: dt(b.effective_to, "effective_to"), substituteId: b.substitute_id ? uuid(b.substitute_id, "substitute_id") : undefined, note: str(b.note) }, now: ctx.now() }), 201);
+  },
+  async endAppointment(ctx, req) {
+    const u = userOnly(req.principal); need(req.body, ["reason"]);
+    const r = await endAppointment(ctx.db, { actorRef: u.actorRef, id: uuid(req.params.id, "appointment_id"), reason: String(req.body.reason), now: ctx.now() });
+    return r.alreadyProcessed ? processed({ appointment: r.appointment }) : ok({ appointment: r.appointment });
+  },
+  async transferAppointment(ctx, req) {
+    const u = userOnly(req.principal); need(req.body, ["to_assistant_id"]);
+    return ok(await transferAppointment(ctx.db, { actorRef: u.actorRef, id: uuid(req.params.id, "appointment_id"), toAssistantId: uuid(req.body.to_assistant_id, "to_assistant_id"), note: str(req.body.note), moveOpenTasks: req.body.move_open_tasks === true, now: ctx.now() }));
+  },
+  async setSkill(ctx, req) {
+    const u = userOnly(req.principal); const b = req.body; need(b, ["skill", "state"]);
+    return ok(await setSkill(ctx.db, { actorRef: u.actorRef, assistantId: uuid(req.params.id, "assistant_id"), skill: String(b.skill), state: b.state, evidence: str(b.evidence), environment: str(b.environment), limits: str(b.limits), now: ctx.now() }));
+  },
+  async setExecutionLevel(ctx, req) {
+    const u = userOnly(req.principal); need(req.body, ["level"]);
+    const r = await setExecutionLevel(ctx.db, { actorRef: u.actorRef, assistantId: uuid(req.params.id, "assistant_id"), level: Number(req.body.level), note: str(req.body.note), now: ctx.now() });
+    return r.alreadyProcessed ? processed({ level: r.level }) : ok({ level: r.level });
+  },
+  async evaluateStaff(ctx, req) {
+    userOnly(req.principal);
+    const to = req.body?.to ? new Date(String(req.body.to)) : ctx.now();
+    const from = req.body?.from ? new Date(String(req.body.from)) : new Date(to.getTime() - 30 * 86400_000);
+    if (Number.isNaN(from.getTime()) || Number.isNaN(to.getTime()) || from.getTime() >= to.getTime()) throw new LumiError("VALIDATION_ERROR", 400, { missing: ["from/to(invalid)"] });
+    return ok(await evaluateStaff(ctx.db, { from, to }));
+  },
+  async createBotCase(ctx, req) {
+    const u = userOnly(req.principal);
+    return ok(await createBotCase(ctx.db, { actorRef: u.actorRef, input: req.body ?? {}, now: ctx.now() }), 201);
+  },
+  async decideBotCase(ctx, req) {
+    const u = userOnly(req.principal); need(req.body, ["decision"]);
+    if (!["APPROVE", "REJECT"].includes(req.body.decision)) throw new LumiError("VALIDATION_ERROR", 400, { missing: ["decision"] });
+    const r = await decideBotCase(ctx.db, { actorRef: u.actorRef, caseId: uuid(req.params.id, "case_id"), decision: req.body.decision, note: str(req.body.note), now: ctx.now() });
+    return r.alreadyProcessed ? processed({ case: r.case }) : ok({ case: r.case });
   },
   async cancel(ctx, req) {
     const u = userOnly(req.principal);

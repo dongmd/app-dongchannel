@@ -8,10 +8,11 @@ import { errText, lumiApi, newKey } from "@/lib/lumi/plans-client";
 import { useLumi } from "./lumi-provider";
 import { Empty, fmtFull, Modal } from "./ui";
 
-const KIND: Record<string, "money" | "int" | "text"> = { prepare_fund: "money", max_loss: "money", owner_hourly_rate: "money", report_cadence_days: "int", proposal_ttl_days: "int", meeting_cap: "int", currency: "text" };
+const KIND: Record<string, "money" | "int" | "text"> = { prepare_fund: "money", max_loss: "money", owner_hourly_rate: "money", report_cadence_days: "int", proposal_ttl_days: "int", meeting_cap: "int", currency: "text", handoff_max_depth: "int", handoff_max_rounds: "int" };
 const HINT: Record<string, string> = {
   prepare_fund: "Số tiền tối đa bot được dùng ở giai đoạn chuẩn bị (kèm đơn vị tiền).", max_loss: "Mức lỗ tối đa bạn chấp nhận.", owner_hourly_rate: "Đơn giá thời gian của bạn (nếu muốn tính vào chi phí).",
   report_cadence_days: "Số ngày giữa hai báo cáo (1–90).", proposal_ttl_days: "Sau bao nhiêu ngày một đề xuất dự án hết hạn kích hoạt (1–90). Chưa đặt = không hết hạn.", meeting_cap: "Số lần họp tối đa mỗi chu kỳ (0–50).", currency: "Đơn vị tiền chính, ví dụ USD.",
+  handoff_max_depth: "Chuỗi bàn giao giữa bot được lồng tối đa bao nhiêu tầng (1–20). Chưa đặt = bot không bàn giao được.", handoff_max_rounds: "Số vòng hỏi đáp/đẩy qua lại giữa hai bot trước khi chuyển Chủ xử lý (1–20). Chưa đặt = bot không bàn giao được.",
 };
 const show = (key: string, v: any) => (KIND[key] === "money" ? `${v.amount} ${v.currency}` : String(v));
 

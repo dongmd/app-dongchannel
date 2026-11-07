@@ -1,7 +1,7 @@
 /* eslint-disable @typescript-eslint/no-explicit-any -- JSON-RPC payloads are validated field by field */
 /**
  * Minimal MCP server logic (JSON-RPC 2.0 over HTTP) for the Hermes test profile. LEAST PRIVILEGE BY CONSTRUCTION:
- *  - exactly three tools; there is NO tool to confirm a draft, approve/decide, adopt, cancel, retry, dispatch or read anything else;
+ *  - a small FIXED tool set (no tool to approve/decide, confirm, adopt, cancel, retry, dispatch); there is NO tool to confirm a draft, approve/decide, adopt, cancel, retry, dispatch or read anything else;
  *  - the caller is a bot principal bound to ONE assistant (service token). Identity of the bot is never taken from tool arguments;
  *  - tasks_intake only creates a DRAFT (same code path as POST /tasks/intake); a person confirms on the web (TDD 8.6.9);
  *  - outputs_submit takes the TASK from the run, uses a server-derived idempotency key (one submission per run) and the core
@@ -14,6 +14,7 @@ import { ackRun, LumiError } from "./core";
 import { handle, type ApiCtx, type Principal } from "./handlers";
 import { addPlanItem, proposeProject, requestAction, taskPlanContext, updatePlanItem } from "./autonomy";
 import { submitPlanVersion } from "./plans";
+import { proposeHandoff, proposeReassign, respondHandoff } from "./coordination";
 
 export const MCP_TOOLS = [
   {
@@ -51,6 +52,21 @@ export const MCP_TOOLS = [
     description: "Chỉ khi việc của bạn là LẬP PLAN & COST: nộp một phiên bản kế hoạch (body theo lược đồ v1, xem mô tả việc). Công cụ KIỂM LƯỢC ĐỒ và trả danh sách trường lỗi nếu sai — sửa và gọi lại trong cùng lượt. Không có quyền duyệt kế hoạch hay chi tiền; Chủ duyệt.",
     inputSchema: { type: "object", properties: { run_id: { type: "string" }, body: { type: "object", description: "Plan & Cost v1 (schema=1): summary, opportunity, scope, deliverables, tasks, milestones, cost, prepare_spent, grants_requested=[], stop_conditions, risks, alternatives" } }, required: ["run_id", "body"], additionalProperties: true },
   },
+  {
+    name: "handoff_propose",
+    description: "Bàn giao một phần việc cho TRỢ LÝ KHÁC qua ứng dụng (không nhắn trực tiếp giữa bot). Chỉ khi mức quyền của bạn cho phép và là việc của bạn. Hệ thống kiểm tra bên nhận trước khi tạo; nếu bị từ chối sẽ nêu lý do và gợi ý. Việc mới ở trạng thái CHỜ cho đến khi đầu ra của việc hiện tại được Chủ duyệt.",
+    inputSchema: { type: "object", properties: { run_id: { type: "string" }, to: { type: "string", description: "slug của trợ lý nhận, ví dụ yt" }, title: { type: "string" }, request: { type: "string", description: "Yêu cầu rõ ràng cho bên nhận (3..4000 ký tự)" }, expected_output: { type: "string" }, acceptance: { type: "string" }, required_skill: { type: "string" } }, required: ["run_id", "to", "title", "request"], additionalProperties: false },
+  },
+  {
+    name: "handoff_respond",
+    description: "Bên NHẬN trả lời một bàn giao trong chính lượt chạy của việc được bàn giao: ACCEPT, REJECT (kèm lý do) hoặc NEED_INFO (kèm câu hỏi). Từ chối hay xin thêm thông tin sẽ chuyển cho Chủ quyết định; không tự đẩy lại cho bên gửi.",
+    inputSchema: { type: "object", properties: { run_id: { type: "string" }, handoff_code: { type: "string", description: "Mã bàn giao, ví dụ HO-001" }, decision: { type: "string", enum: ["ACCEPT", "REJECT", "NEED_INFO"] }, text: { type: "string" } }, required: ["run_id", "handoff_code", "decision"], additionalProperties: false },
+  },
+  {
+    name: "pm_propose_reassign",
+    description: "Chỉ dành cho PM của dự án: ĐỀ XUẤT đổi người nhận một việc trong dự án. Chủ duyệt (trừ khi Chủ đã bật tự áp dụng cho dự án này). Không có quyền tự đổi.",
+    inputSchema: { type: "object", properties: { run_id: { type: "string" }, task_code: { type: "string", description: "Mã việc, ví dụ DL-012" }, to: { type: "string", description: "slug trợ lý nhận" }, reason: { type: "string" } }, required: ["run_id", "task_code", "to", "reason"], additionalProperties: false },
+  },
 ] as const;
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -85,6 +101,42 @@ export async function intakeFromChat(ctx: ApiCtx, p: Extract<Principal, { kind: 
 }
 
 async function callTool(ctx: ApiCtx, p: Extract<Principal, { kind: "bot" }>, name: string, args: any, _opts: McpOptions) {
+  if (["handoff_propose", "handoff_respond", "pm_propose_reassign"].includes(name)) {
+    const runId = typeof args?.run_id === "string" ? args.run_id : "";
+    if (!UUID.test(runId)) return text("run_id không hợp lệ.", true);
+    const [run] = await ctx.db.query<any>(`SELECT r.id,r.state,r.task_id,r.assistant_id,a.slug FROM lumi_task_runs r JOIN lumi_assistants a ON a.id=r.assistant_id WHERE r.id=$1`, [runId]);
+    if (!run || run.slug !== p.slug) return text("Không tìm thấy lượt chạy được giao cho bạn.", true);
+    if (!["DISPATCHED", "DISPATCH_UNCERTAIN", "RUNNING"].includes(run.state)) return text(`Lượt chạy không còn mở (trạng thái ${run.state}). Dừng ngay.`, true);
+    const s = (v: unknown) => (typeof v === "string" ? v.trim() : "");
+    const target = async (slug: string) => (await ctx.db.query<any>(`SELECT id FROM lumi_assistants WHERE slug=$1 AND status='ACTIVE'`, [slug]))[0];
+    const key = (...parts: string[]) => `mcp:${name}:${runId}:${createHash("sha256").update(parts.join("\u0001").normalize("NFC")).digest("hex").slice(0, 24)}`;
+    try {
+      if (name === "handoff_propose") {
+        const to = await target(s(args.to));
+        if (!to) return text("Không có trợ lý nhận với mã đó (hoặc đã lưu trữ). Không bàn giao.", true);
+        const r = await proposeHandoff(ctx.db, { sourceTaskId: run.task_id, toAssistantId: to.id, title: s(args.title), request: s(args.request), expectedOutput: s(args.expected_output) || undefined, acceptance: s(args.acceptance) || undefined, requiredSkill: s(args.required_skill) || undefined, by: { actorRef: p.actorRef, assistantId: run.assistant_id }, idempotencyKey: key(s(args.to), s(args.title), s(args.request)), now: ctx.now() });
+        return text(`${r.alreadyProcessed ? "Bàn giao này đã tạo trước đó" : "Đã tạo bàn giao"} ${r.handoff.code} → việc ${r.task.code} (đang CHỜ đầu ra của việc hiện tại được Chủ duyệt). Không nhắn trực tiếp cho bên nhận; tiếp tục phần việc của bạn.`);
+      }
+      if (name === "handoff_respond") {
+        const [h] = await ctx.db.query<any>(`SELECT code FROM lumi_handoffs WHERE code=$1 AND new_task_id=$2`, [s(args.handoff_code), run.task_id]);
+        if (!h) return text("Bàn giao này không thuộc việc của lượt chạy hiện tại.", true);
+        if (!["ACCEPT", "REJECT", "NEED_INFO"].includes(s(args.decision))) return text("decision phải là ACCEPT, REJECT hoặc NEED_INFO.", true);
+        const r = await respondHandoff(ctx.db, { botAssistantId: run.assistant_id, actorRef: p.actorRef, handoffCode: h.code, decision: s(args.decision) as any, text: s(args.text) || undefined, now: ctx.now() });
+        return text(r.alreadyProcessed ? "Đã trả lời như vậy trước đó." : r.handoff.state === "ACCEPTED" ? "Đã nhận bàn giao. Làm việc rồi nộp đầu ra như bình thường." : `Đã ghi (${r.handoff.state}); việc chuyển cho Chủ quyết định. Dừng lượt này, không nộp đầu ra.`);
+      }
+      const to = await target(s(args.to));
+      if (!to) return text("Không có trợ lý nhận với mã đó (hoặc đã lưu trữ).", true);
+      const r = await proposeReassign(ctx.db, { pmAssistantId: run.assistant_id, actorRef: p.actorRef, taskCode: s(args.task_code), toAssistantId: to.id, reason: s(args.reason), idempotencyKey: key(s(args.task_code), s(args.to), s(args.reason)), now: ctx.now() });
+      return text(`${r.alreadyProcessed ? "Đề xuất đã có" : "Đã ghi đề xuất"} (${r.proposal.state}). Chủ quyết định; bạn không tự đổi được.`);
+    } catch (e) {
+      if (e instanceof LumiError && e.code === "CHECK_FAILED") {
+        const rs = ((e.data.reasons as { code: string; text: string; suggestion: string }[]) ?? []).map((x) => `- ${x.code}: ${x.text} Gợi ý: ${x.suggestion}`).join("\n");
+        return text(`BÀN GIAO BỊ TỪ CHỐI (chưa tạo gì). Lý do:\n${rs}\nChủ đã được báo. Không thử đi vòng; tiếp tục phần việc của bạn.`, true);
+      }
+      if (e instanceof LumiError) return text(`Không thực hiện được: ${e.code}${e.data && Object.keys(e.data).length ? " " + JSON.stringify(e.data) : ""}`, true);
+      throw e;
+    }
+  }
   if (name === "plan_submit_version") {
     const runId = typeof args?.run_id === "string" ? args.run_id : "";
     if (!UUID.test(runId)) return text("run_id không hợp lệ.", true);

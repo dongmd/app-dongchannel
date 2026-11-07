@@ -6,6 +6,7 @@
  * Nothing here talks to Hermes or Telegram: those are injected (`HermesPort`, `NotifyPort`). That is deliberate — the
  * integration contract with Hermes is still a spike (TDD 16 U1–U4, U16).
  */
+import { toolsAboveLevel } from "./levels";
 import type { ProfileStatus } from "../lumi/admin";
 import { randomUUID } from "node:crypto";
 
@@ -116,6 +117,9 @@ export async function setDispatchEnabled(db: Db, hermes: HermesPort, actorRef: s
     if (missing.length) throw new LumiError("CONFIG_INCOMPLETE", 422, { missing });
     if (a.connection_state !== "VERIFIED") throw new LumiError("CONFIG_INCOMPLETE", 422, { missing: ["connection_state(VERIFIED)"] });
     if (!a.hermes_profile) throw new LumiError("CONFIG_INCOMPLETE", 422, { missing: ["hermes_profile"] });
+    // IMP-03 / OFC-03: the tool list must fit the execution level the owner granted (the owner raises the level first, with an audit row)
+    const above = toolsAboveLevel(a.execution_level ?? 0, a.tool_allowlist as string[], a.capability_mode);
+    if (above.length) throw new LumiError("LEVEL_BELOW_TOOLS", 422, { tools: above, level: a.execution_level ?? 0 });
     if (a.capability_mode === "DECLARED_FULL") {
       // The owner declared that this assistant keeps ALL its tools (TDD 8.11). We do not refuse it for having them; we require the
       // explicit acknowledgement that is recorded in the audit log. Tools are NOT the authority to act outside: that is grants (8.11.3).
@@ -369,6 +373,50 @@ async function verifyAssistantRow(db: Db, hermes: HermesPort, row: OutboxRow, no
   });
 }
 
+/** IMP-03 (PRJ-07/PLN-05): a task held for a dependency starts only when EVERY upstream output is accepted (approved) at an exact version, which is recorded on the edge. */
+export async function tryReleaseTask(t: Db, taskId: string, now: Date): Promise<boolean> {
+  const [k] = await t.query<any>(`SELECT * FROM tasks WHERE id=$1 FOR UPDATE`, [taskId]);
+  if (!k || k.status !== "ON_HOLD" || k.hold_reason !== "WAITING_DEPENDENCY") return false;
+  const unmet = await t.query(`SELECT 1 FROM lumi_task_deps WHERE task_id=$1 AND (consumed_version IS NULL OR stale)`, [taskId]);
+  if (unmet.length) return false;
+  // an earlier run is still open (e.g. the receiver is finishing the run in which it answered): never create a second one; the owner releases again once it ended
+  if ((await t.query(`SELECT 1 FROM lumi_task_runs WHERE task_id=$1 AND state IN ('PENDING','DISPATCHED','DISPATCH_UNCERTAIN','RUNNING')`, [taskId])).length) return false;
+  const inputs = await t.query<any>(`SELECT u.code AS task, d.consumed_version AS version, d.consumed_output_id AS output_id FROM lumi_task_deps d JOIN tasks u ON u.id=d.depends_on_task_id WHERE d.task_id=$1 ORDER BY u.code`, [taskId]);
+  if (k.owner_kind !== "BOT") {
+    await t.query(`UPDATE tasks SET status='CAPTURED',hold_reason=NULL,updated_at=$2 WHERE id=$1`, [taskId, iso(now)]);
+    await activity(t, taskId, "dependency.released", now, { inputs });
+    return true;
+  }
+  const [asst] = await t.query<any>(`SELECT * FROM lumi_assistants WHERE id=$1`, [k.owner_assistant_id]);
+  const ready = asst && asst.status === "ACTIVE" && asst.connection_state === "VERIFIED" && asst.dispatch_enabled && !asst.dispatch_paused;
+  if (!ready) {
+    await t.query(`UPDATE tasks SET status='WAITING_ASSISTANT',hold_reason=NULL,updated_at=$2 WHERE id=$1`, [taskId, iso(now)]);
+    await activity(t, taskId, "dependency.released", now, { inputs, waiting: "assistant" });
+    return true;
+  }
+  try {
+    await createRun(t, taskId, asst, "INITIAL", now, { text: k.description ?? k.title, title: k.title, expected_output: k.expected_output ?? null, inputs });
+  } catch (e) {
+    // a run cap must never roll back the owner's approval: keep the task held, flagged for a decision, with the reason on record
+    if (e instanceof LumiError) {
+      await t.query(`UPDATE tasks SET needs_decision=true,error_code=$2,updated_at=$3 WHERE id=$1`, [taskId, `RELEASE_BLOCKED:${e.code}`, iso(now)]);
+      await activity(t, taskId, "dependency.release_blocked", now, { reason: e.code });
+      return false;
+    }
+    throw e;
+  }
+  await t.query(`UPDATE tasks SET status='QUEUED',hold_reason=NULL,error_code=NULL,needs_decision=false,updated_at=$2 WHERE id=$1`, [taskId, iso(now)]);
+  await activity(t, taskId, "dependency.released", now, { inputs });
+  return true;
+}
+export async function releaseDependents(t: Db, taskId: string, outputId: string, version: number, now: Date) {
+  const edges = await t.query<any>(`SELECT id,task_id FROM lumi_task_deps WHERE depends_on_task_id=$1`, [taskId]);
+  for (const e of edges) {
+    await t.query(`UPDATE lumi_task_deps SET consumed_version=$2,consumed_output_id=$3,stale=false WHERE id=$1`, [e.id, version, outputId]);
+    await tryReleaseTask(t, e.task_id, now);
+  }
+}
+
 export async function processOutbox(db: Db, deps: { hermes: HermesPort & Partial<HermesStopPort>; notify: NotifyPort; clock?: () => Date; heartbeatMs?: number; slugs?: string[] }, worker: string, now: Date, leaseSeconds = 60): Promise<{ kind: string; outcome: string } | null> {
   const row = await claimOutbox(db, worker, leaseSeconds, now, deps.slugs);
   if (!row) return null;
@@ -569,6 +617,7 @@ export async function decide(db: Db, a: { actorRef: string; outputId: string; ob
     await t.query(`UPDATE tasks SET status=$2::task_status,review_status=$3::task_review_status,completed_at=CASE WHEN $5::text='COMPLETED' THEN $4::timestamptz ELSE completed_at END,updated_at=$4 WHERE id=$1`, [task.id, ts, rs, iso(a.now), ts]);
     await audit(t, `approval.${a.decision.toLowerCase()}`, a.actorRef, { taskId: task.id, outputId: o.id, version: o.version, channel: a.channel }, a.now);
     await activity(t, task.id, `approval.${a.decision.toLowerCase()}`, a.now, { version: o.version, channel: a.channel });
+    if (a.decision === "APPROVE") await releaseDependents(t, task.id, o.id, o.version, a.now);
     return { approval: ap, alreadyProcessed: false as const };
   });
 }

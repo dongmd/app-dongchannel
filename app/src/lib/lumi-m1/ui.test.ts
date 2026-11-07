@@ -676,3 +676,205 @@ describe("IMP-02 — đội bot trên dữ liệu thật: Tổ chức, chính s�
     await ctx.close();
   });
 });
+
+/** poll a DB predicate: the page writes through the API, the test reads the database */
+async function until<T>(f: () => Promise<T | undefined | null | false>, what: string, ms = 45_000): Promise<T> {
+  const t0 = Date.now();
+  for (;;) { const v = await f(); if (v) return v; if (Date.now() - t0 > ms) throw new Error(`timeout: ${what}`); await new Promise((x) => setTimeout(x, 500)); }
+}
+async function clickUntil(page: Page, click: string, expect: string) {
+  for (let i = 0; i < 6; i++) { await page.getByTestId(click).click(); if (await page.getByTestId(expect).waitFor({ timeout: 8000 }).then(() => true, () => false)) return; }
+  throw new Error(`${click} did not open ${expect}`);
+}
+
+describe("IMP-03 — phối hợp, tổ chức, năng lực, đánh giá (adapter GIẢ, dữ liệu mô phỏng)", () => {
+  it("Tổ chức: vai trò → bổ nhiệm (trùng bị chặn, không đổi quyền) → chuyển vai; năng lực đã kiểm chứng cần bằng chứng; mức quyền; đánh giá không có cột chi phí; business case không tự tạo bot", async () => {
+    const ctx = await browser.newContext(); const page = await ctx.newPage();
+    assert.equal((await login(page, base, "owner@dev.local")).user?.role, "OWNER");
+    await pg.sql`INSERT INTO profiles(slug,name,type,status) VALUES ('ui-imp03','Bot UI IMP-03','bot','active') ON CONFLICT DO NOTHING`;
+    await pg.sql`INSERT INTO lumi_assistants(slug,name,kind,hermes_profile,connection_state,execution_level,tool_allowlist,run_deadline_seconds,ack_deadline_seconds,max_run_failures,max_transport_attempts,max_revision_rounds,max_runs_per_day,description)
+      VALUES ('ui-imp03','Bot UI IMP-03','SPECIALIST','ui-imp03','VERIFIED',0,'["knowledge.context","outputs.submit","web"]',600,60,2,3,3,20,'Bot thử IMP-03 (mô phỏng)') ON CONFLICT (slug) DO NOTHING`;
+    const before = (await pg.sql`SELECT tool_allowlist,capability_mode FROM lumi_assistants WHERE slug='lumitest'`)[0]!;
+    await go(page, `${base}/lumi/org`);
+    await page.getByTestId("org-view").waitFor();
+    await page.getByTestId("assistant-ui-imp03").waitFor({ timeout: 60_000 });
+    assert.match(await page.getByTestId("level-ui-imp03").innerText(), /Mức 0/);
+    // vai trò + bổ nhiệm
+    await clickUntil(page, "org-tab-appointments", "role-form");
+    await page.getByTestId("role-name").fill("Trưởng nội dung UI");
+    await page.getByTestId("role-submit").click();
+    await until(async () => (await pg.sql`SELECT 1 FROM lumi_roles WHERE name='Trưởng nội dung UI' AND status='ACTIVE'`).length === 1, "role created");
+    await page.getByTestId("appointment-form").waitFor();
+    const [role] = await pg.sql`SELECT id FROM lumi_roles WHERE name='Trưởng nội dung UI'`;
+    const [a1] = await pg.sql`SELECT id FROM lumi_assistants WHERE slug='lumitest'`;
+    await page.getByTestId("ap-role").selectOption(role!.id as string);
+    await page.getByTestId("ap-assistant").selectOption(a1!.id as string);
+    await page.getByTestId("ap-submit").click();
+    await until(async () => (await pg.sql`SELECT 1 FROM lumi_appointments WHERE role_id=${role!.id} AND state='ACTIVE'`).length === 1, "appointment created");
+    await page.locator("[data-testid^='appointment-ROLE-'][data-testid$='-ACTIVE']").first().waitFor({ timeout: 30_000 });
+    // trùng bị chặn, không tạo dòng thứ hai
+    await page.getByTestId("ap-role").selectOption(role!.id as string);
+    await page.getByTestId("ap-assistant").selectOption(a1!.id as string);
+    await page.getByTestId("ap-submit").click();
+    await page.waitForTimeout(2500);
+    assert.equal((await pg.sql`SELECT 1 FROM lumi_appointments WHERE role_id=${role!.id}`).length, 1);
+    // chuyển vai sang bot khác
+    await page.locator("[data-testid^='transfer-ROLE-']").first().click();
+    const [a2] = await pg.sql`SELECT id FROM lumi_assistants WHERE slug='ui-imp03'`;
+    await page.getByTestId("transfer-to").selectOption(a2!.id as string);
+    await page.getByTestId("transfer-confirm").click();
+    await until(async () => (await pg.sql`SELECT 1 FROM lumi_appointments WHERE role_id=${role!.id} AND state='ACTIVE' AND assistant_id=${a2!.id}`).length === 1, "appointment transferred");
+    assert.equal((await pg.sql`SELECT 1 FROM lumi_appointments WHERE role_id=${role!.id} AND state='ENDED' AND end_reason='TRANSFERRED'`).length, 1);
+    const after = (await pg.sql`SELECT tool_allowlist,capability_mode FROM lumi_assistants WHERE slug='lumitest'`)[0]!;
+    assert.deepEqual([after.tool_allowlist, after.capability_mode], [before.tool_allowlist, before.capability_mode], "bổ nhiệm không đổi quyền");
+    // năng lực + mức quyền
+    await page.getByTestId("org-tab-skills").click();
+    await page.getByTestId("skill-form").waitFor();
+    await page.getByTestId("sk-assistant").selectOption(a2!.id as string);
+    await page.getByTestId("sk-name").fill("Viết caption");
+    await page.getByTestId("sk-evidence").fill("ngắn");
+    await page.getByTestId("sk-env").fill("Thử trong ứng dụng");
+    await page.getByTestId("sk-submit").click();
+    await page.waitForTimeout(2000);
+    assert.equal((await pg.sql`SELECT 1 FROM lumi_skills`).length, 0, "bằng chứng quá ngắn bị từ chối");
+    await page.getByTestId("sk-evidence").fill("Chấm 5 bài mẫu, 5/5 đạt");
+    await page.getByTestId("sk-submit").click();
+    await until(async () => (await pg.sql`SELECT 1 FROM lumi_skills WHERE state='VERIFIED' AND assessed_by IS NOT NULL`).length === 1, "skill saved");
+    await page.getByTestId("level-select-ui-imp03").selectOption("1");
+    await page.getByTestId("level-save-ui-imp03").click();
+    await until(async () => (await pg.sql`SELECT 1 FROM lumi_assistants WHERE slug='ui-imp03' AND execution_level=1`).length === 1, "level saved");
+    await page.getByTestId("level-select-ui-imp03").selectOption("0");
+    await page.getByTestId("level-save-ui-imp03").click(); // hạ xuống 0 khi công cụ có «web» ⇒ bị chặn
+    await page.waitForTimeout(2500);
+    assert.equal((await pg.sql`SELECT execution_level l FROM lumi_assistants WHERE slug='ui-imp03'`)[0]!.l, 1, "không hạ mức dưới công cụ đang có");
+    // đánh giá
+    await page.getByTestId("org-tab-evaluation").click();
+    await page.getByTestId("ev-table").waitFor({ timeout: 30_000 });
+    assert.match(await page.getByTestId("ev-notes").innerText(), /CHƯA ĐO/);
+    assert.equal(/chi phí|cost/i.test(await page.locator("[data-testid='ev-table'] thead").innerText()), false, "bảng đánh giá không có cột chi phí");
+    // business case
+    const botsBefore = (await pg.sql`SELECT count(*)::int n FROM lumi_assistants`)[0]!.n;
+    for (const [k, v] of [["title", "Thêm bot dịch phụ đề"], ["work_needed", "Dịch phụ đề 20 video/tuần"], ["volume", "20 video/tuần"], ["extra_cost", "chưa biết, cần đo"], ["owner_time_saved", "3 giờ/tuần (ước tính)"], ["trial_criteria", "Đạt 8/10 bài mẫu"], ["stop_condition", "Dưới 6/10 sau 2 tuần"]]) await page.getByTestId(`bc-${k}`).first().fill(v!);
+    await page.getByTestId("bc-submit").click();
+    const bc = await until(async () => (await pg.sql`SELECT code FROM lumi_bot_cases WHERE state='PROPOSED'`)[0], "bot case created");
+    await page.getByTestId(`bc-approve-${bc.code}`).click();
+    await until(async () => (await pg.sql`SELECT 1 FROM lumi_bot_cases WHERE code=${bc.code as string} AND state='APPROVED'`).length === 1, "bot case approved");
+    assert.equal((await pg.sql`SELECT count(*)::int n FROM lumi_assistants`)[0]!.n, botsBefore, "duyệt business case không tự tạo nhân viên");
+    await ctx.close();
+  });
+
+  it("Việc: phụ thuộc giữ việc phía sau, thả đúng khi đầu ra phía trên được duyệt; mở lại ⇒ «cần kiểm lại»; bàn giao bị từ chối nêu lý do rồi thành công; đề xuất của PM chỉ có hiệu lực khi Chủ duyệt", async () => {
+    const ctx = await browser.newContext(); const page = await ctx.newPage();
+    await login(page, base, "owner@dev.local");
+    await pg.sql`UPDATE lumi_assistants SET dispatch_enabled=true WHERE slug='lumitest'`;
+    // bên nhận chưa bật giao việc ⇒ việc nhận nằm ở «Chờ trợ lý», và bàn giao tới nó bị từ chối có lý do
+    await pg.sql`INSERT INTO profiles(slug,name,type,status) VALUES ('ui-recv','Bot nhận UI','bot','active') ON CONFLICT DO NOTHING`;
+    await pg.sql`INSERT INTO lumi_assistants(slug,name,kind,hermes_profile,connection_state,execution_level,tool_allowlist,dispatch_enabled,run_deadline_seconds,ack_deadline_seconds,max_run_failures,max_transport_attempts,max_revision_rounds,max_runs_per_day,description)
+      VALUES ('ui-recv','Bot nhận UI','SPECIALIST','ui-recv','VERIFIED',2,'["knowledge.context","outputs.submit"]',false,600,60,2,3,3,50,'Bên nhận thử (mô phỏng)') ON CONFLICT (slug) DO NOTHING`;
+    await pg.sql`UPDATE lumi_assistants SET execution_level=2 WHERE slug='lumitest'`;
+    const [proj] = await pg.sql`SELECT id FROM lumi_projects WHERE slug='test-offer-us'`;
+    const [recv] = await pg.sql`SELECT id FROM lumi_assistants WHERE slug='ui-recv'`;
+    const [src] = await pg.sql`SELECT id FROM lumi_assistants WHERE slug='lumitest'`;
+    await go(page, `${base}/lumi`);
+    const mk = (title: string, assignee: string, key: string) => page.evaluate(async ([t, a, p, k]) => {
+      const r = await fetch("/api/v1/tasks", { method: "POST", headers: { "content-type": "application/json", "idempotency-key": k! }, body: JSON.stringify({ project_id: p, assignee_id: a, title: t }) });
+      return (await r.json()).data?.task?.code as string;
+    }, [title, assignee, proj!.id as string, key] as string[]);
+    const pol = await page.evaluate(async () => {
+      const out: number[] = [];
+      for (const [key, value] of [["handoff_max_depth", 3], ["handoff_max_rounds", 2]] as const) out.push((await fetch("/api/v1/lumi/policies", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ key, value }) })).status);
+      return out;
+    });
+    assert.ok(pol.every((s) => s === 201 || s === 200), `chính sách bàn giao: ${pol}`);
+    const up = await mk("Việc phía trên (UI IMP-03)", src!.id as string, "ui-imp03-up-0001");
+    const down = await mk("Việc phía sau (UI IMP-03)", recv!.id as string, "ui-imp03-down-0001");
+    assert.ok(up && down, "tạo việc qua API");
+    assert.equal((await pg.sql`SELECT status::text s FROM tasks WHERE code=${down}`)[0]!.s, "WAITING_ASSISTANT");
+    // thêm phụ thuộc qua giao diện
+    await go(page, `${base}/lumi/projects/test-offer-us?task=${down}`);
+    await page.getByTestId("coord-panel").waitFor({ timeout: 60_000 });
+    for (let i = 0; i < 6; i++) { await page.getByTestId("dep-pick").selectOption({ label: `${up} · Việc phía trên (UI IMP-03)` }).catch(() => {}); if (await page.getByTestId("dep-pick").inputValue()) break; await page.waitForTimeout(1000); }
+    await page.getByTestId("dep-add").click();
+    await until(async () => (await pg.sql`SELECT 1 FROM lumi_task_deps d JOIN tasks t ON t.id=d.task_id WHERE t.code=${down}`).length === 1, "dependency saved");
+    assert.deepEqual(Object.values((await pg.sql`SELECT status::text s,hold_reason h FROM tasks WHERE code=${down}`)[0]!), ["ON_HOLD", "WAITING_DEPENDENCY"]);
+    await page.getByTestId(`dep-${up}`).waitFor({ timeout: 30_000 });
+    // đầu ra phía trên được tạo bởi worker giả; Chủ duyệt ⇒ việc phía sau được thả (bên nhận chưa bật giao việc ⇒ chờ trợ lý, KHÔNG có lượt chạy)
+    await go(page, `${base}/lumi/projects/test-offer-us?task=${up}`);
+    await waitIn(page, '[data-testid="task-detail"]', "Duyệt bản 1");
+    await page.getByRole("button", { name: "Duyệt bản 1" }).click();
+    await waitIn(page, '[data-testid="real-panel"]', "Trạng thái thật: Hoàn thành");
+    await until(async () => (await pg.sql`SELECT d.consumed_version v FROM lumi_task_deps d JOIN tasks t ON t.id=d.task_id WHERE t.code=${down}`)[0]?.v === 1, "dependency consumed");
+    assert.equal((await pg.sql`SELECT status::text s FROM tasks WHERE code=${down}`)[0]!.s, "WAITING_ASSISTANT");
+    assert.equal((await pg.sql`SELECT 1 FROM lumi_task_runs r JOIN tasks t ON t.id=r.task_id WHERE t.code=${down} AND r.state IN ('PENDING','DISPATCHED','RUNNING')`).length, 0);
+    // mở lại việc phía trên ⇒ việc phía sau bị giữ lại, cạnh đánh dấu đổi; panel của việc phía sau nói «cần kiểm lại»
+    await page.getByTestId("coord-reason").fill("Đầu vào thay đổi sau khi duyệt");
+    await page.getByTestId("task-reopen").click();
+    await until(async () => (await pg.sql`SELECT d.stale s FROM lumi_task_deps d JOIN tasks t ON t.id=d.task_id WHERE t.code=${down}`)[0]?.s === true, "dependency stale");
+    await go(page, `${base}/lumi/projects/test-offer-us?task=${down}`);
+    await page.getByTestId("coord-recheck").waitFor({ timeout: 60_000 });
+    // bàn giao từ việc phía trên tới bên nhận CHƯA bật giao việc ⇒ bị từ chối có lý do + gợi ý, không tạo gì
+    const hoBefore = (await pg.sql`SELECT count(*)::int n FROM lumi_handoffs`)[0]!.n;
+    await go(page, `${base}/lumi/projects/test-offer-us?task=${up}`);
+    await page.getByTestId("handoff-form").waitFor({ timeout: 60_000 });
+    for (let i = 0; i < 6; i++) { await page.getByTestId("ho-to").selectOption({ label: "Bot nhận UI" }).catch(() => {}); if (await page.getByTestId("ho-to").inputValue()) break; await page.waitForTimeout(1000); }
+    await page.getByTestId("ho-title").fill("Làm nội dung từ hồ sơ");
+    await page.getByTestId("ho-request").fill("Dùng hồ sơ đã chấp nhận để soạn nội dung");
+    await page.getByTestId("ho-submit").click();
+    await page.getByTestId("ho-reason-DISPATCH_OFF").waitFor({ timeout: 30_000 });
+    assert.equal((await pg.sql`SELECT count(*)::int n FROM lumi_handoffs`)[0]!.n, hoBefore, "bị từ chối thì không tạo bàn giao");
+    assert.ok((await pg.sql`SELECT 1 FROM audit_events WHERE action='handoff.refused'`).length >= 1, "từ chối được ghi nhật ký");
+    // bật giao việc cho bên nhận ⇒ bàn giao thành công
+    await pg.sql`UPDATE lumi_assistants SET dispatch_enabled=true WHERE slug='ui-recv'`;
+    await page.getByTestId("ho-submit").click();
+    await until(async () => (await pg.sql`SELECT code,state FROM lumi_handoffs`)[0], "handoff created");
+    await page.locator("[data-testid^='handoff-HO-']").first().waitFor({ timeout: 30_000 });
+    assert.equal((await pg.sql`SELECT count(*)::int n FROM lumi_handoffs`)[0]!.n, hoBefore + 1);
+    // đề xuất của PM: chưa hiệu lực cho tới khi Chủ duyệt ở tab «Thay đổi»
+    const [pmTask] = await pg.sql`SELECT id,code FROM tasks WHERE code=${down}`;
+    await pg.sql`UPDATE lumi_projects SET pm_assistant_id=${src!.id as string} WHERE id=${proj!.id as string}`;
+    await pg.sql`UPDATE tasks SET status='QUEUED'::task_status, hold_reason=NULL WHERE id=${pmTask!.id as string}`;
+    await pg.sql`INSERT INTO lumi_change_proposals(idempotency_key,project_id,task_id,to_assistant_id,reason,proposed_by_assistant_id) VALUES ('ui-imp03-chg-0001',${proj!.id as string},${pmTask!.id as string},${src!.id as string},'Bot nguồn đang rảnh',${src!.id as string})`;
+    await go(page, `${base}/lumi/approvals?tab=change`);
+    await page.getByTestId(`change-${down}`).waitFor({ timeout: 60_000 });
+    assert.equal((await pg.sql`SELECT owner_assistant_id o FROM tasks WHERE code=${down}`)[0]!.o, recv!.id, "chưa duyệt thì chưa đổi người");
+    await page.getByTestId(`change-approve-${down}`).click();
+    await until(async () => (await pg.sql`SELECT 1 FROM lumi_change_proposals WHERE idempotency_key='ui-imp03-chg-0001' AND state IN ('APPLIED','FAILED')`).length === 1, "proposal decided");
+    await ctx.close();
+  });
+
+  it("VIEWER: thấy bổ nhiệm/năng lực/đánh giá/phụ thuộc nhưng không có nút ghi; API ghi 403 và không đổi gì", async () => {
+    const ctx = await browser.newContext(); const page = await ctx.newPage();
+    assert.equal((await login(page, base, "viewer@dev.local")).user?.role, "VIEWER");
+    await go(page, `${base}/lumi/org`);
+    await page.getByTestId("org-view").waitFor();
+    await clickUntil(page, "org-tab-appointments", "org-appointments");
+    assert.equal(await page.getByTestId("role-form").count(), 0);
+    assert.equal(await page.getByTestId("appointment-form").count(), 0);
+    assert.equal(await page.locator("[data-testid^='transfer-'],[data-testid^='end-']").count(), 0);
+    await page.getByTestId("org-tab-skills").click();
+    await page.getByTestId("org-skills").waitFor();
+    assert.equal(await page.getByTestId("skill-form").count(), 0);
+    assert.equal(await page.locator("[data-testid^='level-save-']").count(), 0);
+    await page.getByTestId("org-tab-evaluation").click();
+    await page.getByTestId("ev-table").waitFor({ timeout: 30_000 });
+    assert.equal(await page.locator("[data-testid^='bc-approve-'],[data-testid^='bc-reject-']").count(), 0);
+    const [code] = await pg.sql`SELECT code FROM tasks ORDER BY created_at DESC LIMIT 1`;
+    await go(page, `${base}/lumi/projects/test-offer-us?task=${code!.code}`);
+    await page.getByTestId("coord-panel").waitFor({ timeout: 60_000 });
+    assert.equal(await page.locator("[data-testid='dep-form'],[data-testid='handoff-form'],[data-testid='task-reopen'],[data-testid='clear-recheck']").count(), 0);
+    const counts = async () => (await pg.sql`SELECT (SELECT count(*)::int FROM lumi_roles) r,(SELECT count(*)::int FROM lumi_appointments) a,(SELECT count(*)::int FROM lumi_skills) s,(SELECT count(*)::int FROM lumi_task_deps) d,(SELECT count(*)::int FROM lumi_handoffs) h,(SELECT count(*)::int FROM lumi_bot_cases) c`)[0]!;
+    const before = await counts();
+    const st = await page.evaluate(async () => {
+      const hd = { "content-type": "application/json", "idempotency-key": "viewer-imp03-0001" };
+      const h = { method: "POST", headers: hd } as const;
+      const r1 = (await fetch("/api/v1/lumi/roles", { ...h, body: JSON.stringify({ name: "Vai viewer" }) })).status;
+      const r2 = (await fetch("/api/v1/lumi/bot-cases", { ...h, body: JSON.stringify({ title: "x" }) })).status;
+      const r3 = (await fetch("/api/v1/lumi/evaluation", { ...h, body: JSON.stringify({}) })).status;
+      const r4 = (await fetch("/api/v1/lumi/changes/00000000-0000-0000-0000-000000000001", { ...h, body: JSON.stringify({ decision: "APPROVE" }) })).status;
+      return [r1, r2, r3, r4];
+    });
+    assert.deepEqual(st, [403, 403, 200, 403], "ghi bị từ chối; đọc đánh giá được");
+    assert.deepEqual(await counts(), before);
+    await ctx.close();
+  });
+});

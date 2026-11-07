@@ -29,6 +29,9 @@ import { drainPlans, setPlansEnabled } from "./plans";
 import { createAssistant } from "./assistants";
 import { setPolicy } from "./policies";
 import { createProject } from "./projects";
+import { createTask } from "./core-web";
+import { addDependency } from "./coordination";
+import { createAppointment, createBotCase, createRole, setSkill } from "./roster";
 import { handleRpc } from "./mcp";
 
 const nodeRequire = createRequire(path.join(process.cwd(), "package.json"));
@@ -109,8 +112,8 @@ describe("rollback rehearsal (PostgreSQL server, previous release code, syntheti
     assert.ok(s.kpiOk);
   });
 
-  it("2. sau khi áp 0039–0044, bản cũ vẫn chạy trên CSDL đã migrate với dữ liệu cũ (cổng bước 3)", async () => {
-    await replayMigrations(srv.sql, "0045", "0039"); // all of this release's migrations: the old code must still run on the fully migrated schema
+  it("2. sau khi áp 0039–0046, bản cũ vẫn chạy trên CSDL đã migrate với dữ liệu cũ (cổng bước 3)", async () => {
+    await replayMigrations(srv.sql, "0046", "0039"); // all of this release's migrations: the old code must still run on the fully migrated schema
     const cols = await q(`SELECT column_name FROM information_schema.columns WHERE table_name='tasks' AND column_name IN ('project_id','owner_kind','description')`);
     assert.equal(cols.length, 3);
     const s = oldSmoke();
@@ -179,7 +182,7 @@ describe("rollback rehearsal (PostgreSQL server, previous release code, syntheti
     assert.deepEqual(again.rewritten, { onHold: 0, waitingAssistant: 0 });
   });
 
-  it("3b. IMP-01: tạo mục tiêu→kế hoạch→duyệt→việc→sổ, drain kế hoạch+M1 ⇒ không xóa dữ liệu, bản cũ vẫn chạy, drain lặp được", async () => {
+  it("3b. IMP-01/02/03: tạo mục tiêu→kế hoạch→duyệt→việc→sổ (+ vai trò, năng lực, phụ thuộc, business case), drain kế hoạch+M1 ⇒ không xóa dữ liệu, bản cũ vẫn chạy, drain lặp được", async () => {
     const db = postgresDb(srv.sql);
     const before0 = (await q(`SELECT count(*)::int n FROM tasks`))[0].n;
     await q(`INSERT INTO lumi_system_flags(key,value,set_by,set_at) VALUES ('m1_enabled','true','test',now()) ON CONFLICT (key) DO UPDATE SET value='true'`);
@@ -212,7 +215,15 @@ describe("rollback rehearsal (PostgreSQL server, previous release code, syntheti
     await createAssistant(db, { actorRef: "web:owner@test", key: "rb-asst-00000001", input: { slug: "rb-imp02", name: "Trợ lý IMP-02 diễn tập", roleLabel: "Thử", toolAllowlist: ["outputs.submit"], hermesProfile: "rb-imp02", limits: { runDeadlineSeconds: 600, ackDeadlineSeconds: 60, maxRunFailures: 1, maxTransportAttempts: 1, maxRevisionRounds: 1, maxRunsPerDay: 5 } }, now: clock });
     await createProject(db, { actorRef: "web:owner@test", key: "rb-proj-00000001", input: { name: "Dự án IMP-02 diễn tập", area: "OTHER" }, now: clock });
     await setPolicy(db, { actorRef: "web:owner@test", key: "currency", value: "USD", now: clock });
-    const counts = async () => (await q(`SELECT (SELECT count(*)::int FROM lumi_goals) g,(SELECT count(*)::int FROM lumi_plans) p,(SELECT count(*)::int FROM lumi_plan_versions) v,(SELECT count(*)::int FROM lumi_ledger_entries) l,(SELECT count(*)::int FROM lumi_budgets) b,(SELECT count(*)::int FROM lumi_policies) pol,(SELECT count(*)::int FROM lumi_assistants) asst,(SELECT count(*)::int FROM lumi_projects) prj`))[0];
+    // IMP-03 data too: a role + appointment, a verified skill, a dependency between two tasks, a business case
+    const role = (await createRole(db, { actorRef: "web:owner@test", name: "Vai diễn tập IMP-03", now: clock })).role;
+    await createAppointment(db, { actorRef: "web:owner@test", input: { roleId: role.id, assistantId: a.id }, now: clock });
+    await setSkill(db, { actorRef: "web:owner@test", assistantId: a.id, skill: "Diễn tập", state: "VERIFIED", evidence: "Bằng chứng diễn tập rollback", environment: "Máy thử", now: clock });
+    const up = (await createTask(db, { actorRef: "web:owner@test", clientRequestId: "rb-dep-up-0000001", projectId: proj.id, assigneeId: a.id, title: "Việc trên (diễn tập IMP-03)", now: clock })).task;
+    const down = (await createTask(db, { actorRef: "web:owner@test", clientRequestId: "rb-dep-down-00001", projectId: proj.id, assigneeId: a.id, title: "Việc dưới (diễn tập IMP-03)", now: clock })).task;
+    await addDependency(db, { actorRef: "web:owner@test", taskId: down.id, dependsOnId: up.id, now: clock });
+    await createBotCase(db, { actorRef: "web:owner@test", input: { title: "Business case diễn tập", work_needed: "Việc giả", volume: "không có", extra_cost: "chưa biết", owner_time_saved: "chưa biết", trial_criteria: "Không có", stop_condition: "Luôn dừng" }, now: clock });
+    const counts = async () => (await q(`SELECT (SELECT count(*)::int FROM lumi_goals) g,(SELECT count(*)::int FROM lumi_plans) p,(SELECT count(*)::int FROM lumi_plan_versions) v,(SELECT count(*)::int FROM lumi_ledger_entries) l,(SELECT count(*)::int FROM lumi_budgets) b,(SELECT count(*)::int FROM lumi_policies) pol,(SELECT count(*)::int FROM lumi_assistants) asst,(SELECT count(*)::int FROM lumi_projects) prj,(SELECT count(*)::int FROM lumi_roles) rl,(SELECT count(*)::int FROM lumi_appointments) ap,(SELECT count(*)::int FROM lumi_skills) sk,(SELECT count(*)::int FROM lumi_task_deps) dp,(SELECT count(*)::int FROM lumi_bot_cases) bc`))[0];
     const c0 = await counts();
     const d = await drainPlans(db, "web:owner@test", clock);
     assert.equal(d.plansPaused, 1);

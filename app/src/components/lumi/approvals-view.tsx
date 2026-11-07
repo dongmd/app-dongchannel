@@ -1,20 +1,22 @@
 "use client";
+/* eslint-disable @typescript-eslint/no-explicit-any -- change-proposal rows are rendered field by field */
 
 import { useSearchParams } from "next/navigation";
-import { useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { Check, X } from "lucide-react";
 
 import { outputOfTask, ownerLabel, pendingBreakdown, pendingCounts, project, SCOPE_LABEL } from "@/lib/lumi/selectors";
 import type { Memory, MemoryScope } from "@/lib/lumi/types";
+import { errText, lumiApi } from "@/lib/lumi/plans-client";
 import { useLumi } from "./lumi-provider";
 import { Empty, fmtTime, LumiLink, NewOutputBadge } from "./ui";
 
-type Tab = "memory" | "output" | "action" | "plan";
+type Tab = "memory" | "output" | "action" | "plan" | "change";
 
 export function ApprovalsView() {
   const { state } = useLumi();
   const sp = useSearchParams();
-  const initial = (["memory", "output", "action", "plan"] as const).find((t) => t === sp.get("tab")) ?? "memory";
+  const initial = (["memory", "output", "action", "plan", "change"] as const).find((t) => t === sp.get("tab")) ?? "memory";
   const [tab, setTab] = useState<Tab>(initial);
   const [pid, setPid] = useState(sp.get("project") ?? "");
   const focusId = sp.get("id");
@@ -48,11 +50,61 @@ export function ApprovalsView() {
         <button role="tab" aria-selected={tab === "output"} onClick={() => setTab("output")}>Đầu ra công việc ({c.output})</button>
         <button role="tab" aria-selected={tab === "action"} onClick={() => setTab("action")}>Hành động bên ngoài ({c.action})</button>
         {state.real && <button role="tab" aria-selected={tab === "plan"} onClick={() => setTab("plan")} data-testid="tab-plan-btn">Kế hoạch ({state.real.plansPending?.length ?? 0})</button>}
+        {state.real && <button role="tab" aria-selected={tab === "change"} onClick={() => setTab("change")} data-testid="tab-change-btn">Thay đổi do PM đề xuất</button>}
       </div>
       {tab === "memory" && <MemoryTab focusId={focusId} pid={pid} />}
       {tab === "output" && <OutputTab pid={pid} />}
       {tab === "action" && <ActionTab focusId={focusId} pid={pid} />}
       {tab === "plan" && <PlanTab />}
+      {tab === "change" && <ChangeTab />}
+    </div>
+  );
+}
+
+const CHANGE_STATE: Record<string, string> = { PENDING: "Chờ Chủ quyết định", APPROVED: "Đã duyệt", REJECTED: "Đã từ chối", APPLIED: "Đã áp dụng", FAILED: "Duyệt nhưng không áp dụng được" };
+
+/** IMP-03 (OFC-05): a PM bot only PROPOSES (reassign a task); the owner decides here. Nothing changes until then, unless the owner turned automatic application on for that project. */
+function ChangeTab() {
+  const { state, toast } = useLumi();
+  const [list, setList] = useState<any[] | null>(null);
+  const [err, setErr] = useState<string | null>(null);
+  const isOwner = state.real?.role === "OWNER";
+  const load = useCallback(async () => {
+    const r = await lumiApi("/api/v1/lumi/changes");
+    if (r.ok) { setList(r.data.proposals); setErr(null); } else setErr(errText(r.error));
+  }, []);
+  useEffect(() => { void load(); const t = setInterval(() => { if (document.visibilityState === "visible") void load(); }, 5000); return () => clearInterval(t); }, [load]);
+  async function decide(id: string, decision: "APPROVE" | "REJECT") {
+    const r = await lumiApi(`/api/v1/lumi/changes/${id}`, { method: "POST", body: { decision } });
+    toast(r.ok ? (decision === "APPROVE" ? "Đã duyệt đề xuất." : "Đã từ chối đề xuất.") : `Không thực hiện được: ${errText(r.error)}`);
+    void load();
+  }
+  const pending = (list ?? []).filter((c) => c.state === "PENDING");
+  const done = (list ?? []).filter((c) => c.state !== "PENDING");
+  return (
+    <div className="l-grid" style={{ gap: 12 }} data-testid="tab-change">
+      <div className="l-note">PM bot chỉ <strong>đề xuất</strong> đổi người nhận việc. Không có thay đổi nào có hiệu lực trước khi bạn duyệt (trừ khi bạn đã bật «PM tự áp dụng» cho dự án đó).</div>
+      {err && <div className="l-note" role="alert">Không tải được: {err}</div>}
+      {list !== null && pending.length === 0 && <Empty>Không có đề xuất thay đổi nào đang chờ.</Empty>}
+      {pending.map((c) => (
+        <div key={c.id} className="l-card" data-testid={`change-${c.task_code}`}>
+          <div className="l-row" style={{ gap: 8, flexWrap: "wrap", justifyContent: "space-between" }}><strong>Đổi người nhận {c.task_code}: {c.task_title}</strong><span className="l-badge amber">{CHANGE_STATE[c.state]}</span></div>
+          <div className="small">Dự án {c.project_name} · {c.proposed_by} đề xuất giao cho <strong>{c.to_name}</strong> · {fmtTime(c.created_at)}</div>
+          <div className="small muted">Lý do: {c.reason}</div>
+          {isOwner ? (
+            <div className="l-row" style={{ gap: 6, marginTop: 8 }}>
+              <button className="l-btn sm primary" onClick={() => void decide(c.id, "APPROVE")} data-testid={`change-approve-${c.task_code}`}>Duyệt và áp dụng</button>
+              <button className="l-btn sm danger" onClick={() => void decide(c.id, "REJECT")} data-testid={`change-reject-${c.task_code}`}>Từ chối</button>
+            </div>
+          ) : <div className="small muted" style={{ marginTop: 6 }}>Chỉ OWNER quyết định.</div>}
+        </div>
+      ))}
+      {done.length > 0 && (
+        <details>
+          <summary className="small">Đã xử lý ({done.length})</summary>
+          {done.map((c) => <div key={c.id} className="small" style={{ marginTop: 4 }} data-testid={`change-done-${c.task_code}`}>{c.task_code} → {c.to_name}: <strong>{CHANGE_STATE[c.state] ?? c.state}</strong>{c.result ? ` · ${c.result}` : ""}</div>)}
+        </details>
+      )}
     </div>
   );
 }

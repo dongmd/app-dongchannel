@@ -508,10 +508,10 @@ describe("pg-server: máy chủ MCP quyền tối thiểu", () => {
     handleRpc(ctx(), bot, { jsonrpc: "2.0", id: 1, method, params }, { actorFor: () => actor });
   const call = async (bot: any, name: string, args: any, actor?: string) => (await rpc(bot, "tools/call", { name, arguments: args }, actor)).result;
 
-  it("chỉ có đúng 7 công cụ (đọc việc, nộp/điểm dừng, kế hoạch, nộp phiên bản Plan&Cost, đề xuất dự án, xin quyền); KHÔNG có công cụ tạo nháp, xác nhận, duyệt, hủy, giao lại, cấp quyền hay kích hoạt dự án", async () => {
+  it("chỉ có đúng 10 công cụ (đọc việc, nộp/điểm dừng, kế hoạch, nộp phiên bản Plan&Cost, đề xuất dự án, xin quyền, bàn giao, trả lời bàn giao, PM đề xuất đổi người); KHÔNG có công cụ tạo nháp, xác nhận, duyệt, hủy, giao lại, cấp quyền hay kích hoạt dự án", async () => {
     const w = await world();
     const names = (await rpc(w.bot, "tools/list")).result.tools.map((x: any) => x.name).sort();
-    assert.deepEqual(names, ["actions_request", "knowledge_context", "outputs_submit", "plan_add", "plan_submit_version", "plan_update", "project_propose"]);
+    assert.deepEqual(names, ["actions_request", "handoff_propose", "handoff_respond", "knowledge_context", "outputs_submit", "plan_add", "plan_submit_version", "plan_update", "pm_propose_reassign", "project_propose"]);
     assert.deepEqual(MCP_TOOLS.map((x) => x.name).sort(), names);
     for (const bad of ["tasks_intake", "tasks_confirm", "approvals_decide", "outputs_adopt", "tasks_cancel", "runs_start", "grants_create", "projects_activate", "actions_decide"]) assert.equal((await call(w.bot, bad, {})).isError, true);
     assert.ok(!JSON.stringify(MCP_TOOLS).includes("actor_ref"), "danh tính không do mô hình cung cấp");

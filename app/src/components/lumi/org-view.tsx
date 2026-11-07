@@ -8,6 +8,7 @@ import { COMPANY_FUNCTIONS, DECISION_LEAD, CAPABILITY_STAGE, STAGE_RESPONSIBILIT
 import { errText, lumiApi, newKey } from "@/lib/lumi/plans-client";
 import { useLumi } from "./lumi-provider";
 import { AuthorityDialog } from "./authority-dialog";
+import { RosterPanel } from "./roster-panel";
 import { Empty, fmtFull, Modal } from "./ui";
 
 const TOOL_LABEL: Record<string, string> = {
@@ -15,7 +16,7 @@ const TOOL_LABEL: Record<string, string> = {
   "plan.submit.version": "Nộp phiên bản kế hoạch (plan_submit_version)", web: "Tìm/đọc web (chỉ đọc)", skills: "Đọc skill nghiệp vụ",
 };
 const TOOL_KEYS = Object.keys(TOOL_LABEL);
-type Tab = "staff" | "map" | "duties";
+type Tab = "staff" | "map" | "duties" | "appointments" | "skills" | "evaluation";
 
 export function OrgView() {
   const { state } = useLumi();
@@ -58,7 +59,7 @@ function OrgInner() {
         <p className="muted" style={{ margin: "4px 0 0" }}>Nguồn hồ sơ nhân viên AI, vai trò và trách nhiệm. Văn phòng 2D/3D chỉ là cách xem cùng dữ liệu này. Không có bí mật nào hiển thị ở đây: token và khóa nằm trong profile Hermes, ngoài ứng dụng.</p>
       </div>
       <div className="l-tabs" role="tablist" aria-label="Tổ chức">
-        {([["staff", "Nhân viên AI"], ["map", "Bản đồ chức năng"], ["duties", "Trách nhiệm & quyền"]] as [Tab, string][]).map(([k, label]) => (
+        {([["staff", "Nhân viên AI"], ["map", "Bản đồ chức năng"], ["duties", "Trách nhiệm & quyền"], ["appointments", "Bổ nhiệm"], ["skills", "Năng lực & mức quyền"], ["evaluation", "Đánh giá"]] as [Tab, string][]).map(([k, label]) => (
           <button key={k} role="tab" aria-selected={tab === k} onClick={() => setTab(k)} data-testid={`org-tab-${k}`}>{label}</button>
         ))}
       </div>
@@ -82,6 +83,7 @@ function OrgInner() {
 
       {tab === "map" && <FunctionMap />}
       {tab === "duties" && <Duties rows={visible} />}
+      {(tab === "appointments" || tab === "skills" || tab === "evaluation") && <RosterPanel view={tab} assistants={rows ?? []} isOwner={isOwner} onChanged={() => void load()} />}
 
       <AuthorityDialog a={authority ? (rows ?? []).find((x) => x.id === authority.id) ?? authority : null} projects={state.projects.filter((p) => p.status === "active").map((p) => ({ id: p.uuid ?? p.id, name: p.name }))} onClose={() => setAuthority(null)} onChanged={() => void load()} />
       <AssistantForm target={edit} projects={state.projects.filter((p) => p.status === "active").map((p) => ({ id: p.uuid ?? p.id, name: p.name }))} onClose={() => setEdit(null)}
@@ -124,6 +126,7 @@ function AssistantCard({ a, isOwner, onEdit, onArchive, onAuthority, onVerify, o
       <dl className="small" style={{ display: "grid", gridTemplateColumns: "max-content 1fr", gap: "2px 12px", margin: "6px 0" }}>
         <dt className="muted">Profile Hermes</dt><dd>{a.hermes_profile ?? "chưa gắn"}</dd>
         <dt className="muted">Công cụ cho phép</dt><dd>{(a.tool_allowlist as string[]).join(", ")} <span className="muted">· chế độ {a.capability_mode}</span></dd>
+        <dt className="muted">Mức quyền thực thi</dt><dd data-testid={`level-${a.slug}`}>Mức {a.execution_level ?? 0}</dd>
         <dt className="muted">Giới hạn</dt><dd>{a.max_runs_per_day} lượt/ngày · hạn {a.run_deadline_seconds}s/lượt · lỗi tối đa {a.max_run_failures} · thử lại gửi {a.max_transport_attempts} · vòng sửa {a.max_revision_rounds}</dd>
         <dt className="muted">Dự án</dt><dd>{(a.projects as any[]).map((p) => p.name).join(", ") || "chưa thuộc dự án nào"}</dd>
         <dt className="muted">Hoạt động</dt><dd>{a.runs_total} lượt chạy · {a.open_tasks} việc mở · {a.runs_in_flight} đang chạy</dd>

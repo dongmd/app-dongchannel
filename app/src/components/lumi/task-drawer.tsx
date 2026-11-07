@@ -7,6 +7,7 @@ import { Check, MessageSquarePlus, Pencil, Plug } from "lucide-react";
 import { canReceiveTasks } from "@/lib/lumi/engine";
 import { outputOfTask, ownerLabel, project } from "@/lib/lumi/selectors";
 import { useLumi } from "./lumi-provider";
+import { CoordinationPanel } from "./coordination-panel";
 import { Drawer, fmtFull, LumiLink, SourceBadge, StatusBadge, NewOutputBadge } from "./ui";
 
 const VIA_LABEL = { web: "Web", telegram: "Telegram", system: "Hệ thống" } as const;
@@ -131,6 +132,7 @@ export function TaskDetail({ taskId }: { taskId: string | null }) {
       </div>
 
       {task.real && state.real && <RealPanel task={task} role={state.real.role} />}
+      {task.real?.uuid && state.real && state.mode === "db" && <CoordinationPanel uuid={task.real.uuid} projectId={task.projectId} status={task.real.status} role={state.real.role} />}
 
       <h3 style={{ margin: "14px 0 6px" }}>Đầu ra</h3>
       {!out || !shown ? (

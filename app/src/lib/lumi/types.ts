@@ -29,6 +29,8 @@ export interface Project {
   id: string;
   /** Chế độ dữ liệu thật: mã UUID trong PostgreSQL (id ở trên là slug dùng cho đường dẫn). API ghi nhận UUID. */
   uuid?: string;
+  /** IMP-03: the owner allows the project's PM bot to apply its own reassign proposals (default off). */
+  pmAuto?: boolean;
   name: string;
   area: string; // "Affiliate" | "YouTube" | ...
   goal: string;

@@ -5,11 +5,12 @@
  */
 import { audit, LumiError, requireRole, type Db } from "./core";
 
-export const POLICY_KEYS = ["prepare_fund", "max_loss", "report_cadence_days", "proposal_ttl_days", "meeting_cap", "currency", "owner_hourly_rate"] as const;
+export const POLICY_KEYS = ["prepare_fund", "max_loss", "report_cadence_days", "proposal_ttl_days", "meeting_cap", "currency", "owner_hourly_rate", "handoff_max_depth", "handoff_max_rounds"] as const;
 export type PolicyKey = (typeof POLICY_KEYS)[number];
 export const POLICY_LABEL: Record<PolicyKey, string> = {
   prepare_fund: "quỹ chuẩn bị", max_loss: "mức lỗ tối đa", report_cadence_days: "nhịp báo cáo (ngày)", proposal_ttl_days: "hạn đề xuất dự án (ngày)",
   meeting_cap: "trần số lần họp", currency: "đơn vị tiền chính", owner_hourly_rate: "đơn giá thời gian của Chủ",
+  handoff_max_depth: "độ sâu bàn giao tối đa", handoff_max_rounds: "số vòng hỏi đáp/bàn giao qua lại tối đa",
 };
 const MONEY = /^[A-Z]{3,5}$/;
 
@@ -30,6 +31,7 @@ export function validatePolicyValue(key: PolicyKey, v: unknown): string[] {
     case "owner_hourly_rate": bad.push(...money(v, true)); break;
     case "report_cadence_days": case "proposal_ttl_days": if (!intIn(v, 1, 90)) bad.push("value(số nguyên 1..90)"); break;
     case "meeting_cap": if (!intIn(v, 0, 50)) bad.push("value(số nguyên 0..50)"); break;
+    case "handoff_max_depth": case "handoff_max_rounds": if (!intIn(v, 1, 20)) bad.push("value(số nguyên 1..20)"); break;
     case "currency": if (typeof v !== "string" || !MONEY.test(v)) bad.push("value(mã tiền 3..5 chữ in hoa)"); break;
   }
   return bad;
