@@ -21,12 +21,21 @@ const once = process.argv.includes("--once");
 const real = process.argv.includes("--hermes-ssh");
 if (!simulate && !real) { console.error("Choose --simulate (fake boundary) or --hermes-ssh (REAL Hermes test profile over SSH; needs LUMI_HERMES_SSH_HOST) — see TDD 14.9."); process.exit(2); }
 
+// Safety: a simulated worker must never fabricate results for a REAL assistant. Against any non-local database it refuses to start unless
+// LUMI_SIM_SLUGS lists the (clearly labelled) simulated assistants it may serve; it then rejects every other assistant's runs.
+const simSlugs = new Set((process.env.LUMI_SIM_SLUGS ?? "").split(",").map((x) => x.trim()).filter(Boolean));
+if (simulate && simSlugs.size === 0 && !/@(localhost|127\.0\.0\.1|\[::1\])[:/]/.test(url)) { console.error("Refusing --simulate on a non-local database without LUMI_SIM_SLUGS (the simulated assistants this worker may serve)."); process.exit(2); }
+
 const sql = connectLumi(url, { max: 3 });
 const db = postgresDb(sql);
 const workerId = `worker:${process.pid}`;
 
 class SimWithAssistant extends SimulatedHermes {
   override async dispatch(run: Parameters<HermesPort["dispatch"]>[0]) {
+    if (simSlugs.size) {
+      const [who] = await db.query<{ slug: string }>(`SELECT a.slug FROM lumi_task_runs r JOIN lumi_assistants a ON a.id=r.assistant_id WHERE r.id=$1`, [run.runId]);
+      if (!who || !simSlugs.has(who.slug)) return { kind: "rejected" as const, transient: true, message: "Worker giả không xử lý trợ lý này (chỉ LUMI_SIM_SLUGS)" };
+    }
     const res = await super.dispatch(run);
     if (res.kind === "accepted") {
       setTimeout(async () => {

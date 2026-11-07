@@ -13,7 +13,7 @@
     "preview": "node scripts/preview.mjs",
     "lint": "next lint",
     "typecheck": "tsc --noEmit",
-    "test:pg": "tsx --test --conditions=react-server src/lib/lumi-m1/pg-server.test.ts src/lib/lumi-m1/rollback.test.ts src/lib/lumi-m1/plans-pg.test.ts src/lib/lumi-m1/ui.test.ts",
+    "test:pg": "tsx --test --test-concurrency=1 --conditions=react-server src/lib/lumi-m1/pg-server.test.ts src/lib/lumi-m1/rollback.test.ts src/lib/lumi-m1/plans-pg.test.ts src/lib/lumi-m1/ui.test.ts",
     "lumi:m1:dev": "node scripts/lumi-m1-devenv.mjs",
     "lumi:m1:worker": "tsx --conditions=react-server scripts/lumi-m1-worker.ts --simulate",
     "lumi:m1:seed": "tsx --conditions=react-server scripts/lumi-m1-seed.ts",

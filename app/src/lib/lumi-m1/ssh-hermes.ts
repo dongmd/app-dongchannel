@@ -35,6 +35,8 @@ const NOT_REACHED = /(Could not resolve|Connection timed out|Connection refused|
 export class SshHermes implements HermesPort, HermesStopPort {
   constructor(private o: SshHermesOptions) {}
   private ssh(remote: string, timeoutMs = 30_000) {
+    // host "local": the worker runs ON the Hermes machine (production), so the same remote command runs through a local shell — no SSH key to provision.
+    if (this.o.host === "local") return (this.o.exec ?? defaultExec)("sh", ["-c", remote], timeoutMs);
     return (this.o.exec ?? defaultExec)("ssh", ["-o", "BatchMode=yes", "-o", `ConnectTimeout=${this.o.connectTimeoutSeconds ?? 10}`, this.o.host, remote], timeoutMs);
   }
   private dx(cmd: string) { return `docker exec ${this.o.container ?? "hermes"} sh -c '${cmd.replace(/'/g, `'\\''`)}'`; }
@@ -52,10 +54,23 @@ export class SshHermes implements HermesPort, HermesStopPort {
     const marker = runMarker(r.runId);
     const already = await this.ssh(this.dx(`pgrep -f '${grepPat(r.runId)}' >/dev/null && echo RUNNING || echo NONE`));
     if (already.code === 0 && already.stdout.includes("RUNNING")) return { kind: "accepted" as const, sessionRef: `ssh:${marker}` }; // never start a second copy
-    const prompt =
-      `${marker}\nBạn là trợ lý Lumi Test. Đây là lượt chạy run_id=${r.runId} của việc ${r.taskCode}.\n` +
-      `1) Gọi công cụ knowledge_context với run_id trên để đọc việc được giao.\n2) Làm đúng yêu cầu bằng tiếng Việt, ngắn gọn.\n` +
-      `3) Gọi outputs_submit đúng MỘT lần với run_id và nội dung. Không làm gì khác, không dùng công cụ khác.`;
+    const planning = r.instruction?.run_purpose === "PLAN"; // IMP-01: a planning run submits a Plan & Cost VERSION, never an output
+    const prompt = planning
+      ? `${marker}
+Bạn là trợ lý Lumi Test. Đây là lượt LẬP KẾ HOẠCH run_id=${r.runId} của việc ${r.taskCode}.
+` +
+        `1) Gọi công cụ knowledge_context với run_id trên để đọc yêu cầu lập Plan & Cost (lược đồ body nằm trong đó).
+` +
+        `2) Lập kế hoạch bằng tiếng Việt, nêu nguồn và ngày của mọi bằng chứng, không bịa số liệu.
+` +
+        `3) Gọi plan_submit_version(run_id, body) cho tới khi được chấp nhận (nếu công cụ báo lỗi trường, sửa rồi gọi lại trong cùng lượt). Không gọi outputs_submit, không làm gì khác.`
+      : `${marker}
+Bạn là trợ lý Lumi Test. Đây là lượt chạy run_id=${r.runId} của việc ${r.taskCode}.
+` +
+        `1) Gọi công cụ knowledge_context với run_id trên để đọc việc được giao.
+2) Làm đúng yêu cầu bằng tiếng Việt, ngắn gọn.
+` +
+        `3) Gọi outputs_submit đúng MỘT lần với run_id và nội dung. Không làm gì khác, không dùng công cụ khác.`;
     const b64 = Buffer.from(prompt, "utf8").toString("base64");
     const log = `/tmp/lumi-run-${r.runId}.log`;
     const inner = `P=$(echo ${b64} | base64 -d); exec timeout ${Math.max(30, this.o.runDeadlineSeconds)} hermes -p ${this.o.profile} chat -Q -q "$P" --max-turns ${this.o.maxTurns} --source tool > ${log} 2>&1`;

@@ -681,7 +681,7 @@ export async function getPlanDetail(db: Db, planId: string) {
   const ledger = await db.query<any>(`SELECT id,budget_id,task_id,run_id,entry_type,category,amount,currency,source,reconciliation,reconciliation_key,note,occurred_at,recorded_by FROM lumi_ledger_entries WHERE plan_id=$1 ORDER BY created_at DESC, id DESC LIMIT 200`, [planId]);
   const reports = await db.query<any>(`SELECT id,kind,milestone_key,supersedes_report_id,body,created_at FROM lumi_reports WHERE plan_id=$1 ORDER BY created_at DESC`, [planId]);
   const approvals = await db.query<any>(`SELECT object_version,decision,reason,decided_by,decided_at FROM lumi_approvals WHERE kind='PLAN' AND object_id=$1 ORDER BY decided_at`, [planId]);
-  const planningTask = plan.planning_task_id ? (await db.query<any>(`SELECT t.id,t.code,t.status,t.error_code,(SELECT state FROM lumi_task_runs r WHERE r.task_id=t.id ORDER BY attempt_no DESC LIMIT 1) AS run_state,t.updated_at FROM tasks t WHERE t.id=$1`, [plan.planning_task_id]))[0] ?? null : null;
+  const planningTask = plan.planning_task_id ? (await db.query<any>(`SELECT t.id,t.code,t.status,t.error_code,(SELECT state FROM lumi_task_runs r WHERE r.task_id=t.id ORDER BY attempt_no DESC LIMIT 1) AS run_state,t.updated_at,(SELECT slug FROM lumi_projects pr WHERE pr.id=t.project_id) AS project_slug FROM tasks t WHERE t.id=$1`, [plan.planning_task_id]))[0] ?? null : null;
   return { plan, goal, versions, tasks, budgets, ledger, reports, approvals, planningTask, limits: { ai_cost_note: AI_COST_LIMIT_NOTE } };
 }
 

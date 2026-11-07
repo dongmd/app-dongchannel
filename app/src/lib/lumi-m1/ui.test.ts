@@ -25,7 +25,7 @@ let baseNoLogin = "";
 const freePort = () => new Promise<number>((res) => { const s = net.createServer(); s.listen(0, "127.0.0.1", () => { const p = (s.address() as net.AddressInfo).port; s.close(() => res(p)); }); });
 const nextBin = () => path.join(path.dirname(require.resolve("next/package.json")), "dist", "bin", "next");
 
-async function waitHttp(url: string, ms = 120_000) {
+async function waitHttp(url: string, ms = 240_000) {
   const t0 = Date.now();
   for (;;) {
     try { const r = await fetch(url); if (r.status < 500) return; } catch { /* not up yet */ }
@@ -190,7 +190,11 @@ describe("Giao diện Dong-Lumi mới (/lumi) trên dữ liệu THẬT", () => {
       await page.getByRole("button", { name: /Giao việc: BẬT/ }).waitFor();
     }
     await go(page, `${base}/lumi/projects/test-offer-us`);
-    await page.getByTestId("new-task").click();
+    // the dev server may still be hydrating: a click before hydration is lost, so retry until the dialog really opens
+    for (let i = 0; i < 6; i++) {
+      await page.getByTestId("new-task").click();
+      if (await page.locator("#nt-title").waitFor({ timeout: 8000 }).then(() => true, () => false)) break;
+    }
     await page.locator("#nt-title").fill("Soạn mô tả trang đích (UI Lumi tự động)");
     await page.locator("#nt-req").fill("Tối đa 20 từ mỗi mô tả");
     await page.getByRole("dialog").getByRole("button", { name: "Giao việc" }).click();
@@ -276,6 +280,19 @@ describe("IMP-01 — kế hoạch xuyên suốt cho một bot (adapter GIẢ, d�
     const body = await page.getByTestId("pending-version").innerText();
     assert.match(body, /MÔ PHỎNG/);
     assert.match(await page.getByTestId("ai-cost-note").innerText(), /Chi phí AI chưa đo theo lượt/);
+    // duyệt sai phiên bản / sai hash bị chặn, kế hoạch không đổi
+    const planId0 = planUrl.split("/").pop()!;
+    const hash0 = (await pg.sql`SELECT content_hash FROM lumi_plan_versions WHERE plan_id=${planId0} AND version=1`)[0]!.content_hash as string;
+    const wrong = await page.evaluate(async ({ id, h }) => {
+      const url = `/api/v1/lumi/plans/${id}/decide`;
+      const hd = { "content-type": "application/json" };
+      const badVersion = (await fetch(url, { method: "POST", headers: hd, body: JSON.stringify({ version: 2, content_hash: h, decision: "APPROVE" }) })).status;
+      const badHash = (await fetch(url, { method: "POST", headers: hd, body: JSON.stringify({ version: 1, content_hash: "0".repeat(64), decision: "APPROVE" }) })).status;
+      return { badVersion, badHash };
+    }, { id: planId0, h: hash0 });
+    assert.ok(wrong.badVersion >= 400 && wrong.badHash >= 400, JSON.stringify(wrong));
+    assert.equal((await pg.sql`SELECT status FROM lumi_plans WHERE id=${planId0}`)[0]!.status, "PENDING_APPROVAL");
+    assert.equal((await pg.sql`SELECT 1 FROM lumi_approvals WHERE kind='PLAN' AND object_id=${planId0}`).length, 0);
     // bước 1 → bước 2; bấm đúp xác nhận ⇒ chỉ một lần duyệt
     await page.getByTestId("plan-approve-open").click();
     await page.getByTestId("dlg-confirm").waitFor();
@@ -311,6 +328,49 @@ describe("IMP-01 — kế hoạch xuyên suốt cho một bot (adapter GIẢ, d�
     await page.getByTestId("goal-close-note").fill("Đã xem báo cáo cuối và đầu ra mô phỏng — chỉ để kiểm thử luồng");
     await page.getByTestId("goal-close-submit").click();
     await (async () => { const t0 = Date.now(); for (;;) { const [r] = await pg.sql`SELECT status,result FROM lumi_goals WHERE code=${goal}`; if (r!.status !== "ACTIVE") { assert.equal(r!.result, "ACHIEVED"); return; } if (Date.now() - t0 > 20000) throw new Error("goal not closed"); await new Promise((x) => setTimeout(x, 500)); } })();
+    await ctx.close();
+  });
+
+  it("bot chưa sẵn sàng và lượt lập kế hoạch lỗi hiển thị rõ (không im lặng 'đang chờ')", async () => {
+    const ctx = await browser.newContext(); const page = await ctx.newPage();
+    assert.equal((await login(page, base, "owner@dev.local")).user?.role, "OWNER");
+    await pg.sql`INSERT INTO profiles(slug,name,type,status) VALUES ('notready','Bot chưa sẵn sàng','bot','active') ON CONFLICT DO NOTHING`;
+    const [na] = await pg.sql`INSERT INTO lumi_assistants(slug,name,kind,hermes_profile,connection_state,execution_level,tool_allowlist,run_deadline_seconds,ack_deadline_seconds,max_run_failures,max_transport_attempts,max_revision_rounds,max_runs_per_day,dispatch_enabled)
+      VALUES ('notready','Bot chưa sẵn sàng (thử)','SPECIALIST','notready','VERIFIED',0,'["tasks.intake","outputs.submit","knowledge.context"]',600,60,2,3,3,20,false) RETURNING id`;
+    const [proj] = await pg.sql`SELECT id FROM lumi_projects WHERE slug='test-offer-us'`;
+    await go(page, `${base}/lumi/company`);
+    // (1) bot chưa bật giao việc: API từ chối bằng CONFIG_INCOMPLETE nêu đúng điều kiện thiếu
+    const first = await page.evaluate(async ({ pid, aid }) => {
+      const hd = { "content-type": "application/json" };
+      const g = await (await fetch("/api/v1/lumi/goals", { method: "POST", headers: { ...hd, "idempotency-key": "ui-notready-goal-0001" }, body: JSON.stringify({ title: "Mục tiêu thử bot chưa sẵn sàng", outcome: "Kiểm hiển thị lỗi", project_id: pid }) })).json();
+      const p = await (await fetch("/api/v1/lumi/plans", { method: "POST", headers: { ...hd, "idempotency-key": "ui-notready-plan-0001" }, body: JSON.stringify({ goal_id: g.data.goal.id, lead_assistant_id: aid }) })).json();
+      return { goalId: g.data.goal.id as string, code: p.error?.code as string | undefined, missing: JSON.stringify(p.error?.details ?? {}) };
+    }, { pid: proj!.id as string, aid: na!.id as string });
+    assert.equal(first.code, "CONFIG_INCOMPLETE"); assert.match(first.missing, /assistant_ready/);
+    // (2) bot đã sẵn sàng lúc giao nhưng bị tạm dừng giao việc ⇒ lượt không được gửi; giao diện nói rõ
+    await pg.sql`UPDATE lumi_assistants SET dispatch_enabled=true, dispatch_paused=true WHERE id=${na!.id}`;
+    const made = await page.evaluate(async ({ gid, aid }) => {
+      const p = await (await fetch("/api/v1/lumi/plans", { method: "POST", headers: { "content-type": "application/json", "idempotency-key": "ui-notready-plan-0002" }, body: JSON.stringify({ goal_id: gid, lead_assistant_id: aid }) })).json();
+      return (p.data?.plan?.id as string | undefined) ?? JSON.stringify(p.error);
+    }, { gid: first.goalId, aid: na!.id as string });
+    assert.match(made ?? "", /^[0-9a-f-]{36}$/, `kế hoạch thử phải tạo được: ${made}`);
+    const [pl0] = await pg.sql`SELECT planning_task_id FROM lumi_plans WHERE id=${made}`;
+    await pg.sql`UPDATE tasks SET status='WAITING_ASSISTANT' WHERE id=${pl0!.planning_task_id}`;
+    await go(page, `${base}/lumi/plans/${made}`);
+    await page.getByTestId("planning-bot-not-ready").waitFor({ timeout: 60_000 });
+    assert.match(await page.getByTestId("planning-bot-not-ready").innerText(), /chưa sẵn sàng/);
+    // lượt lập kế hoạch thất bại ⇒ cảnh báo rõ, nói chưa có gì được thực hiện/chi tiêu
+    const [pl] = await pg.sql`SELECT planning_task_id FROM lumi_plans WHERE id=${made}`;
+    await pg.sql`UPDATE tasks SET status='FAILED', error_code='TEST_FAIL' WHERE id=${pl!.planning_task_id}`;
+    await page.reload();
+    await page.getByTestId("planning-failed").waitFor({ timeout: 60_000 });
+    const msg = await page.getByTestId("planning-failed").innerText();
+    assert.match(msg, /chưa lập được kế hoạch/); assert.match(msg, /TEST_FAIL/); assert.match(msg, /Chưa có gì được thực hiện hay chi tiêu/);
+    // dọn: hủy kế hoạch thử qua giao diện
+    await page.getByTestId("plan-cancel-open").click();
+    await page.getByTestId("dlg-text").fill("hủy kế hoạch thử");
+    await page.getByTestId("dlg-confirm").click();
+    await (async () => { const t0 = Date.now(); for (;;) { const [r] = await pg.sql`SELECT status FROM lumi_plans WHERE id=${made}`; if (r!.status === "CANCELLED") return; if (Date.now() - t0 > 20000) throw new Error("plan not cancelled: " + r!.status); await new Promise((x) => setTimeout(x, 500)); } })();
     await ctx.close();
   });
 

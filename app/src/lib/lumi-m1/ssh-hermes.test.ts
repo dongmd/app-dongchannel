@@ -11,6 +11,34 @@ const mk = (script: (remote: string, n: number) => { code: number; stdout?: stri
 const run = { runId: RUN, dispatchKey: `run:${RUN}`, taskCode: "DL-001", instruction: {} };
 const launched = (c: string[]) => c.filter((x) => x.includes("chat -Q -q")).length;
 
+
+describe("SshHermes host=local (worker on the Hermes machine)", () => {
+  it("runs the command through a local shell, never ssh", async () => {
+    const files: string[] = [];
+    const exec: ExecFn = async (f, args) => { files.push(f); return { code: 0, stdout: args[args.length - 1]!.includes("pgrep") ? "RUNNING" : "", stderr: "" }; };
+    const h = new SshHermes({ exec, host: "local", profile: "lumitest", maxTurns: 8, runDeadlineSeconds: 600 });
+    assert.equal((await h.dispatch(run)).kind, "accepted");
+    assert.ok(files.length > 0 && files.every((f) => f === "sh"));
+  });
+});
+
+describe("SshHermes prompt by run purpose (IMP-01)", () => {
+  const promptOf = async (instruction: Record<string, unknown>) => {
+    const { h, calls } = mk((_r, n) => (n === 1 ? { code: 0, stdout: "NONE" } : { code: 0, stdout: "STARTED" }));
+    await h.dispatch({ ...run, instruction });
+    const cmd = calls.find((c) => c.includes("chat -Q -q"))!;
+    return Buffer.from(/echo ([A-Za-z0-9+/=]+) \| base64 -d/.exec(cmd)![1]!, "base64").toString("utf8");
+  };
+  it("a PLAN run is told to call plan_submit_version and NOT outputs_submit; a TASK run keeps the output prompt", async () => {
+    const plan = await promptOf({ run_purpose: "PLAN" });
+    assert.ok(plan.includes("plan_submit_version") && plan.includes("Không gọi outputs_submit"));
+    assert.equal(plan.includes("Gọi outputs_submit đúng MỘT lần"), false);
+    const task = await promptOf({ run_purpose: "TASK" });
+    assert.ok(task.includes("Gọi outputs_submit đúng MỘT lần") && !task.includes("plan_submit_version"));
+    assert.ok(task.includes("Gọi outputs_submit") && (await promptOf({})).includes("Gọi outputs_submit đúng MỘT lần"));
+  });
+});
+
 describe("SshHermes dispatch classification (app -> Hermes direction)", () => {
   it("a live process with the run marker => accepted and NO second launch (duplicate-execution guard)", async () => {
     const { h, calls } = mk(() => ({ code: 0, stdout: "RUNNING" }));

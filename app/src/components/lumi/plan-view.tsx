@@ -176,10 +176,26 @@ function Metric({ label, value, testid }: { label: string; value: string; testid
 
 function PlanningState({ d }: { d: any }) {
   const pt = d.planningTask;
+  const taskLink = pt?.project_slug ? <LumiLink href={`/lumi/projects/${pt.project_slug}?task=${pt.code}`} className="l-chiplink">Mở việc {pt.code}</LumiLink> : null;
+  if (pt && ["FAILED", "ON_HOLD", "CANCELLED", "SYNC_DELAYED"].includes(pt.status)) {
+    return (
+      <div className="l-note" role="alert" data-testid="planning-failed">
+        <strong>Bot chưa lập được kế hoạch.</strong> Việc {pt.code}: {TASK_STATUS_LABEL[pt.status] ?? pt.status}{pt.run_state ? ` · lượt chạy ${pt.run_state}` : ""}{pt.error_code ? ` · lỗi ${pt.error_code}` : ""}, cập nhật {fmtTime(pt.updated_at)}.
+        {" "}Chưa có gì được thực hiện hay chi tiêu. Bạn có thể mở việc để thử lại hoặc hủy kế hoạch bên dưới. {taskLink}
+      </div>
+    );
+  }
+  if (pt && pt.status === "WAITING_ASSISTANT") {
+    return (
+      <div className="l-note" role="alert" data-testid="planning-bot-not-ready">
+        <strong>Bot trưởng kế hoạch chưa sẵn sàng.</strong> Việc {pt.code} đang chờ vì trợ lý chưa được kết nối hoặc chưa bật giao việc. Kế hoạch chưa được lập; hãy kết nối/bật giao việc rồi giao lại, hoặc hủy kế hoạch. {taskLink}
+      </div>
+    );
+  }
   return (
     <div className="l-note" data-testid="planning-state">
       <strong>Đang chờ bot lập kế hoạch.</strong> {pt ? <>Việc {pt.code}: {TASK_STATUS_LABEL[pt.status] ?? pt.status}{pt.run_state ? ` · lượt chạy ${pt.run_state}` : ""}{pt.error_code ? ` · lỗi ${pt.error_code}` : ""}, cập nhật {fmtTime(pt.updated_at)}. </> : null}
-      Nếu quá lâu hoặc lỗi, mở việc này ở Dự án để thử lại hoặc hủy kế hoạch.
+      Nếu quá lâu hoặc lỗi, thông báo lỗi sẽ hiện ở đây; bạn cũng có thể hủy kế hoạch. {taskLink}
     </div>
   );
 }

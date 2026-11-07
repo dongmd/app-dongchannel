@@ -88,7 +88,10 @@ async function invariants(planId: string) {
 }
 
 before(async () => { process.env.LUMI_PLAN_MAX_TASKS = "5"; srv = await startPgServer(); db = postgresDb(srv.sql); });
-after(async () => { await srv.stop(); });
+after(async () => {
+  await srv.stop();
+  setTimeout(() => process.exit(process.exitCode ?? 0), 1500).unref(); // same convention as the other PG test files: do not let a lingering handle keep the runner alive
+});
 
 describe("IMP-01 trên PostgreSQL server thật", () => {
   it("1. hợp đồng HTTP: bot 403 ở mọi route của Chủ; VIEWER/ADMIN chỉ đọc; không đăng nhập 401; thiếu Idempotency-Key 400", async () => {

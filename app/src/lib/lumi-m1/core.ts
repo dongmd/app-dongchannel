@@ -19,7 +19,7 @@ export class LumiError extends Error {
   }
 }
 
-export const KNOWN_TOOLS = ["tasks.intake", "outputs.submit", "knowledge.context"] as const;
+export const KNOWN_TOOLS = ["tasks.intake", "outputs.submit", "knowledge.context", "plan.submit.version"] as const;
 export const EXEC_FIELDS = [
   "run_deadline_seconds",
   "ack_deadline_seconds",
@@ -344,7 +344,7 @@ export async function processOutbox(db: Db, deps: { hermes: HermesPort & Partial
   if (row.kind !== "DISPATCH_RUN") { await finishOutbox(db, row, { to: "DEAD", error: `unknown kind ${row.kind}` }, now); return { kind: row.kind, outcome: "dead" }; }
 
   const runId = row.aggregate_id;
-  const [run] = await db.query<any>(`SELECT r.*, t.code AS task_code, t.status AS task_status, CASE WHEN t.plan_task_key IS NOT NULL THEN pl.status END AS plan_status FROM lumi_task_runs r JOIN tasks t ON t.id=r.task_id LEFT JOIN lumi_plans pl ON pl.id=t.plan_id WHERE r.id=$1`, [runId]);
+  const [run] = await db.query<any>(`SELECT r.*, t.code AS task_code, t.status AS task_status, (t.plan_id IS NOT NULL AND t.plan_task_key IS NULL) AS is_planning_run, CASE WHEN t.plan_task_key IS NOT NULL THEN pl.status END AS plan_status FROM lumi_task_runs r JOIN tasks t ON t.id=r.task_id LEFT JOIN lumi_plans pl ON pl.id=t.plan_id WHERE r.id=$1`, [runId]);
   const [a] = await db.query<any>(`SELECT * FROM lumi_assistants WHERE id=$1`, [run.assistant_id]);
   if (run.state !== "PENDING") { await finishOutbox(db, row, { to: "DONE" }, now); return { kind: row.kind, outcome: "skipped_not_pending" }; } // never resend a run Hermes may already have
   // IMP-01: a TASK run of a plan paused for budget adjustment is deferred (like dispatch_paused), never sent. Planning runs are NOT deferred: the owner must be able to raise the ceiling.
@@ -360,7 +360,7 @@ export async function processOutbox(db: Db, deps: { hermes: HermesPort & Partial
   // Keep the lease alive while the external call is in flight (TDD 8.5). A failed renewal means a newer worker owns the row.
   const clock = deps.clock ?? (() => new Date());
   const hb = deps.heartbeatMs ? setInterval(() => { renewOutbox(db, row, leaseSeconds, clock()).catch(() => {}); }, deps.heartbeatMs) : null;
-  try { res = await deps.hermes.dispatch({ runId, dispatchKey: run.dispatch_key, taskCode: run.task_code, instruction: run.instruction_snapshot }); }
+  try { res = await deps.hermes.dispatch({ runId, dispatchKey: run.dispatch_key, taskCode: run.task_code, instruction: { ...(run.instruction_snapshot ?? {}), run_purpose: run.is_planning_run ? "PLAN" : "TASK" } }); }
   catch (e) { res = { kind: "uncertain", message: String(e) }; } // an exception does not tell us whether Hermes received the command
   finally { if (hb) clearInterval(hb); }
 
