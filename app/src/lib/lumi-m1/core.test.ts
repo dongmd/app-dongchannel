@@ -26,6 +26,7 @@ class FakeHermes implements HermesPort {
 }
 const okNotify: NotifyPort = { send: async () => {} };
 const badNotify: NotifyPort = { send: async () => { throw new Error("telegram down"); } };
+const stubNotify: NotifyPort = { send: async () => ({ delivered: false, reason: "stub" }) };
 
 async function world(opts: { configured?: boolean } = {}) {
   const { db, pg } = await freshDb();
@@ -236,6 +237,17 @@ describe("M1 outbox: lease, lỗi theo loại, không gửi lại mù", () => {
     const ob = (await w2.db.query<any>(`SELECT state,attempts,last_error FROM lumi_outbox WHERE kind='TELEGRAM_NOTIFY'`))[0];
     assert.equal(ob.state, "DEAD"); assert.match(ob.last_error, /telegram down/);
     assert.equal((await w2.db.query<any>(`SELECT status FROM tasks WHERE id=$1`, [t2.id]))[0].status, "WAITING_REVIEW");
+  });
+
+  it("3b: thông báo chưa nối kênh thật (stub) KHÔNG được ghi là 'sent': đóng hàng nhưng outcome not_delivered và last_error NOT_DELIVERED", async () => {
+    const w = await world(); const t = (await newTask(w)).task; await drain(w, at(1));
+    const r = await runOf(w.db, t.id); await ackRun(w.db, "lumitest", r.id, at(2));
+    await submitOutput(w.db, { taskId: t.id, runId: r.id, actorRef: "bot:lumitest", content: "ok", idempotencyKey: "n2", now: at(3) });
+    const res = await drain(w, at(10), stubNotify);
+    assert.ok(res.some((x: any) => x.kind === "TELEGRAM_NOTIFY" && x.outcome === "not_delivered"), JSON.stringify(res));
+    assert.ok(!res.some((x: any) => x.kind === "TELEGRAM_NOTIFY" && x.outcome === "sent"));
+    const ob = (await w.db.query<any>(`SELECT state,last_error FROM lumi_outbox WHERE kind='TELEGRAM_NOTIFY'`))[0];
+    assert.equal(ob.state, "DONE"); assert.match(ob.last_error, /^NOT_DELIVERED: stub/);
   });
 
   it("4: kết quả không chắc (exception/timeout) → DISPATCH_UNCERTAIN, KHÔNG gửi lại; quá hạn ack cũng thành UNCERTAIN; ack muộn cứu được", async () => {

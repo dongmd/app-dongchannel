@@ -99,7 +99,8 @@ export interface HermesPort {
 export type StopResult = { confirmed: boolean; message?: string };
 export interface HermesStopPort { stop(run: { runId: string; dispatchKey: string }): Promise<StopResult> }
 export interface NotifyPort {
-  send(payload: Record<string, unknown>): Promise<void>;
+  /** Resolve normally = delivered. A stub or an unconfigured channel MUST resolve { delivered: false, reason } so the outbox never claims a delivery that did not happen. */
+  send(payload: Record<string, unknown>): Promise<void | { delivered: boolean; reason?: string }>;
 }
 
 export async function setDispatchEnabled(db: Db, hermes: HermesPort, actorRef: string, assistantId: string, enabled: boolean, now: Date) {
@@ -283,13 +284,13 @@ export async function claimOutbox(db: Db, worker: string, leaseSeconds: number, 
   );
   return r[0] ?? null;
 }
-type Finish = { to: "DONE" } | { to: "RETRY"; delaySec: number; error: string } | { to: "DEAD"; error: string } | { to: "DEFER"; delaySec: number };
+type Finish = { to: "DONE"; note?: string } | { to: "RETRY"; delaySec: number; error: string } | { to: "DEAD"; error: string } | { to: "DEFER"; delaySec: number };
 /** Returns false when the lease was lost (stale worker). Caller must then stop without writing anything else. */
 export async function finishOutbox(db: Db, row: OutboxRow, f: Finish, now: Date): Promise<boolean> {
   const where = `id=$1 AND state='LEASED' AND lease_owner=$2 AND lease_epoch=$3`;
   const base = [row.id, row.lease_owner, row.lease_epoch];
   let sql: string; let params: unknown[];
-  if (f.to === "DONE") { sql = `UPDATE lumi_outbox SET state='DONE',done_at=$4,lease_owner=NULL,lease_expires_at=NULL WHERE ${where} RETURNING id`; params = [...base, iso(now)]; }
+  if (f.to === "DONE") { sql = `UPDATE lumi_outbox SET state='DONE',done_at=$4,last_error=$5,lease_owner=NULL,lease_expires_at=NULL WHERE ${where} RETURNING id`; params = [...base, iso(now), f.note ?? null]; }
   else if (f.to === "DEAD") { sql = `UPDATE lumi_outbox SET state='DEAD',last_error=$4,lease_owner=NULL,lease_expires_at=NULL WHERE ${where} RETURNING id`; params = [...base, f.error]; }
   else if (f.to === "RETRY") { sql = `UPDATE lumi_outbox SET state='PENDING',last_error=$4,next_attempt_at=$5::timestamptz + make_interval(secs => $6),lease_owner=NULL,lease_expires_at=NULL WHERE ${where} RETURNING id`; params = [...base, f.error, iso(now), f.delaySec]; }
   else { sql = `UPDATE lumi_outbox SET state='PENDING',attempts=attempts-1,next_attempt_at=$4::timestamptz + make_interval(secs => $5),lease_owner=NULL,lease_expires_at=NULL WHERE ${where} RETURNING id`; params = [...base, iso(now), f.delaySec]; }
@@ -315,7 +316,11 @@ export async function processOutbox(db: Db, deps: { hermes: HermesPort & Partial
   const row = await claimOutbox(db, worker, leaseSeconds, now);
   if (!row) return null;
   if (row.kind === "TELEGRAM_NOTIFY") {
-    try { await deps.notify.send(row.payload); await finishOutbox(db, row, { to: "DONE" }, now); return { kind: row.kind, outcome: "sent" }; }
+    try {
+      const r = await deps.notify.send(row.payload);
+      if (r && r.delivered === false) { await finishOutbox(db, row, { to: "DONE", note: `NOT_DELIVERED: ${r.reason ?? "kênh chưa nối"}` }, now); return { kind: row.kind, outcome: "not_delivered" }; } // closed, but NOT reported as sent
+      await finishOutbox(db, row, { to: "DONE" }, now); return { kind: row.kind, outcome: "sent" };
+    }
     catch (e) {
       // Notification failures only touch the outbox row. They must never change a task (TDD 8.5).
       const dead = row.attempts >= row.max_attempts;

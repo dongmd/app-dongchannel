@@ -79,7 +79,7 @@ class SimWithAssistant extends SimulatedHermes {
 const hermes = real
   ? new SshHermes({ host: process.env.LUMI_HERMES_SSH_HOST ?? "dlnew", profile: process.env.LUMI_HERMES_PROFILE ?? "lumitest", maxTurns: Number(process.env.LUMI_HERMES_MAX_TURNS ?? 8), runDeadlineSeconds: Number(process.env.LUMI_RUN_DEADLINE_SECONDS ?? 600) })
   : new SimWithAssistant();
-const notify: NotifyPort = { async send(payload) { console.log("[notify-stub] would send:", JSON.stringify(payload)); } };
+const notify: NotifyPort = { async send(payload) { console.log("[notify-stub] NOT sent (Telegram chưa nối):", JSON.stringify(payload)); return { delivered: false, reason: "stub: Telegram chưa nối, không gửi gì" }; } };
 
 async function tick() {
   const r = await workerCycle(db, { hermes, notify, heartbeatMs: 10_000 }, workerId);
