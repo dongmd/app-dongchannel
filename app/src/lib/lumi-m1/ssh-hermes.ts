@@ -34,6 +34,8 @@ const NOT_REACHED = /(Could not resolve|Connection timed out|Connection refused|
 
 export class SshHermes implements HermesPort, HermesStopPort {
   constructor(private o: SshHermesOptions) {}
+  /** For the always-visible UI label: which Hermes profile this adapter really drives. */
+  get profileName(): string { return this.o.profile; }
   private ssh(remote: string, timeoutMs = 30_000) {
     // host "local": the worker runs ON the Hermes machine (production), so the same remote command runs through a local shell — no SSH key to provision.
     if (this.o.host === "local") return (this.o.exec ?? defaultExec)("sh", ["-c", remote], timeoutMs);

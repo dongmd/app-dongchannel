@@ -19,7 +19,8 @@ export class LumiError extends Error {
   }
 }
 
-export const KNOWN_TOOLS = ["tasks.intake", "outputs.submit", "knowledge.context", "plan.submit.version"] as const;
+// MCP tools (`server:tool` -> `tool.name`) plus the two built-in Hermes toolsets a RESTRICTED research assistant may need: `web` (read-only search/extract) and `skills` (read its business skill).
+export const KNOWN_TOOLS = ["tasks.intake", "outputs.submit", "knowledge.context", "plan.submit.version", "web", "skills"] as const;
 export const EXEC_FIELDS = [
   "run_deadline_seconds",
   "ack_deadline_seconds",
@@ -259,10 +260,24 @@ async function confirmDraftTx(db: Db, actorRef: string, draftId: string, now: Da
 }
 
 // ───────────────────────── runs and outbox
+/** `LUMI_RUN_TOTAL_CAPS="aff-trial=8"` -> 8; null when the assistant has no total cap configured. */
+export function runTotalCap(slug: string, env: string | undefined = process.env.LUMI_RUN_TOTAL_CAPS): number | null {
+  for (const part of (env ?? "").split(",")) {
+    const [k, v] = part.split("=").map((x) => x.trim());
+    if (k === slug && v && /^\d+$/.test(v)) return Number(v);
+  }
+  return null;
+}
 export async function createRun(t: Db, taskId: string, asst: any, kind: "INITIAL" | "RETRY" | "REVISION" | "REASSIGN" | "CONTINUATION", now: Date, instruction: Record<string, unknown>) {
   if (asst.max_runs_per_day != null) {
     const [c] = await t.query<{ n: string }>(`SELECT count(*)::text AS n FROM lumi_task_runs WHERE assistant_id=$1 AND created_at >= date_trunc('day',$2::timestamptz)`, [asst.id, iso(now)]);
     if (Number(c!.n) >= asst.max_runs_per_day) throw new LumiError("DAILY_CAP", 409, { max_runs_per_day: asst.max_runs_per_day });
+  }
+  // Total cap per assistant across ALL days (owner-approved trial budget): LUMI_RUN_TOTAL_CAPS="slug=8,other=3". A day boundary must not reset it.
+  const totalCap = runTotalCap(asst.slug);
+  if (totalCap !== null) {
+    const [tc] = await t.query<{ n: string }>(`SELECT count(*)::text AS n FROM lumi_task_runs WHERE assistant_id=$1`, [asst.id]);
+    if (Number(tc!.n) >= totalCap) throw new LumiError("TOTAL_CAP", 409, { max_runs_total: totalCap });
   }
   const n = (await t.query<{ n: number }>(`SELECT coalesce(max(attempt_no),0)+1 AS n FROM lumi_task_runs WHERE task_id=$1`, [taskId]))[0]!.n;
   const id = randomUUID();
@@ -274,13 +289,18 @@ export async function createRun(t: Db, taskId: string, asst: any, kind: "INITIAL
 export interface OutboxRow {
   id: string; kind: string; aggregate_id: string; payload: any; attempts: number; max_attempts: number; lease_owner: string; lease_epoch: number;
 }
-export async function claimOutbox(db: Db, worker: string, leaseSeconds: number, now: Date): Promise<OutboxRow | null> {
+/** `slugs` (optional) restricts DISPATCH_RUN/STOP_RUN rows to runs of those assistants, so a worker bound to one adapter (simulated OR real) never claims,
+ *  fails or resends the other lane's runs. Rows of other kinds (notifications) are claimable by anyone. */
+export async function claimOutbox(db: Db, worker: string, leaseSeconds: number, now: Date, slugs?: string[]): Promise<OutboxRow | null> {
   const r = await db.query<OutboxRow>(
     `UPDATE lumi_outbox SET state='LEASED',lease_owner=$1,lease_epoch=lease_epoch+1,lease_expires_at=$3::timestamptz + make_interval(secs => $2),attempts=attempts+1
      WHERE id=(SELECT id FROM lumi_outbox WHERE state IN ('PENDING','LEASED') AND next_attempt_at <= $3::timestamptz
-               AND (lease_expires_at IS NULL OR lease_expires_at < $3::timestamptz) ORDER BY next_attempt_at FOR UPDATE SKIP LOCKED LIMIT 1)
+               AND (lease_expires_at IS NULL OR lease_expires_at < $3::timestamptz)
+               AND ($4::text[] IS NULL OR kind NOT IN ('DISPATCH_RUN','STOP_RUN')
+                    OR EXISTS (SELECT 1 FROM lumi_task_runs r JOIN lumi_assistants a ON a.id=r.assistant_id WHERE r.id::text = lumi_outbox.aggregate_id::text AND a.slug = ANY($4::text[])))
+               ORDER BY next_attempt_at FOR UPDATE SKIP LOCKED LIMIT 1)
      RETURNING id,kind,aggregate_id,payload,attempts,max_attempts,lease_owner,lease_epoch`,
-    [worker, leaseSeconds, iso(now)],
+    [worker, leaseSeconds, iso(now), slugs && slugs.length ? slugs : null],
   );
   return r[0] ?? null;
 }
@@ -312,8 +332,8 @@ export async function enqueueNotify(db: Db, key: string, payload: Record<string,
   await db.query(`INSERT INTO lumi_outbox (kind,dedupe_key,payload,max_attempts,next_attempt_at,created_at) VALUES ('TELEGRAM_NOTIFY',$1,$2::jsonb,$3,$4,$4) ON CONFLICT (dedupe_key) DO NOTHING`, [key, JSON.stringify(payload), maxAttempts, iso(now)]);
 }
 
-export async function processOutbox(db: Db, deps: { hermes: HermesPort & Partial<HermesStopPort>; notify: NotifyPort; clock?: () => Date; heartbeatMs?: number }, worker: string, now: Date, leaseSeconds = 60): Promise<{ kind: string; outcome: string } | null> {
-  const row = await claimOutbox(db, worker, leaseSeconds, now);
+export async function processOutbox(db: Db, deps: { hermes: HermesPort & Partial<HermesStopPort>; notify: NotifyPort; clock?: () => Date; heartbeatMs?: number; slugs?: string[] }, worker: string, now: Date, leaseSeconds = 60): Promise<{ kind: string; outcome: string } | null> {
+  const row = await claimOutbox(db, worker, leaseSeconds, now, deps.slugs);
   if (!row) return null;
   if (row.kind === "TELEGRAM_NOTIFY") {
     try {

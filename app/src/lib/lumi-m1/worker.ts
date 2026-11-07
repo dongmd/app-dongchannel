@@ -6,7 +6,7 @@
 import { processOutbox, reap, type Db, type HermesPort, type NotifyPort } from "./core";
 import { planTick } from "./plans";
 
-export interface WorkerDeps { hermes: HermesPort; notify: NotifyPort; heartbeatMs?: number; clock?: () => Date; hermesMode?: string }
+export interface WorkerDeps { hermes: HermesPort; notify: NotifyPort; heartbeatMs?: number; clock?: () => Date; hermesMode?: string; slugs?: string[] }
 
 export async function workerCycle(db: Db, deps: WorkerDeps, workerId: string, opts: { maxRows?: number; leaseSeconds?: number } = {}) {
   const clock = deps.clock ?? (() => new Date());

@@ -5,7 +5,7 @@ import { freshDb } from "./testdb";
 import {
   LumiError, parseIntake, missingExecConfig, setDispatchEnabled, setFlag, createDraft, patchDraft, confirmDraft, processOutbox, claimOutbox,
   finishOutbox, ackRun, reap, submitOutput, decide, startRun, adoptLateOutput, cancelTask, acceptHumanTask, discardLateOutput,
-  type Db, type HermesPort, type NotifyPort,
+  createRun, runTotalCap, type Db, type HermesPort, type NotifyPort,
 } from "./core";
 
 const T0 = new Date("2026-11-06T08:00:00Z");
@@ -237,6 +237,29 @@ describe("M1 outbox: lease, lỗi theo loại, không gửi lại mù", () => {
     const ob = (await w2.db.query<any>(`SELECT state,attempts,last_error FROM lumi_outbox WHERE kind='TELEGRAM_NOTIFY'`))[0];
     assert.equal(ob.state, "DEAD"); assert.match(ob.last_error, /telegram down/);
     assert.equal((await w2.db.query<any>(`SELECT status FROM tasks WHERE id=$1`, [t2.id]))[0].status, "WAITING_REVIEW");
+  });
+
+  it("3c: trần TỔNG số lượt theo trợ lý (LUMI_RUN_TOTAL_CAPS) không bị reset qua ngày; chạm trần thì từ chối tạo lượt mới", async () => {
+    assert.equal(runTotalCap("lumitest", "lumitest=2, x=5"), 2); assert.equal(runTotalCap("khac", "lumitest=2"), null); assert.equal(runTotalCap("lumitest", undefined), null);
+    const w = await world();
+    const old = process.env.LUMI_RUN_TOTAL_CAPS; process.env.LUMI_RUN_TOTAL_CAPS = "lumitest=2";
+    try {
+      await newTask(w, "cap-k1"); await newTask(w, "cap-k2"); // 2 runs created "today" (distinct source keys: the helper is idempotent per key)
+      await assert.rejects(() => newTask(w, "cap-k3"), (e: any) => e.code === "TOTAL_CAP");
+      // a different DAY does not reset a total cap
+      const asst = (await w.db.query<any>(`SELECT * FROM lumi_assistants WHERE slug='lumitest'`))[0];
+      const taskId = (await w.db.query<any>(`SELECT id FROM tasks ORDER BY created_at LIMIT 1`))[0].id;
+      await assert.rejects(() => w.db.tx((t) => createRun(t, taskId, asst, "RETRY", new Date(T0.getTime() + 3 * 86400_000), {})), (e: any) => e.code === "TOTAL_CAP");
+    } finally { if (old === undefined) delete process.env.LUMI_RUN_TOTAL_CAPS; else process.env.LUMI_RUN_TOTAL_CAPS = old; }
+  });
+
+  it("3a: worker bị ràng buộc theo trợ lý chỉ nhận lượt của đúng trợ lý đó; không ràng buộc thì nhận như cũ", async () => {
+    const w = await world(); await newTask(w);
+    assert.equal(await claimOutbox(w.db, "wx", 60, at(1), ["tro-ly-khac"]), null, "lượt của lumitest không được nhận bởi worker của trợ lý khác");
+    const row = await claimOutbox(w.db, "wx", 60, at(2), ["lumitest"]);
+    assert.equal(row?.kind, "DISPATCH_RUN");
+    const w2 = await world(); await newTask(w2);
+    assert.equal((await claimOutbox(w2.db, "wy", 60, at(1)))?.kind, "DISPATCH_RUN");
   });
 
   it("3b: thông báo chưa nối kênh thật (stub) KHÔNG được ghi là 'sent': đóng hàng nhưng outcome not_delivered và last_error NOT_DELIVERED", async () => {

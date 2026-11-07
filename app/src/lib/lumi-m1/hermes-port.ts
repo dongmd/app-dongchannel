@@ -38,5 +38,7 @@ export class SimulatedHermes implements HermesPort {
 
 /** Always-visible label for the UI so nobody mistakes the simulation for the real thing. */
 export function hermesModeLabel(h: HermesPort): string {
-  return (h as { simulated?: boolean }).simulated ? "ADAPTER GIẢ (mô phỏng) — chưa nối Hermes/Telegram thật" : "Hermes thật";
+  if ((h as { simulated?: boolean }).simulated) return "ADAPTER GIẢ (mô phỏng) — chưa nối Hermes/Telegram thật";
+  const profile = (h as { profileName?: string }).profileName;
+  return profile ? `Hermes THẬT — profile thử «${profile}» (lượt chạy có phí theo khóa riêng)` : "Hermes thật";
 }

@@ -26,6 +26,12 @@ if (!simulate && !real) { console.error("Choose --simulate (fake boundary) or --
 const simSlugs = new Set((process.env.LUMI_SIM_SLUGS ?? "").split(",").map((x) => x.trim()).filter(Boolean));
 if (simulate && simSlugs.size === 0 && !/@(localhost|127\.0\.0\.1|\[::1\])[:/]/.test(url)) { console.error("Refusing --simulate on a non-local database without LUMI_SIM_SLUGS (the simulated assistants this worker may serve)."); process.exit(2); }
 
+// Real mode serves ONLY the assistants listed in LUMI_REAL_SLUGS (claim-time filter: the other lane's runs are never claimed, failed or resent).
+const realSlugs = (process.env.LUMI_REAL_SLUGS ?? "").split(",").map((x) => x.trim()).filter(Boolean);
+if (real && realSlugs.length === 0) { console.error("Refusing --hermes-ssh without LUMI_REAL_SLUGS (the assistants this REAL worker may serve)."); process.exit(2); }
+const laneSlugs = real ? realSlugs : [...simSlugs];
+const hermesMode = real ? "ssh (Hermes thật qua SSH)" : "simulated (ADAPTER GIẢ)";
+
 const sql = connectLumi(url, { max: 3 });
 const db = postgresDb(sql);
 const workerId = `worker:${process.pid}`;
@@ -82,11 +88,11 @@ const hermes = real
 const notify: NotifyPort = { async send(payload) { console.log("[notify-stub] NOT sent (Telegram chưa nối):", JSON.stringify(payload)); return { delivered: false, reason: "stub: Telegram chưa nối, không gửi gì" }; } };
 
 async function tick() {
-  const r = await workerCycle(db, { hermes, notify, heartbeatMs: 10_000 }, workerId);
+  const r = await workerCycle(db, { hermes, notify, heartbeatMs: 10_000, hermesMode, slugs: laneSlugs.length ? laneSlugs : undefined }, workerId);
   if (r.results.length || r.reaped.uncertain || r.reaped.timedOut) console.log(new Date().toISOString(), JSON.stringify(r));
 }
 (async () => {
-  console.log(`[worker ${workerId}] mode=${real ? "REAL Hermes over SSH (test profile only)" : "SIMULATED (fake Hermes boundary)"}`);
+  console.log(`[worker ${workerId}] mode=${real ? "REAL Hermes (test profile only)" : "SIMULATED (fake Hermes boundary)"} serves=${laneSlugs.length ? laneSlugs.join(",") : "(all, local db)"}`);
   if (once) { await tick(); await sql.end(); return; }
   for (;;) { await tick().catch((e) => console.error("[worker]", String(e))); await new Promise((r) => setTimeout(r, 2000)); }
 })();

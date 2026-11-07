@@ -187,6 +187,7 @@ const MSG: Record<string, string> = {
   RETRY_LIMIT: "Hết lượt thử lại do lỗi.",
   REVISION_LIMIT: "Hết số vòng sửa cho phép.",
   DAILY_CAP: "Hết hạn mức chạy trong ngày.",
+  TOTAL_CAP: "Đã đủ tổng số lượt chạy Chủ đã duyệt cho trợ lý này (hạn mức thử). Không chạy thêm.",
   GONE: "Bản nháp đã hết hạn.",
   INVALID_TRANSITION: "Trạng thái hiện tại không cho phép thao tác này.",
 };

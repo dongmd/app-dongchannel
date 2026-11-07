@@ -55,6 +55,7 @@ const MESSAGES: Record<string, string> = {
   PROFILE_TOOLS_UNKNOWN: "Không đọc được công cụ của profile",
   PROFILE_EXCEEDS_ALLOWLIST: "Profile có công cụ ngoài danh sách cho phép",
   DAILY_CAP: "Hết hạn mức chạy trong ngày",
+  TOTAL_CAP: "Đã đủ tổng số lượt chạy Chủ đã duyệt cho trợ lý này (hạn mức thử)",
   RATE_LIMITED: "Quá nhiều yêu cầu",
   PAYLOAD_TOO_LARGE: "Thân yêu cầu quá lớn",
   M1_DISABLED: "Luồng M1 đang tắt (cờ m1_enabled)",
