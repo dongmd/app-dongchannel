@@ -15,7 +15,9 @@ import { SimulatedHermes } from "../src/lib/lumi-m1/hermes-port";
 const url = process.env.DATABASE_URL;
 const tokens = process.env.LUMI_BOT_TOKENS;
 if (!url || !tokens) { console.error("DATABASE_URL and LUMI_BOT_TOKENS are required"); process.exit(1); }
-const port = Number(process.argv[process.argv.indexOf("--port") + 1] || process.env.LUMI_MCP_PORT || 3199);
+const portArgIdx = process.argv.indexOf("--port");
+const port = Number((portArgIdx >= 0 ? process.argv[portArgIdx + 1] : undefined) || process.env.LUMI_MCP_PORT || 3199); // (a missing --port used to read argv[0] => NaN)
+if (!Number.isInteger(port) || port < 1 || port > 65535) { console.error(`invalid MCP port: ${port}`); process.exit(2); }
 const db = postgresDb(connectLumi(url, { max: 3 }));
 const ctx = { db, hermes: new SimulatedHermes(), now: () => new Date() }; // hermes port unused by MCP tools
 
