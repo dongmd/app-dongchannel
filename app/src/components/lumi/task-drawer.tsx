@@ -8,6 +8,7 @@ import { canReceiveTasks } from "@/lib/lumi/engine";
 import { outputOfTask, ownerLabel, project } from "@/lib/lumi/selectors";
 import { useLumi } from "./lumi-provider";
 import { CoordinationPanel } from "./coordination-panel";
+import { plainExpectedOutput, splitRequest } from "@/lib/lumi/progress";
 import { Drawer, fmtFull, LumiLink, SourceBadge, StatusBadge, NewOutputBadge } from "./ui";
 
 const VIA_LABEL = { web: "Web", telegram: "Telegram", system: "Hệ thống" } as const;
@@ -76,9 +77,19 @@ export function TaskDetail({ taskId }: { taskId: string | null }) {
 
       <div className="l-card" style={{ marginBottom: 12 }}>
         <div className="l-label" style={{ marginTop: 0 }}>Yêu cầu</div>
-        <div>{task.request}</div>
+        {(() => { const q = splitRequest(task.request); return (
+          <>
+            <div style={{ whiteSpace: "pre-wrap" }} data-testid="task-request">{q.readable}</div>
+            {q.technical && (
+              <details style={{ marginTop: 8 }} data-testid="task-technical">
+                <summary className="small muted">Hướng dẫn kỹ thuật đã gửi cho bot (không cần đọc)</summary>
+                <div className="small muted" style={{ whiteSpace: "pre-wrap", marginTop: 6 }}>{q.technical}</div>
+              </details>
+            )}
+          </>
+        ); })()}
         <div className="l-label">Đầu ra mong muốn</div>
-        <div>{task.outputWanted}</div>
+        <div>{plainExpectedOutput(task.outputWanted)}</div>
         {proj?.area === "YouTube" && (
           <>
             <div className="l-label">Video (để đếm theo video, không đếm theo việc)</div>

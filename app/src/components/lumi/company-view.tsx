@@ -8,6 +8,7 @@ import { GOAL_RESULT_LABEL, PLAN_STATUS_LABEL, PLAN_TONE, errText, lumiApi, newK
 import { useLumi } from "./lumi-provider";
 import { Empty, fmtTime, LumiLink, Modal } from "./ui";
 import { PoliciesPanel } from "./policies-panel";
+import { ProgressBar } from "./progress-bar";
 
 type Overview = { goals: any[]; projects: { id: string; name: string }[]; assistants: { id: string; slug: string; name: string; ready: boolean }[]; flags: { plans_enabled: boolean; m1_enabled: boolean }; config: { max_tasks: number | null; version_ttl_hours: number | null } };
 
@@ -50,6 +51,7 @@ export function CompanyView() {
         <strong>Giới hạn hiện tại.</strong>
         <span>{state.real?.hermesMode}. Chi phí AI chưa đo theo lượt; trần ngân sách chỉ giới hạn các khoản được ghi vào sổ, không thay hạn mức ở nhà cung cấp. Chưa có hành động bên ngoài, chưa có doanh thu. Nội dung kế hoạch do bot lập, chưa được kiểm chứng sự thật.</span>
       </div>
+      <ProgressBar />
       {loading && <p className="muted" data-testid="company-loading">Đang tải…</p>}
       {err && <div className="l-note" role="alert" data-testid="company-error">Không tải được: {err} <button className="l-btn sm" onClick={() => void load()}>Thử lại</button></div>}
       {data && !data.flags.plans_enabled && (

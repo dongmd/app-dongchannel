@@ -21,6 +21,7 @@ import { buildAdminStatus, markNotificationsSeen } from "./admin-status";
 import { archiveAssistant, createAssistant, listAssistants, requestVerify, updateAssistant, type AssistantInput } from "./assistants";
 import { addDependency, answerHandoff, cancelHandoff, clearRecheck, decideChange, listChangeProposals, proposeHandoff, removeDependency, reopenTask, setProjectPmAuto, taskCoordination } from "./coordination";
 import { archiveRole, createAppointment, createBotCase, createRole, createTaskWithRole, decideBotCase, endAppointment, evaluateStaff, listRoster, setExecutionLevel, setSkill, transferAppointment } from "./roster";
+import { buildProgress } from "./progress-data";
 import { cancelPlan, closeGoal, companyOverview, createGoal, createPlan, decidePlan, getPlanDetail, reconcileLedger, recordLedger, revisePlan, setPlansEnabled, type PlanDecision } from "./plans";
 
 export type Principal =
@@ -105,6 +106,7 @@ export function fail(e: unknown): ApiRes {
     return { status, data: null, error: { code: e.code, message: MESSAGES[e.code] ?? e.code, details: Object.keys(e.data).length ? e.data : undefined } };
   }
   // Unknown error: never leak internals (SQL text, stack) to the client.
+  console.error("[lumi-api] unexpected error:", (e as Error)?.message ?? e); // server log only (no SQL or stack is returned to the client)
   return { status: 500, data: null, error: { code: "INTERNAL", message: "Lỗi hệ thống" } };
 }
 const ok = (data: any, status = 200): ApiRes => ({ status, data });
@@ -575,6 +577,12 @@ export const HANDLERS: Record<string, (ctx: ApiCtx, req: ApiReq) => Promise<ApiR
     if (!["APPROVE", "REJECT"].includes(req.body.decision)) throw new LumiError("VALIDATION_ERROR", 400, { missing: ["decision"] });
     const r = await decideBotCase(ctx.db, { actorRef: u.actorRef, caseId: uuid(req.params.id, "case_id"), decision: req.body.decision, note: str(req.body.note), now: ctx.now() });
     return r.alreadyProcessed ? processed({ case: r.case }) : ok({ case: r.case });
+  },
+  // Tiến trình: where each goal's workflow is and what the owner does next (read-only; any signed-in role)
+  async progress(ctx, req) {
+    userOnly(req.principal);
+    const planId = req.params?.planId ? uuid(req.params.planId, "plan_id") : undefined;
+    return ok(await buildProgress(ctx.db, ctx.now(), { planId }));
   },
   async cancel(ctx, req) {
     const u = userOnly(req.principal);

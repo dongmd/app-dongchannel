@@ -35,7 +35,7 @@ async function waitHttp(url: string, ms = 240_000) {
 }
 function startNext(port: number, extra: Record<string, string>): ChildProcess {
   const c = spawn(process.execPath, [nextBin(), "dev", "-p", String(port)], {
-    cwd: process.cwd(), stdio: "ignore",
+    cwd: process.cwd(), stdio: process.env.LUMI_UI_LOG ? ["ignore", fs.openSync(process.env.LUMI_UI_LOG, "a"), fs.openSync(process.env.LUMI_UI_LOG, "a")] : "ignore",
     env: { ...process.env, DATABASE_URL: pg.url, NEXTAUTH_URL: `http://localhost:${port}`, NEXTAUTH_SECRET: "ui-test-only-secret-0123456789abcdef0123", NODE_ENV: "development", ...extra },
   });
   kids.push(c);
@@ -876,5 +876,49 @@ describe("IMP-03 — phối hợp, tổ chức, năng lực, đánh giá (adapte
     assert.deepEqual(st, [403, 403, 200, 403], "ghi bị từ chối; đọc đánh giá được");
     assert.deepEqual(await counts(), before);
     await ctx.close();
+  });
+});
+
+describe("Tiến trình — thanh cho biết bot hay Chủ đang giữ việc và việc kế tiếp (adapter GIẢ)", () => {
+  it("OWNER: tạo mục tiêu + kế hoạch ⇒ thanh hiện đúng giai đoạn, tới «Đến lượt bạn» với liên kết duyệt; trang kế hoạch cũng có thanh; VIEWER thấy nhưng không có thao tác ghi", async () => {
+    const ctx = await browser.newContext(); const page = await ctx.newPage();
+    await login(page, base, "owner@dev.local");
+    await pg.sql`UPDATE lumi_assistants SET dispatch_enabled=true WHERE slug='lumitest'`;
+    const [proj] = await pg.sql`SELECT id FROM lumi_projects WHERE slug='test-offer-us'`;
+    const [lead] = await pg.sql`SELECT id FROM lumi_assistants WHERE slug='lumitest'`;
+    await go(page, `${base}/lumi/company`);
+    const made = await page.evaluate(async ([projectId, leadId]) => {
+      await fetch("/api/v1/lumi/flags", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ key: "plans_enabled", value: true }) });
+      const g = await (await fetch("/api/v1/lumi/goals", { method: "POST", headers: { "content-type": "application/json", "idempotency-key": "ui-progress-goal-0001" }, body: JSON.stringify({ project_id: projectId, title: "[TEST] Mục tiêu thanh tiến trình", outcome: "Kiểm tra thanh tiến trình bằng dữ liệu mô phỏng" }) })).json();
+      const p = await fetch("/api/v1/lumi/plans", { method: "POST", headers: { "content-type": "application/json", "idempotency-key": "ui-progress-plan-0001" }, body: JSON.stringify({ goal_id: g.data?.goal?.id, lead_assistant_id: leadId }) });
+      return { goal: g.data?.goal?.code as string | undefined, plan: p.status };
+    }, [proj!.id as string, lead!.id as string]);
+    assert.ok(made.goal && (made.plan === 201 || made.plan === 200), JSON.stringify(made));
+    await go(page, `${base}/lumi/company`);
+    const card = page.getByTestId(`progress-${made.goal}`);
+    await card.waitFor({ timeout: 60_000 }).catch(async (e) => { throw new Error(`${e}
+PAGE: ${(await page.locator("main").innerText()).slice(0, 800)}`); });
+    assert.match(await card.getAttribute("data-stage") ?? "", /RUN_|WAITING|AWAITING_APPROVAL|NO_PLAN/);
+    await (async () => { const t0 = Date.now(); for (;;) { if ((await card.getAttribute("data-stage")) === "AWAITING_APPROVAL") return; if (Date.now() - t0 > 120_000) throw new Error(`stage stuck at ${await card.getAttribute("data-stage")}: ${await card.innerText()}`); await page.waitForTimeout(1500); } })();
+    assert.match(await card.getByTestId("progress-who").innerText(), /Đến lượt bạn/);
+    const href = await card.getByTestId("progress-next").getAttribute("href");
+    assert.match(href ?? "", /\/lumi\/plans\//);
+    assert.match(await card.getByTestId("progress-headline").innerText(), /chờ bạn duyệt/);
+    await go(page, `${base}${href}`);
+    await page.getByTestId("plan-view").waitFor({ timeout: 60_000 });
+    await page.getByTestId(`progress-${made.goal}`).waitFor({ timeout: 30_000 });
+    // lệnh kỹ thuật gửi cho bot được gấp lại; phần «Yêu cầu» chỉ còn phần dễ đọc
+    const [pt] = await pg.sql`SELECT t.code FROM lumi_plans p JOIN tasks t ON t.id=p.planning_task_id JOIN lumi_goals g ON g.id=p.goal_id WHERE g.code=${made.goal!}`;
+    await go(page, `${base}/lumi/projects/test-offer-us?task=${pt!.code}`);
+    await page.getByTestId("task-technical").waitFor({ timeout: 60_000 });
+    assert.equal(/plan_submit_version|schema=1/.test(await page.getByTestId("task-request").innerText()), false, "phần «Yêu cầu» không còn thuật ngữ kỹ thuật");
+    assert.equal(await page.getByTestId("task-technical").evaluate((el) => (el as HTMLDetailsElement).open), false, "khối kỹ thuật mặc định gấp");
+    // VIEWER đọc được thanh nhưng không đổi được gì
+    const vctx = await browser.newContext(); const vpage = await vctx.newPage();
+    assert.equal((await login(vpage, base, "viewer@dev.local")).user?.role, "VIEWER");
+    await go(vpage, `${base}/lumi/company`);
+    await vpage.getByTestId(`progress-${made.goal}`).waitFor({ timeout: 60_000 });
+    assert.equal(await vpage.getByTestId("goal-create-open").count(), 0);
+    await vctx.close(); await ctx.close();
   });
 });

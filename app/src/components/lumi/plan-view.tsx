@@ -7,6 +7,7 @@ import { ArrowLeft, ShieldCheck } from "lucide-react";
 import { CATEGORY_LABEL, GOAL_RESULT_LABEL, PLAN_STATUS_LABEL, PLAN_TONE, SOURCE_LABEL, TASK_STATUS_LABEL, VERSION_LABEL, errText, fmtMoney, lumiApi, newKey } from "@/lib/lumi/plans-client";
 import { useLumi } from "./lumi-provider";
 import { Empty, fmtFull, fmtTime, LumiLink, Modal } from "./ui";
+import { ProgressBar } from "./progress-bar";
 
 const AI_NOTE = "Chi phí AI chưa đo theo lượt. Trần ngân sách chỉ giới hạn các khoản được ghi vào sổ; không thay thế hạn mức ở tài khoản nhà cung cấp.";
 
@@ -50,6 +51,7 @@ export function PlanView({ id }: { id: string }) {
 
   return (
     <div className="l-grid" style={{ gap: 16 }} data-testid="plan-view">
+      <ProgressBar planId={id} />
       <div>
         <LumiLink href="/lumi/company" className="small muted l-row" style={{ gap: 4 }}><ArrowLeft size={14} /> Tổng quan công ty</LumiLink>
         <h1 style={{ margin: "6px 0 2px" }}>{plan.code} · {goal.title}</h1>
