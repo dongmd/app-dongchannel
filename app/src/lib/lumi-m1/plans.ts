@@ -704,4 +704,12 @@ export async function pendingPlans(db: Db) {
        JOIN lumi_goals g ON g.id=p.goal_id WHERE p.status IN ('PENDING_APPROVAL','EXECUTING','PAUSED_ADJUSTMENT','DEFERRED') ORDER BY v.submitted_at`);
 }
 
+
+/** Every REFUSED plan submission is recorded (the refusal itself rolls back nothing else): the owner sees how many tries the bot made and which sections failed. */
+export async function recordPlanRejection(db: Db, a: { runId: string; errors: string[]; now: Date }) {
+  const [r] = await db.query<any>(`SELECT r.task_id, x.slug FROM lumi_task_runs r JOIN lumi_assistants x ON x.id=r.assistant_id WHERE r.id=$1`, [a.runId]);
+  if (!r) return;
+  await audit(db, "plan.submit_rejected", `bot:${r.slug}`, { taskId: r.task_id, runId: a.runId, errors: a.errors.slice(0, 40) }, a.now);
+}
+
 export { contentHash };

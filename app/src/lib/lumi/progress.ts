@@ -3,6 +3,7 @@
  * Pure function over RECORDED facts (plan status, planning run state/time, task statuses, run counts). It never estimates progress it cannot see:
  * while a bot is working the bar shows elapsed time against the run limit, not a percentage.
  */
+import type { CheckItem } from "./progress-checklist";
 export type Tone = "info" | "action" | "warn" | "error" | "done";
 export type Who = "BOT" | "OWNER" | "NONE";
 
@@ -27,6 +28,8 @@ export interface Progress {
   runs: { used: number; cap: number | null } | null;
   tasks: { done: number; total: number } | null;
   steps: Step[];
+  /** Detailed checklist with a status per step (filled by the data layer, which knows the submission attempts). */
+  checklist: CheckItem[] | null;
 }
 
 const STEP_LABELS = ["Mục tiêu", "Bot lập kế hoạch", "Bạn duyệt kế hoạch", "Bot thực hiện", "Hoàn tất"];
@@ -37,7 +40,7 @@ export const fmtDuration = (s: number) => (s < 60 ? `${s} giây` : `${Math.floor
 
 export function deriveProgress(i: ProgressInput, now: Date): Progress {
   const base = { goal_code: i.goal.code, goal_title: i.goal.title, plan_code: i.plan?.code ?? null, plan_id: i.plan?.id ?? null, run: null as Progress["run"], runs: i.runs, tasks: null as Progress["tasks"] };
-  const out = (p: Omit<Progress, keyof typeof base>): Progress => ({ ...base, ...p });
+  const out = (p: Omit<Progress, keyof typeof base | "checklist">): Progress => ({ ...base, checklist: null, ...p });
   const planHref = i.plan ? `/lumi/plans/${i.plan.id}` : null;
   const capHit = i.runs?.cap != null && i.runs.used >= i.runs.cap;
   const runsText = i.runs ? ` Lượt chạy đã dùng: ${i.runs.used}${i.runs.cap != null ? `/${i.runs.cap}` : ""}.` : "";

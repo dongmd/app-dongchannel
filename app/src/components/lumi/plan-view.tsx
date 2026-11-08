@@ -64,8 +64,8 @@ export function PlanView({ id }: { id: string }) {
       <div className="l-banner" role="note" data-testid="plan-honesty"><strong>Đọc kỹ.</strong><span>{state.real?.hermesMode}. {AI_NOTE} Nội dung kế hoạch do bot lập, chưa được kiểm chứng sự thật; duyệt không thay cho kiểm chứng.</span></div>
 
       {plan.status === "PAUSED_ADJUSTMENT" && <div className="l-note" role="alert" data-testid="plan-paused"><strong>Tạm dừng chờ điều chỉnh ngân sách.</strong> Phần thực tế đã ghi cộng cam kết vượt trần. Việc mới không được gửi cho bot. Yêu cầu bot lập phiên bản mới với trần cao hơn hoặc giảm phạm vi.</div>}
-      {plan.status === "DRAFTING" && <PlanningState d={d} />}
-      {plan.status === "NEEDS_REVISION" && !pending && <PlanningState d={d} />}
+      {plan.status === "DRAFTING" && <PlanningState d={d} canAct={state.real?.role !== "VIEWER"} onRetry={(pt: any) => void post(`/api/v1/tasks/${pt.id}/runs`, { mode: "RETRY", expected_status: pt.status }, "Đã giao lại cho bot lập kế hoạch (một lượt chạy mới).", newKey())} />}
+      {plan.status === "NEEDS_REVISION" && !pending && <PlanningState d={d} canAct={state.real?.role !== "VIEWER"} onRetry={(pt: any) => void post(`/api/v1/tasks/${pt.id}/runs`, { mode: "RETRY", expected_status: pt.status }, "Đã giao lại cho bot sửa kế hoạch (một lượt chạy mới).", newKey())} />}
 
       {pending && (
         <section className="l-card" data-testid="pending-version">
@@ -176,14 +176,15 @@ function Metric({ label, value, testid }: { label: string; value: string; testid
   return <div className="l-metric"><div className="small muted">{label}</div><div className="l-metric-v" data-testid={testid}>{value}</div></div>;
 }
 
-function PlanningState({ d }: { d: any }) {
+function PlanningState({ d, canAct, onRetry }: { d: any; canAct: boolean; onRetry: (pt: any) => void }) {
   const pt = d.planningTask;
   const taskLink = pt?.project_slug ? <LumiLink href={`/lumi/projects/${pt.project_slug}?task=${pt.code}`} className="l-chiplink">Mở việc {pt.code}</LumiLink> : null;
   if (pt && ["FAILED", "ON_HOLD", "CANCELLED", "SYNC_DELAYED"].includes(pt.status)) {
     return (
       <div className="l-note" role="alert" data-testid="planning-failed">
         <strong>Bot chưa lập được kế hoạch.</strong> Việc {pt.code}: {TASK_STATUS_LABEL[pt.status] ?? pt.status}{pt.run_state ? ` · lượt chạy ${pt.run_state}` : ""}{pt.error_code ? ` · lỗi ${pt.error_code}` : ""}, cập nhật {fmtTime(pt.updated_at)}.
-        {" "}Chưa có gì được thực hiện hay chi tiêu. Bạn có thể mở việc để thử lại hoặc hủy kế hoạch bên dưới. {taskLink}
+        {" "}Chưa có gì được thực hiện hay chi tiêu. Giao lại sẽ mở MỘT lượt chạy mới (tính vào hạn mức lượt); hoặc hủy kế hoạch bên dưới. {taskLink}
+        {canAct && pt.status === "FAILED" && <div style={{ marginTop: 8 }}><button className="l-btn primary sm" onClick={() => onRetry(pt)} data-testid="planning-retry">Giao lại lượt lập kế hoạch</button></div>}
       </div>
     );
   }

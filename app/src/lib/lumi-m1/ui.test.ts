@@ -904,6 +904,11 @@ PAGE: ${(await page.locator("main").innerText()).slice(0, 800)}`); });
     const href = await card.getByTestId("progress-next").getAttribute("href");
     assert.match(href ?? "", /\/lumi\/plans\//);
     assert.match(await card.getByTestId("progress-headline").innerText(), /chờ bạn duyệt/);
+    // checklist chi tiết: các bước bot đã xong, bước «Bạn duyệt» là bước hiện tại
+    await card.getByTestId("progress-checklist").waitFor();
+    assert.equal(await card.getByTestId("check-submit").getAttribute("data-state"), "done");
+    assert.equal(await card.getByTestId("check-approve").getAttribute("data-state"), "current");
+    assert.equal(await card.getByTestId("check-finish").getAttribute("data-state"), "todo");
     await go(page, `${base}${href}`);
     await page.getByTestId("plan-view").waitFor({ timeout: 60_000 });
     await page.getByTestId(`progress-${made.goal}`).waitFor({ timeout: 30_000 });

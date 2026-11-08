@@ -4,7 +4,7 @@ import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { freshDb } from "./testdb";
 import { createAssistant } from "./assistants";
-import { createGoal, createPlan, setPlansEnabled } from "./plans";
+import { createGoal, createPlan, recordPlanRejection, setPlansEnabled } from "./plans";
 import { buildProgress } from "./progress-data";
 
 const OWNER = "web:owner@test";
@@ -30,6 +30,16 @@ describe("Tiến trình — dữ liệu thật (lớp A)", () => {
     await db.query(`UPDATE lumi_task_runs SET state='RUNNING',started_at=$1,acked_at=$1,deadline_at=$1::timestamptz + interval '600 seconds' WHERE state='PENDING'`, [now().toISOString()]);
     r = await buildProgress(db, new Date(now().getTime()));
     assert.equal(r.items[0]!.stage, "RUN_ACTIVE"); assert.equal(r.items[0]!.run?.limit_seconds, 600);
+    // checklist: a refused submission is recorded, so the owner sees the attempt count and which sections failed
+    const [run] = await db.query<any>(`SELECT id FROM lumi_task_runs WHERE state='RUNNING'`);
+    await recordPlanRejection(db, { runId: run.id, errors: ["schema(=1)", "opportunity.evidence[0]"], now: now() });
+    await recordPlanRejection(db, { runId: run.id, errors: ["opportunity.evidence[0]"], now: now() });
+    const ck = (await buildProgress(db, now())).items[0]!.checklist!;
+    const sub = ck.find((c) => c.key === "submit")!;
+    assert.equal(sub.state, "current"); assert.match(sub.detail ?? "", /2 lần.*1 mục chưa đạt/);
+    assert.deepEqual(sub.sub.filter((x) => x.state === "bad").map((x) => x.key), ["opportunity"]);
+    assert.match(sub.sub.find((x) => x.key === "opportunity")!.note ?? "", /claim, ref, as_of/);
+    assert.equal(ck.find((c) => c.key === "start")!.state, "done");
     assert.equal((await buildProgress(db, now(), { planId: "00000000-0000-0000-0000-000000000000" })).items.length, 0);
   });
 });

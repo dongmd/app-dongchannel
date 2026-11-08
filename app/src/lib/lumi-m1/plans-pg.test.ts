@@ -139,6 +139,10 @@ describe("IMP-01 trên PostgreSQL server thật", () => {
     assert.ok(msg.includes("grants_requested") && msg.includes("depends_on"), msg);
     assert.equal((await db.query(`SELECT 1 FROM lumi_plan_versions`)).length >= 0, true);
     assert.equal((await db.query(`SELECT 1 FROM lumi_plan_versions WHERE plan_id=$1`, [p.data.plan.id])).length, 0);
+    assert.match(msg, /grants_requested.*cần/, "mỗi lỗi kèm giải thích cần gì");
+    const rej = await db.query<any>(`SELECT after_json FROM audit_events WHERE action='plan.submit_rejected' AND after_json->>'runId'=$1`, [run.id]);
+    assert.equal(rej.length, 1, "lần nộp bị từ chối được ghi lại để hiển thị checklist");
+    assert.ok((rej[0].after_json.errors as string[]).some((x) => x.startsWith("grants_requested")));
     const other = await handleRpc(ctx(), { kind: "bot", slug: "khac", actorRef: "bot:khac" } as any, { jsonrpc: "2.0", id: 3, method: "tools/call", params: { name: "plan_submit_version", arguments: { run_id: run.id, body: bodyOf(w.slug) } } });
     assert.equal(other.result.isError, true);
     const ok = await handleRpc(ctx(), w.bot as any, { jsonrpc: "2.0", id: 4, method: "tools/call", params: { name: "plan_submit_version", arguments: { run_id: run.id, body: bodyOf(w.slug) } } });
