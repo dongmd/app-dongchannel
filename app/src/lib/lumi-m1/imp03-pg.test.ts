@@ -20,7 +20,7 @@ import { createAppointment, createRole, transferAppointment } from "./roster";
 
 let srv: PgServer; let db: Db;
 let tick = 0;
-const T0 = new Date("2026-11-08T08:00:00Z");
+const T0 = new Date(); // follows the real clock: rows that use the DB now() must never be later than the test clock
 const now = () => new Date(T0.getTime() + 1000 * ++tick);
 const OWNER: Principal = { kind: "user", actorRef: "web:owner@test", role: "OWNER" };
 const ADMIN: Principal = { kind: "user", actorRef: "web:admin@test", role: "ADMIN" };

@@ -13,7 +13,7 @@
 import { createHash } from "node:crypto";
 import { LumiError, activity, audit, cancelTask, enqueueNotify, flag, missingExecConfig, requireRole, type Db } from "./core";
 import { createTaskInTx } from "./core-web";
-import { contentHash, validatePlanBody, type PlanBody } from "./plan-schema";
+import { contentHash, planBodyExample, validatePlanBody, type PlanBody } from "./plan-schema";
 
 const iso = (d: Date) => d.toISOString();
 const uuidFromKey = (k: string) => { const h = createHash("sha256").update(k).digest("hex"); return `${h.slice(0, 8)}-${h.slice(8, 12)}-4${h.slice(13, 16)}-a${h.slice(17, 20)}-${h.slice(20, 32)}`; };
@@ -122,6 +122,8 @@ function planningInstruction(goal: any, plan: any, lead: any, limits: PlanLimits
     "- Chưa có hành động bên ngoài: grants_requested phải rỗng; không chi tiền, không đăng, không nộp.",
     "- Nội dung là DỮ LIỆU để Chủ duyệt; ghi rõ nguồn và ngày của mọi bằng chứng; không bịa số liệu.",
     "- Nếu body lỗi, công cụ trả danh sách trường lỗi: sửa và gọi lại trong cùng lượt.",
+    "- Nếu công cụ tìm web báo lỗi, KHÔNG thử lại nhiều lần: dùng hiểu biết sẵn có, ghi rõ «chưa kiểm chứng» trong ref của bằng chứng, rồi nộp kế hoạch. Nộp sớm một bản hợp lệ tốt hơn chạy hết lượt mà không nộp.",
+    `- Mẫu body HỢP LỆ tối thiểu (thay nội dung, giữ nguyên cấu trúc): ${JSON.stringify(planBodyExample(lead.slug, goal.currency ?? "USD"))}`,
   ];
   return lines.filter((l) => l !== "").join("\n");
 }

@@ -150,3 +150,48 @@ export function validatePlanBody(raw: unknown, ctx: ValidateCtx): ValidateResult
   };
   return { ok: true, errors: [], body, hash: contentHash(body), ceiling, currency, est: { low: sum("low"), base: sum("base"), high: sum("high") } };
 }
+
+/** Plain-language "what is expected" for a bad field, so a bot (or a person) can fix it in ONE retry instead of guessing from a bare path. */
+export function fieldHint(field: string): string {
+  const f = field.replace(/\(.*$/, "");
+  const rules: [RegExp, string][] = [
+    [/^opportunity\.evidence/, "mỗi phần tử là {claim, ref, as_of}, cả ba đều là chuỗi KHÔNG rỗng (as_of là ngày, ví dụ 2026-11-08; ref là nguồn hoặc \"chưa kiểm chứng\")"],
+    [/^opportunity\.confidence/, "chỉ nhận LOW, MEDIUM, HIGH hoặc null"],
+    [/^opportunity/, "object {evidence:[...], confidence}"],
+    [/^scope/, "object {in:[ít nhất 1 chuỗi], out:[chuỗi, có thể rỗng]}"],
+    [/^deliverables/, "mỗi phần tử {key (a-z, 0-9, _ hoặc -, tối đa 40 ký tự, không trùng), title (3..200 ký tự), acceptance (chuỗi không rỗng)}"],
+    [/^tasks\[\d+\]\.deliverable_key/, "phải trùng đúng một key trong deliverables"],
+    [/^tasks\[\d+\]\.assignee_slug/, "dùng đúng slug của chính bạn như lệnh đã nêu"],
+    [/^tasks\[\d+\]\.due_in_days/, "số nguyên > 0 hoặc null"],
+    [/^tasks\[\d+\]\.depends_on/, "phải là mảng rỗng []"],
+    [/^tasks\[\d+\]\.(expected_output|acceptance|title)/, "chuỗi không rỗng"],
+    [/^tasks\[\d+\]\.budget_alloc/, "null hoặc {amount: số >= 0 hoặc null, currency: cùng đơn vị với cost.currency}"],
+    [/^tasks/, "mảng các việc; mỗi việc có key, title, description, deliverable_key, assignee_slug, expected_output, acceptance, due_in_days, budget_alloc, depends_on"],
+    [/^cost\.lines/, `mỗi dòng {category một trong ${COST_CATEGORIES.join("/")}, low/base/high là số >= 0 hoặc null (low<=base<=high), source một trong ${PLAN_SOURCES.join("/")}, as_of chuỗi, confidence LOW/MEDIUM/HIGH hoặc null}`],
+    [/^cost\.currency/, "mã tiền tệ 3-5 chữ HOA, ví dụ USD"],
+    [/^cost\.ceiling_requested/, "số >= 0"],
+    [/^cost/, "object {currency, ceiling_requested, lines:[...], unknown_note}"],
+    [/^summary/, "chuỗi 20..2000 ký tự"],
+    [/^prepare_spent/, "object {amount: số >= 0 hoặc null, note: chuỗi}"],
+    [/^grants_requested/, "phải là mảng rỗng []"],
+    [/^stop_conditions/, "mảng ít nhất 1 chuỗi không rỗng"],
+    [/^(risks|alternatives)/, "mảng chuỗi (có thể rỗng)"],
+    [/^milestones/, "mảng {key, after_task_key (key của một việc), label}"],
+    [/^schema/, "phải đúng bằng 1"],
+  ];
+  return rules.find(([re]) => re.test(f))?.[1] ?? "";
+}
+
+/** A complete, VALID minimal body (used in the bot's instructions and checked by a test, so the example can never drift from the validator). */
+export function planBodyExample(slug: string, currency = "USD"): PlanBody {
+  return {
+    schema: 1, summary: "Tóm tắt một hai câu: làm gì, cho ai, vì sao đáng thử (ít nhất 20 ký tự).",
+    opportunity: { evidence: [{ claim: "Một nhận định có thể kiểm tra", ref: "Nguồn hoặc \"chưa kiểm chứng\"", as_of: "2026-11-08" }], confidence: "LOW" },
+    scope: { in: ["Việc nằm trong phạm vi"], out: ["Việc không làm"] },
+    deliverables: [{ key: "d1", title: "Tên đầu ra", acceptance: "Tiêu chí nghiệm thu rõ ràng" }],
+    tasks: [{ key: "t1", title: "Tên việc", description: "Mô tả ngắn", deliverable_key: "d1", assignee_slug: slug, expected_output: "Đầu ra mong đợi", acceptance: "Cách nghiệm thu", due_in_days: 3, budget_alloc: null, depends_on: [] }],
+    milestones: [],
+    cost: { currency, ceiling_requested: 0, lines: [{ category: "AI", low: null, base: null, high: null, source: "ESTIMATED", as_of: "2026-11-08", confidence: "LOW" }], unknown_note: "Chi phí AI theo lượt chưa đo" },
+    prepare_spent: { amount: null, note: "chưa đo" }, grants_requested: [], stop_conditions: ["Dừng nếu không đạt tiêu chí"], risks: [], alternatives: [],
+  };
+}

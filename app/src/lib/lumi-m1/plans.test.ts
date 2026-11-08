@@ -10,7 +10,7 @@ import { freshDb } from "./testdb";
 import { LumiError, ackRun, decide, processOutbox, setDispatchEnabled, submitOutput, type Db, type HermesPort, type NotifyPort } from "./core";
 import { cancelPlan, closeGoal, createGoal, createPlan, decidePlan, drainPlans, evaluatePlan, getPlanDetail, planLimits, planTick, reconcileLedger, recordLedger, revisePlan, setPlansEnabled, submitPlanVersion } from "./plans";
 import { computeEconomics, ledgerToBudget } from "./economics";
-import { validatePlanBody } from "./plan-schema";
+import { fieldHint, planBodyExample, validatePlanBody } from "./plan-schema";
 
 const T0 = new Date("2026-11-07T08:00:00Z");
 const at = (sec: number) => new Date(T0.getTime() + sec * 1000);
@@ -470,3 +470,16 @@ describe("IMP-01 miền kế hoạch (PGlite + migration thật)", () => {
     void evaluatePlan;
   });
 });
+
+describe("plan-schema — lỗi có giải thích và mẫu hợp lệ (sau lượt thử thật đầu tiên bot không sửa được vì chỉ thấy đường dẫn trường)", () => {
+  it("mẫu body trong lệnh gửi bot LUÔN hợp lệ; mỗi lỗi thường gặp có gợi ý cần gì", () => {
+    const ctx = { maxTasks: 3, assistants: new Map([["aff-trial", true]]) };
+    const r = validatePlanBody(planBodyExample("aff-trial"), ctx);
+    assert.equal(r.ok, true, r.errors.join(" | "));
+    const bad = validatePlanBody({ ...planBodyExample("aff-trial"), opportunity: { evidence: [{ claim: "x" }], confidence: "MAYBE" }, deliverables: [{ key: "D 1", title: "t" }] }, ctx);
+    assert.equal(bad.ok, false);
+    for (const f of bad.errors) assert.ok(fieldHint(f).length > 10, `thiếu gợi ý cho ${f}`);
+    assert.match(fieldHint("opportunity.evidence[0]"), /claim, ref, as_of/);
+  });
+});
+

@@ -14,6 +14,7 @@ import { ackRun, LumiError } from "./core";
 import { handle, type ApiCtx, type Principal } from "./handlers";
 import { addPlanItem, proposeProject, requestAction, taskPlanContext, updatePlanItem } from "./autonomy";
 import { submitPlanVersion } from "./plans";
+import { fieldHint } from "./plan-schema";
 import { proposeHandoff, proposeReassign, respondHandoff } from "./coordination";
 
 export const MCP_TOOLS = [
@@ -144,7 +145,7 @@ async function callTool(ctx: ApiCtx, p: Extract<Principal, { kind: "bot" }>, nam
       const r = await submitPlanVersion(ctx.db, { runId, botSlug: p.slug, body: args?.body, now: ctx.now() });
       return text(r.alreadyProcessed ? `Lượt này đã nộp phiên bản ${r.version.version} trước đó; không nộp lại. Dừng.` : `Đã nộp phiên bản ${r.version.version}, chờ Chủ duyệt. Dừng lại, không làm gì thêm.`);
     } catch (e) {
-      if (e instanceof LumiError && e.code === "VALIDATION_ERROR") return text(`Body KHÔNG hợp lệ, chưa lưu gì. Sửa các trường sau rồi gọi lại plan_submit_version:\n${((e.data.errors as string[]) ?? []).map((x) => `- ${x}`).join("\n")}`, true);
+      if (e instanceof LumiError && e.code === "VALIDATION_ERROR") return text(`Body KHÔNG hợp lệ, chưa lưu gì. Sửa các trường sau rồi gọi lại plan_submit_version:\n${((e.data.errors as string[]) ?? []).map((x) => { const h = fieldHint(x); return h ? `- ${x}: cần ${h}` : `- ${x}`; }).join("\n")}`, true);
       if (e instanceof LumiError) return text(`Không nộp được: ${e.code}${e.data && Object.keys(e.data).length ? " " + JSON.stringify(e.data) : ""}`, true);
       throw e;
     }
