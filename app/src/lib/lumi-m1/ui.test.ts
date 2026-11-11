@@ -1191,3 +1191,109 @@ describe("Đợt 5 — Tài chính: giới hạn chi phí, ba sổ tiền tách 
     await ctx.close();
   });
 });
+
+describe("Đợt 6 — Routine, Ý tưởng, Mẫu việc, Cài đặt, Tìm kiếm, Soát kiến thức (adapter GIẢ, dữ liệu mô phỏng)", () => {
+  it("OWNER: cài đặt đổi có lịch sử → ý tưởng thành ghi chú chờ duyệt → mẫu: tạo, duyệt, tạo việc từ mẫu → routine: tạo TẮT, bật bị chặn khi thiếu giới hạn, thông báo bật và chạy ngay → tìm kiếm bỏ dấu → trang soát kiến thức mở được", async () => {
+    const ctx = await browser.newContext(); const page = await ctx.newPage();
+    assert.equal((await login(page, base, "owner@dev.local")).user?.role, "OWNER");
+    const [proj] = await pg.sql`SELECT id,name FROM lumi_projects WHERE slug='test-offer-us'`;
+    const [bot] = await pg.sql`SELECT id,name FROM lumi_assistants WHERE slug='lumitest'`;
+    await pg.sql`UPDATE lumi_assistants SET dispatch_enabled=true WHERE slug='lumitest'`;
+    // cài đặt
+    await go(page, `${base}/lumi/settings`);
+    await page.getByTestId("settings-view").waitFor({ timeout: 60_000 });
+    assert.match(await page.getByTestId("setting-value-proposal_expiry_days").innerText(), /7 ngày \(mặc định\)/);
+    await page.getByTestId("setting-input-proposal_expiry_days").fill("14");
+    await page.getByTestId("setting-save-proposal_expiry_days").click();
+    await until(async () => (await pg.sql`SELECT value FROM lumi_setting_values WHERE key='proposal_expiry_days'`)[0]?.value === "14", "setting saved");
+    // ý tưởng → ghi chú chờ duyệt
+    await go(page, `${base}/lumi/ideas`);
+    await page.getByTestId("ideas-view").waitFor({ timeout: 60_000 });
+    await page.getByTestId("id-title").fill("Ghi chú từ khóa mùa hè");
+    await page.getByTestId("id-body").fill("Từ khóa mùa hè tăng 20% (tính đến 2026-11-01)");
+    await page.getByTestId("id-submit").click();
+    const idea = await until(async () => (await pg.sql`SELECT id,code FROM lumi_ideas WHERE title='Ghi chú từ khóa mùa hè'`)[0], "idea created");
+    const ic = idea.code as string;
+    await page.getByTestId(`idea-${ic}`).waitFor({ timeout: 30_000 });
+    await page.getByTestId(`idea-classify-${ic}`).click();
+    await page.getByTestId(`idea-accept-${ic}`).waitFor({ timeout: 30_000 });
+    await page.getByTestId(`idea-accept-${ic}`).click();
+    await page.getByTestId(`idea-ref-${ic}`).waitFor({ timeout: 30_000 });
+    assert.equal((await pg.sql`SELECT count(*)::int n FROM lumi_knowledge_items WHERE status='PROPOSED'`)[0]!.n >= 1, true, "ý tưởng chỉ thành ĐỀ XUẤT kiến thức");
+    // mẫu
+    await go(page, `${base}/lumi/templates`);
+    await page.getByTestId("templates-view").waitFor({ timeout: 60_000 });
+    await clickUntil(page, "tp-add", "tp-form");
+    const tf: Record<string, string> = { name: "Soát bài đăng", description: "Soát nhanh một bài đăng. Hôm qua đã làm ngày 10/11/2026", when: "Khi có bài mới", steps: "1. Đọc 2. Ghi chú", inputs: "Liên kết bài", outputs: "Bản nhận xét", title: "Soát bài đăng mới" };
+    for (const [k, v] of Object.entries(tf)) await page.getByTestId(`tp-${k}`).fill(v);
+    await page.getByTestId("tp-submit").click();
+    const tpl = await until(async () => (await pg.sql`SELECT id,code FROM lumi_task_templates WHERE name='Soát bài đăng'`)[0], "template created");
+    const tc = tpl.code as string;
+    await page.getByTestId(`tpl-warn-${tc}-v1`).first().waitFor({ timeout: 30_000 });
+    await page.getByTestId(`tpl-approve-${tc}-v1`).click();
+    await page.locator(`[data-testid='tpl-${tc}-v1'][data-state='APPROVED']`).waitFor({ timeout: 30_000 });
+    await page.getByTestId(`tpl-use-project-${tc}`).selectOption(proj!.id as string);
+    await page.getByTestId(`tpl-use-assignee-${tc}`).selectOption(bot!.id as string);
+    await page.getByTestId(`tpl-use-${tc}`).click();
+    await until(async () => (await pg.sql`SELECT count(*)::int n FROM lumi_task_template_uses`)[0]!.n === 1, "task from template");
+    // routine
+    await go(page, `${base}/lumi/routines`);
+    await page.getByTestId("routines-view").waitFor({ timeout: 60_000 });
+    await clickUntil(page, "rt-add", "rt-form");
+    await page.getByTestId("rt-name").fill("Nhắc xem báo cáo");
+    await page.getByTestId("rt-message").fill("Nhớ xem báo cáo sáng nay");
+    await page.getByTestId("rt-submit").click();
+    const rn = await until(async () => (await pg.sql`SELECT id,code,enabled FROM lumi_routines WHERE name='Nhắc xem báo cáo'`)[0], "notify routine");
+    assert.equal(rn.enabled, false, "tạo xong luôn TẮT");
+    await page.getByTestId(`rt-sched-${rn.code as string}`).waitFor({ timeout: 30_000 });
+    assert.match(await page.getByTestId(`rt-sched-${rn.code as string}`).innerText(), /Thứ 2–6, 07:30 \(Asia\/Ho_Chi_Minh\)/);
+    // tạo việc nhưng KHÔNG chọn bot ⇒ bật bị chặn (EXE-02)
+    await clickUntil(page, "rt-add", "rt-form");
+    await page.getByTestId("rt-name").fill("Tạo việc thiếu bot");
+    await page.getByTestId("rt-kind").selectOption("CREATE_TASK");
+    await page.getByTestId("rt-title").fill("Việc ngày {date}");
+    await page.getByTestId("rt-project").selectOption(proj!.id as string);
+    await page.getByTestId("rt-submit").click();
+    const rc = await until(async () => (await pg.sql`SELECT id,code FROM lumi_routines WHERE name='Tạo việc thiếu bot'`)[0], "create_task routine");
+    await page.getByTestId(`rt-toggle-${rc.code as string}`).click();
+    await page.waitForTimeout(1500);
+    assert.equal((await pg.sql`SELECT enabled FROM lumi_routines WHERE id=${rc.id as string}`)[0]!.enabled, false, "thiếu giới hạn ⇒ không bật được");
+    // thông báo: bật và chạy ngay ⇒ lịch sử «Xong», không chi phí AI
+    await page.getByTestId(`rt-toggle-${rn.code as string}`).click();
+    await page.locator(`[data-testid='rt-${rn.code as string}'][data-enabled='1']`).waitFor({ timeout: 30_000 });
+    await page.getByTestId(`rt-run-${rn.code as string}`).click();
+    await until(async () => (await pg.sql`SELECT count(*)::int n FROM lumi_routine_runs WHERE routine_id=${rn.id as string} AND result='DONE'`)[0]!.n === 1, "manual run recorded");
+    await page.getByTestId(`rt-history-${rn.code as string}`).locator("summary").click();
+    await page.getByTestId(`rt-history-${rn.code as string}`).getByText(/Xong/).first().waitFor({ timeout: 30_000 });
+    assert.equal(await page.getByTestId("rt-system").count(), 2);
+    // tìm kiếm bỏ dấu
+    await go(page, `${base}/lumi/search`);
+    await page.getByTestId("search-q").fill("nhac xem bao cao");
+    await page.getByTestId("search-go").click();
+    await page.getByTestId("search-group-ROUTINE").waitFor({ timeout: 30_000 });
+    // soát kiến thức
+    await go(page, `${base}/lumi/knowledge/review`);
+    await page.getByTestId("review-view").waitFor({ timeout: 60_000 });
+    await ctx.close();
+  });
+
+  it("VIEWER: xem được các màn nhưng không có form ghi/nút bật; API ghi 403 và không đổi gì", async () => {
+    const ctx = await browser.newContext(); const page = await ctx.newPage();
+    assert.equal((await login(page, base, "viewer@dev.local")).user?.role, "VIEWER");
+    const cnt = async () => (await pg.sql`SELECT (SELECT count(*)::int FROM lumi_routines) r,(SELECT count(*)::int FROM lumi_ideas) i,(SELECT count(*)::int FROM lumi_task_templates) t,(SELECT count(*)::int FROM lumi_setting_values) s`)[0]!;
+    const before = await cnt();
+    for (const [url, tid] of [["routines", "routines-view"], ["ideas", "ideas-view"], ["templates", "templates-view"], ["settings", "settings-view"]]) { await go(page, `${base}/lumi/${url}`); await page.getByTestId(tid!).waitFor({ timeout: 60_000 }); }
+    assert.equal(await page.locator("[data-testid^='setting-save-']").count(), 0);
+    await go(page, `${base}/lumi/routines`); await page.getByTestId("routines-view").waitFor();
+    assert.equal(await page.getByTestId("rt-add").count(), 0); assert.equal(await page.locator("[data-testid^='rt-toggle-']").count(), 0);
+    await go(page, `${base}/lumi/ideas`); await page.getByTestId("ideas-view").waitFor();
+    assert.equal(await page.getByTestId("idea-form").count(), 0);
+    await go(page, `${base}/lumi/templates`); await page.getByTestId("templates-view").waitFor();
+    assert.equal(await page.getByTestId("tp-add").count(), 0);
+    const post = (u: string, b: unknown) => page.evaluate(async ([url, body]) => (await fetch(url as string, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) })).status, [u, b] as [string, unknown]);
+    const sts = [await post("/api/v1/lumi/settings", { key: "proposal_expiry_days", value: 3 }), await post("/api/v1/lumi/ideas", { title: "xyz", body: "abc" }), await post("/api/v1/lumi/routines/pause", { paused: true })];
+    assert.deepEqual(sts, [403, 403, 403]);
+    assert.deepEqual(await cnt(), before);
+    await ctx.close();
+  });
+});

@@ -1,7 +1,7 @@
 "use client";
 
 import { usePathname } from "next/navigation";
-import { Bell, BookOpen, Brain, CalendarDays, Building2, FolderKanban, ListChecks, Menu, MessageCircle, MessagesSquare, Plus, RotateCcw, Server, Sparkles, Target, Users, Wallet } from "lucide-react";
+import { Bell, BookOpen, Brain, CalendarDays, Building2, FolderKanban, ListChecks, Menu, MessageCircle, MessagesSquare, Plus, RotateCcw, Server, Sparkles, Target, Users, Wallet, CalendarClock, Lightbulb, LayoutTemplate, Search as SearchIcon, Settings as SettingsIcon } from "lucide-react";
 import { useState, type ReactNode } from "react";
 
 import { pendingBreakdown, pendingCounts } from "@/lib/lumi/selectors";
@@ -102,6 +102,21 @@ export function Shell({ children }: { children: ReactNode }) {
                 </LumiLink>
                 <LumiLink href="/lumi/finance" aria-current={cur("/lumi/finance") ? "page" : undefined}>
                   <Wallet size={17} /> Tài chính
+                </LumiLink>
+                <LumiLink href="/lumi/routines" aria-current={cur("/lumi/routines") ? "page" : undefined}>
+                  <CalendarClock size={17} /> Routine
+                </LumiLink>
+                <LumiLink href="/lumi/ideas" aria-current={cur("/lumi/ideas") ? "page" : undefined}>
+                  <Lightbulb size={17} /> Ý tưởng
+                </LumiLink>
+                <LumiLink href="/lumi/templates" aria-current={cur("/lumi/templates") ? "page" : undefined}>
+                  <LayoutTemplate size={17} /> Mẫu việc
+                </LumiLink>
+                <LumiLink href="/lumi/search" aria-current={cur("/lumi/search") ? "page" : undefined}>
+                  <SearchIcon size={17} /> Tìm kiếm
+                </LumiLink>
+                <LumiLink href="/lumi/settings" aria-current={cur("/lumi/settings") ? "page" : undefined}>
+                  <SettingsIcon size={17} /> Cài đặt
                 </LumiLink>
               </>
             )}

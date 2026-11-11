@@ -24,6 +24,7 @@ import { archiveRole, createAppointment, createBotCase, createRole, createTaskWi
 import { buildProgress } from "./progress-data";
 import { HANDLERS_IMP04 } from "./handlers-imp04";
 import { HANDLERS_IMP05 } from "./handlers-imp05";
+import { HANDLERS_IMP06 } from "./handlers-imp06";
 import { cancelPlan, closeGoal, companyOverview, createGoal, createPlan, decidePlan, getPlanDetail, reconcileLedger, recordLedger, revisePlan, setPlansEnabled, type PlanDecision } from "./plans";
 
 export type Principal =
@@ -603,7 +604,7 @@ export const HANDLERS: Record<string, (ctx: ApiCtx, req: ApiReq) => Promise<ApiR
   },
 };
 
-Object.assign(HANDLERS, HANDLERS_IMP04, HANDLERS_IMP05); // IMP-04/05 handlers live in their own files
+Object.assign(HANDLERS, HANDLERS_IMP04, HANDLERS_IMP05, HANDLERS_IMP06); // IMP-04/05 handlers live in their own files
 
 const MAX_BODY = 64 * 1024;
 const NEW_WORK = new Set(["intake", "confirm", "createTask", "startRun", "setDispatch"]);
