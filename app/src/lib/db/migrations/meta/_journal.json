@@ -337,6 +337,13 @@
       "when": 1787278623537,
       "tag": "0047_knowledge_meetings_cost",
       "breakpoints": true
+    },
+    {
+      "idx": 48,
+      "version": "7",
+      "when": 1787278623538,
+      "tag": "0048_finance",
+      "breakpoints": true
     }
   ]
 }

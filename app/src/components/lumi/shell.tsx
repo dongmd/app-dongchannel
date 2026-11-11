@@ -1,7 +1,7 @@
 "use client";
 
 import { usePathname } from "next/navigation";
-import { Bell, BookOpen, Brain, CalendarDays, Building2, FolderKanban, ListChecks, Menu, MessageCircle, MessagesSquare, Plus, RotateCcw, Server, Sparkles, Target, Users } from "lucide-react";
+import { Bell, BookOpen, Brain, CalendarDays, Building2, FolderKanban, ListChecks, Menu, MessageCircle, MessagesSquare, Plus, RotateCcw, Server, Sparkles, Target, Users, Wallet } from "lucide-react";
 import { useState, type ReactNode } from "react";
 
 import { pendingBreakdown, pendingCounts } from "@/lib/lumi/selectors";
@@ -99,6 +99,9 @@ export function Shell({ children }: { children: ReactNode }) {
                 </LumiLink>
                 <LumiLink href="/lumi/meetings" aria-current={cur("/lumi/meetings") ? "page" : undefined}>
                   <MessagesSquare size={17} /> Họp
+                </LumiLink>
+                <LumiLink href="/lumi/finance" aria-current={cur("/lumi/finance") ? "page" : undefined}>
+                  <Wallet size={17} /> Tài chính
                 </LumiLink>
               </>
             )}

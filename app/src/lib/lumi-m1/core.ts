@@ -9,6 +9,7 @@
 import { toolsAboveLevel } from "./levels";
 import { loadKnowledgePackage, recordRunKnowledge } from "./knowledge-pack";
 import { captureBeforeUsage } from "./cost-probe";
+import { enforceCostLimits } from "./cost-limits";
 import type { ProfileStatus } from "../lumi/admin";
 import { randomUUID } from "node:crypto";
 
@@ -290,6 +291,8 @@ export async function createRun(t: Db, taskId: string, asst: any, kind: "INITIAL
     const [tc] = await t.query<{ n: string }>(`SELECT count(*)::text AS n FROM lumi_task_runs WHERE assistant_id=$1`, [asst.id]);
     if (Number(tc!.n) >= totalCap) throw new LumiError("TOTAL_CAP", 409, { max_runs_total: totalCap });
   }
+  // IMP-05 (CST-02): measured AI cost caps (day / bot / project). Unknown-cost runs are not counted; the run-count caps above stay the brake for them.
+  await enforceCostLimits(t, asst, (await t.query<any>(`SELECT project_id FROM tasks WHERE id=$1`, [taskId]))[0]?.project_id ?? null, now);
   const n = (await t.query<{ n: number }>(`SELECT coalesce(max(attempt_no),0)+1 AS n FROM lumi_task_runs WHERE task_id=$1`, [taskId]))[0]!.n;
   const id = randomUUID();
   // IMP-04 (KNW-07/14, CMP-01): the knowledge this assistant may read is loaded HERE, inside the run's own transaction, and recorded with the run before it is sent.

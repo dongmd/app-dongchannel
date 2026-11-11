@@ -23,6 +23,7 @@ import { addDependency, answerHandoff, cancelHandoff, clearRecheck, decideChange
 import { archiveRole, createAppointment, createBotCase, createRole, createTaskWithRole, decideBotCase, endAppointment, evaluateStaff, listRoster, setExecutionLevel, setSkill, transferAppointment } from "./roster";
 import { buildProgress } from "./progress-data";
 import { HANDLERS_IMP04 } from "./handlers-imp04";
+import { HANDLERS_IMP05 } from "./handlers-imp05";
 import { cancelPlan, closeGoal, companyOverview, createGoal, createPlan, decidePlan, getPlanDetail, reconcileLedger, recordLedger, revisePlan, setPlansEnabled, type PlanDecision } from "./plans";
 
 export type Principal =
@@ -105,6 +106,9 @@ const MESSAGES: Record<string, string> = {
   MEETING_CAP: "Đã đủ số cuộc họp Chủ cho phép cho kế hoạch này",
   ROUND_LIMIT: "Vượt số vòng đóng góp cho phép của cuộc họp",
   NOT_READY: "Chưa đủ điều kiện tổng hợp (còn thiếu ý kiến bắt buộc, chưa hết hạn)",
+  COST_CAP: "Đã chạm trần chi phí AI đo được: không mở lượt chạy mới (Chủ nâng trần ở Tài chính nếu muốn)",
+  NOT_LOCKED: "Thử nghiệm chưa chốt tiêu chí: chưa nhận kết quả",
+  EXPERIMENT_CLOSED: "Thử nghiệm đã dừng/đóng: không nhận thêm dữ liệu",
   PROJECT_BUSY: "Dự án còn việc mở, kế hoạch hoặc mục tiêu đang chạy; xử lý xong rồi mới lưu trữ",
 };
 
@@ -599,7 +603,7 @@ export const HANDLERS: Record<string, (ctx: ApiCtx, req: ApiReq) => Promise<ApiR
   },
 };
 
-Object.assign(HANDLERS, HANDLERS_IMP04); // IMP-04/05 handlers live in their own file
+Object.assign(HANDLERS, HANDLERS_IMP04, HANDLERS_IMP05); // IMP-04/05 handlers live in their own files
 
 const MAX_BODY = 64 * 1024;
 const NEW_WORK = new Set(["intake", "confirm", "createTask", "startRun", "setDispatch"]);

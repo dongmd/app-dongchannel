@@ -1119,3 +1119,75 @@ describe("IMP-04/05 — kiến thức, họp, chi phí đo thật (adapter GIẢ
     await ctx.close();
   });
 });
+
+describe("Đợt 5 — Tài chính: giới hạn chi phí, ba sổ tiền tách riêng, thử nghiệm chốt tiêu chí (adapter GIẢ, dữ liệu mô phỏng)", () => {
+  it("OWNER: đặt giới hạn ngày → ghi hoa hồng (nguồn bắt buộc) → đảo/điều chỉnh giữ số cũ → tạo & chốt thử nghiệm → nhập kết quả (một chuyển đổi không đề xuất mở rộng) → Công ty hiện kết quả theo mảng", async () => {
+    const ctx = await browser.newContext(); const page = await ctx.newPage();
+    assert.equal((await login(page, base, "owner@dev.local")).user?.role, "OWNER");
+    const [proj] = await pg.sql`SELECT id FROM lumi_projects WHERE slug='test-offer-us'`;
+    await go(page, `${base}/lumi/finance`);
+    await page.getByTestId("finance-view").waitFor({ timeout: 60_000 });
+    // giới hạn
+    await page.getByTestId("lm-amount").fill("5");
+    await page.getByTestId("lm-save").click();
+    await page.getByTestId("limit-DAY_GLOBAL").waitFor({ timeout: 30_000 });
+    assert.match(await page.getByTestId("limit-table").innerText(), /5/);
+    assert.equal((await pg.sql`SELECT count(*)::int n FROM lumi_cost_limits WHERE scope='DAY_GLOBAL' AND active`)[0]!.n, 1);
+    // sổ tiền
+    await clickUntil(page, "fin-tab-money", "fin-money");
+    assert.match(await page.getByTestId("mn-note").innerText(), /KHÔNG cộng thành lợi nhuận/);
+    assert.equal(await page.getByTestId("book-COMMISSION-empty").count(), 1, "chưa có dữ liệu thì nói chưa có");
+    await page.getByTestId("mf-project").selectOption(proj!.id as string);
+    await page.getByTestId("mf-amount").fill("120");
+    await page.getByTestId("mf-source").fill("Sao kê mạng lưới tháng 10 (thử)");
+    await page.getByTestId("mf-submit").click();
+    await page.getByTestId("money-COMMISSION-RECORDED").waitFor({ timeout: 30_000 });
+    assert.match(await page.getByTestId("book-COMMISSION-USD").innerText(), /ghi nhận 120/);
+    await page.getByTestId("adj-RECORDED-PAID").click();
+    await page.getByTestId("money-COMMISSION-PAID").waitFor({ timeout: 30_000 });
+    assert.match(await page.getByTestId("book-COMMISSION-USD").innerText(), /đã trả 120/);
+    assert.equal((await pg.sql`SELECT count(*)::int n FROM lumi_money_entries`)[0]!.n, 2, "số cũ được giữ, điều chỉnh là dòng mới");
+    // thử nghiệm
+    await clickUntil(page, "fin-tab-experiments", "fin-experiments");
+    await clickUntil(page, "ex-add", "ex-form");
+    await page.getByTestId("ex-project").selectOption(proj!.id as string);
+    const f: Record<string, string> = { title: "Thử từ khóa thương hiệu", hypothesis: "Từ khóa thương hiệu tốt hơn", baseline: "0,8%", source: "Bảng quảng cáo", days: "7", sample: "5", cap: "50", loss: "30", stop: "Chi 30 mà 0 chuyển đổi", scale: "Từ 5 chuyển đổi" };
+    for (const [k, v] of Object.entries(f)) await page.getByTestId(`ex-${k}`).fill(v);
+    await page.getByTestId("ex-submit").click();
+    const ex = await until(async () => (await pg.sql`SELECT id,code,state FROM lumi_experiments`)[0], "experiment created");
+    const code = ex.code as string;
+    await page.getByTestId(`ex-lock-${code}`).click();
+    await page.getByTestId(`ex-result-form-${code}`).waitFor({ timeout: 30_000 });
+    await page.getByTestId(`rs-day-${code}`).fill("2026-11-10");
+    await page.getByTestId(`rs-spend-${code}`).fill("5");
+    await page.getByTestId(`rs-conv-${code}`).fill("1");
+    await page.getByTestId(`rs-submit-${code}`).click();
+    await page.getByTestId(`ex-verdict-${code}`).waitFor({ timeout: 30_000 });
+    assert.doesNotMatch(await page.getByTestId(`ex-verdict-${code}`).innerText(), /ứng viên mở rộng/);
+    assert.equal((await pg.sql`SELECT state FROM lumi_experiments WHERE id=${ex.id as string}`)[0]!.state, "LOCKED");
+    // Công ty: kết quả theo mảng + tình trạng trợ lý
+    await go(page, `${base}/lumi/company`);
+    await page.getByTestId("area-results").waitFor({ timeout: 60_000 });
+    assert.match(await page.getByTestId("area-results").innerText(), /chưa có dữ liệu/);
+    await page.getByTestId("assistant-health").waitFor();
+    await ctx.close();
+  });
+
+  it("VIEWER: xem được Tài chính nhưng không có form ghi/đặt giới hạn/chốt; API ghi 403 và không đổi gì", async () => {
+    const ctx = await browser.newContext(); const page = await ctx.newPage();
+    assert.equal((await login(page, base, "viewer@dev.local")).user?.role, "VIEWER");
+    const before = (await pg.sql`SELECT (SELECT count(*)::int FROM lumi_money_entries) m,(SELECT count(*)::int FROM lumi_cost_limits) l`)[0]!;
+    await go(page, `${base}/lumi/finance`);
+    await page.getByTestId("finance-view").waitFor({ timeout: 60_000 });
+    assert.equal(await page.getByTestId("limit-form").count(), 0);
+    await clickUntil(page, "fin-tab-money", "fin-money");
+    assert.equal(await page.getByTestId("money-form").count(), 0);
+    await clickUntil(page, "fin-tab-experiments", "fin-experiments");
+    assert.equal(await page.getByTestId("ex-add").count(), 0);
+    const st = await page.evaluate(async () => (await fetch("/api/v1/lumi/cost/limits", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ scope: "DAY_GLOBAL", amount: 1 }) })).status);
+    assert.equal(st, 403);
+    const after = (await pg.sql`SELECT (SELECT count(*)::int FROM lumi_money_entries) m,(SELECT count(*)::int FROM lumi_cost_limits) l`)[0]!;
+    assert.deepEqual([after.m, after.l], [before.m, before.l]);
+    await ctx.close();
+  });
+});
