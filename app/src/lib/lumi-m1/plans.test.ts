@@ -483,3 +483,44 @@ describe("plan-schema — lỗi có giải thích và mẫu hợp lệ (sau lư�
   });
 });
 
+describe("IMP-05 (ECO-03) — chi phí AI đo thật theo lượt vào sổ kế hoạch", () => {
+  it("12. lượt có số đo ⇒ ghi PROVIDER_STATEMENT đúng số; chồng lượt/khóa chung ⇒ vẫn 'chưa biết' kèm lý do; đang chờ đọc lần sau ⇒ chưa ghi; báo cáo nói PARTIAL, không bịa", async () => {
+    const w = await world();
+    const planId = await approvedPlan(w);
+    const [t1] = await w.db.query<any>(`SELECT id FROM tasks WHERE plan_id=$1 AND plan_task_key='t1'`, [planId]);
+    const [t2] = await w.db.query<any>(`SELECT id FROM tasks WHERE plan_id=$1 AND plan_task_key='t2'`, [planId]);
+    await finishTask(w, t1.id, at(40)); await finishTask(w, t2.id, at(50));
+    const runOf = async (taskId: string) => (await w.db.query<any>(`SELECT id,assistant_id FROM lumi_task_runs WHERE task_id=$1 ORDER BY attempt_no DESC LIMIT 1`, [taskId]))[0];
+    const r1 = await runOf(t1.id), r2 = await runOf(t2.id);
+    const [pl] = await w.db.query<any>(`SELECT planning_task_id FROM lumi_plans WHERE id=$1`, [planId]);
+    const rp = await runOf(pl.planning_task_id);
+    await w.db.query(`INSERT INTO lumi_run_cost_probes(run_id,assistant_id,state,before_usage,after_usage,currency) VALUES ($1,$2,'MEASURED',0.5,0.5123,'USD')`, [r1.id, r1.assistant_id]);
+    await w.db.query(`INSERT INTO lumi_run_cost_probes(run_id,assistant_id,state,before_usage,after_usage,currency,reason) VALUES ($1,$2,'OVERLAP',0.5123,0.6,'USD','RUNS_OVERLAPPED')`, [r2.id, r2.assistant_id]);
+    await planTick(w.db, at(60), { hermesMode: "ssh" });
+    const [exec] = await w.db.query<any>(`SELECT * FROM lumi_budgets WHERE plan_id=$1 AND kind='EXECUTE'`, [planId]);
+    assert.deepEqual([Number(exec.actual).toFixed(4), exec.unknown_count], ["0.0123", 1], "một lượt đo được (0.0123 USD), một lượt chồng ⇒ chưa biết; KHÔNG coi là 0");
+    const e1 = (await w.db.query<any>(`SELECT category,amount,source,note FROM lumi_ledger_entries WHERE run_id=$1`, [r1.id]))[0];
+    assert.deepEqual([e1.category, Number(e1.amount).toFixed(4), e1.source], ["AI", "0.0123", "PROVIDER_STATEMENT"]);
+    assert.match(e1.note, /0\.5 → 0\.5123 USD/);
+    const e2 = (await w.db.query<any>(`SELECT amount,source,note FROM lumi_ledger_entries WHERE run_id=$1`, [r2.id]))[0];
+    assert.deepEqual([e2.amount, e2.source], [null, "UNKNOWN"]); assert.match(e2.note, /chồng nhau/);
+    // lượt lập kế hoạch đã được ghi sổ từ trước khi có số đo ⇒ giữ nguyên 'chưa biết', không sửa lại số cũ
+    assert.equal((await w.db.query<any>(`SELECT amount FROM lumi_ledger_entries WHERE run_id=$1`, [rp.id]))[0].amount, null);
+    const fin = (await w.db.query<any>(`SELECT body FROM lumi_reports WHERE plan_id=$1 AND kind='FINAL'`, [planId]))[0];
+    assert.deepEqual([fin.body.data_sources.ai_cost, fin.body.data_sources.ai_cost_runs.measured], ["PARTIAL", 1]);
+    await invariants(w.db, planId);
+  });
+  it("13. số đo đang chờ lần đọc sau: chưa ghi sổ (không ghi 'chưa biết' sớm); quá thời gian chờ mới ghi 'chưa biết'", async () => {
+    const w = await world();
+    const planId = await approvedPlan(w);
+    const [t1] = await w.db.query<any>(`SELECT id FROM tasks WHERE plan_id=$1 AND plan_task_key='t1'`, [planId]);
+    await finishTask(w, t1.id, at(40));
+    const r = (await w.db.query<any>(`SELECT id,assistant_id FROM lumi_task_runs WHERE task_id=$1 ORDER BY attempt_no DESC LIMIT 1`, [t1.id]))[0];
+    await w.db.query(`UPDATE lumi_task_runs SET finished_at=$2 WHERE id=$1`, [r.id, at(40).toISOString()]);
+    await w.db.query(`INSERT INTO lumi_run_cost_probes(run_id,assistant_id,state,before_usage,currency) VALUES ($1,$2,'PENDING',1.0,'USD')`, [r.id, r.assistant_id]);
+    await planTick(w.db, at(41), { hermesMode: "ssh" });
+    assert.equal((await w.db.query(`SELECT 1 FROM lumi_ledger_entries WHERE run_id=$1`, [r.id])).length, 0, "đang chờ đọc lần sau thì chưa ghi");
+    await planTick(w.db, new Date(at(40).getTime() + 40 * 60_000), { hermesMode: "ssh" });
+    assert.equal((await w.db.query<any>(`SELECT source FROM lumi_ledger_entries WHERE run_id=$1`, [r.id]))[0].source, "UNKNOWN");
+  });
+});

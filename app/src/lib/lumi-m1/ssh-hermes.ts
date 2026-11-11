@@ -66,6 +66,30 @@ export const runMarker = (runId: string) => `LUMI-RUN-${runId}`;
 const grepPat = (runId: string) => `[L]UMI-RUN-${runId}`; // bracket trick: the checking shell's own command line does not match itself
 const NOT_REACHED = /(Could not resolve|Connection timed out|Connection refused|No route to host|Network is unreachable|Permission denied|Operation timed out)/i;
 
+
+/** Runs INSIDE the Hermes container: reads the profile's own provider key and the shared key from disk, asks the provider for the key's cumulative usage, and prints ONLY
+ *  numbers and a "dedicated" flag (own key differs from the shared key). The key never leaves the container and is never printed. */
+const KEY_USAGE_PY = `
+import json, sys, urllib.request
+prof = sys.argv[1] if len(sys.argv) > 1 else ""
+def read(path):
+    try:
+        for ln in open(path, encoding="utf8"):
+            ln = ln.strip()
+            if ln.startswith("OPENROUTER_API_KEY="):
+                return ln.split("=", 1)[1].strip().strip('"').strip("'")
+    except Exception:
+        return None
+    return None
+own = read("/opt/data/profiles/%s/.env" % prof)
+shared = read("/opt/data/.env")
+if not own:
+    print("null"); sys.exit(0)
+req = urllib.request.Request("https://openrouter.ai/api/v1/key", headers={"Authorization": "Bearer " + own})
+d = json.load(urllib.request.urlopen(req, timeout=15))["data"]
+print(json.dumps({"usage": d.get("usage"), "limit": d.get("limit"), "remaining": d.get("limit_remaining"), "dedicated": own != shared}))
+`;
+
 export class SshHermes implements HermesPort, HermesStopPort {
   constructor(private o: SshHermesOptions) {}
   /** For the always-visible UI label: which Hermes profile this adapter really drives. */
@@ -83,6 +107,20 @@ export class SshHermes implements HermesPort, HermesStopPort {
     const r = await this.ssh(this.dx(`echo ${b64} | base64 -d | python3`), 45_000);
     if (r.code !== 0) return null;
     try { const parsed = JSON.parse(r.stdout.trim().split("\n").pop() ?? ""); return Array.isArray(parsed) ? (parsed as ProfileStatus[]) : null; } catch { return null; }
+  }
+
+  /** IMP-04/05 (ECO-03): cumulative provider usage of the profile's OWN key, read inside the container (see KEY_USAGE_PY). null = could not be read. */
+  async readKeyUsage(profile: string): Promise<{ usage: number; limit: number | null; remaining: number | null; dedicated: boolean } | null> {
+    const safe = profile.replace(/[^a-z0-9_-]/gi, "");
+    if (!safe) return null;
+    const b64 = Buffer.from(KEY_USAGE_PY, "utf8").toString("base64");
+    const r = await this.ssh(this.dx(`echo ${b64} | base64 -d | python3 - ${safe}`), 40_000);
+    if (r.code !== 0) return null;
+    try {
+      const v = JSON.parse(r.stdout.trim().split("\n").pop() ?? "");
+      if (!v || typeof v.usage !== "number" || !Number.isFinite(v.usage)) return null;
+      return { usage: v.usage, limit: typeof v.limit === "number" ? v.limit : null, remaining: typeof v.remaining === "number" ? v.remaining : null, dedicated: v.dedicated === true };
+    } catch { return null; }
   }
 
   async readProfileTools(profile: string): Promise<string[] | null> {

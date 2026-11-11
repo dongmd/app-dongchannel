@@ -9,6 +9,7 @@ import { useLumi } from "./lumi-provider";
 import { Empty, fmtTime, LumiLink, Modal } from "./ui";
 import { PoliciesPanel } from "./policies-panel";
 import { ProgressBar } from "./progress-bar";
+import { CostCard } from "./cost-card";
 
 type Overview = { goals: any[]; projects: { id: string; name: string }[]; assistants: { id: string; slug: string; name: string; ready: boolean }[]; flags: { plans_enabled: boolean; m1_enabled: boolean }; config: { max_tasks: number | null; version_ttl_hours: number | null } };
 
@@ -94,6 +95,7 @@ export function CompanyView() {
       {data && <GoalForm open={creating} onClose={() => setCreating(false)} data={data} onDone={() => { setCreating(false); void load(); }} />}
       {data && <PlanForm goal={planFor} onClose={() => setPlanFor(null)} data={data} onDone={() => { setPlanFor(null); void load(); }} />}
       <CloseForm goal={closing} onClose={() => setClosing(null)} onDone={() => { setClosing(null); void load(); }} />
+      <CostCard />
       <PoliciesPanel />
     </div>
   );

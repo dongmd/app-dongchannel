@@ -14,6 +14,7 @@ import { createHash } from "node:crypto";
 import { LumiError, activity, audit, cancelTask, enqueueNotify, flag, missingExecConfig, requireRole, type Db } from "./core";
 import { createTaskInTx } from "./core-web";
 import { contentHash, planBodyExample, validatePlanBody, type PlanBody } from "./plan-schema";
+import { PROBE_REASON_TEXT } from "./cost-probe";
 
 const iso = (d: Date) => d.toISOString();
 const uuidFromKey = (k: string) => { const h = createHash("sha256").update(k).digest("hex"); return `${h.slice(0, 8)}-${h.slice(8, 12)}-4${h.slice(13, 16)}-a${h.slice(17, 20)}-${h.slice(20, 32)}`; };
@@ -520,16 +521,28 @@ export async function evaluatePlan(t: Db, planId: string, now: Date, opts: EvalO
   const exp = await t.query<any>(`UPDATE lumi_plan_versions SET state='EXPIRED' WHERE plan_id=$1 AND state='SUBMITTED' AND expires_at IS NOT NULL AND expires_at <= $2 RETURNING version`, [planId, iso(now)]);
   if (exp.length && ["PENDING_APPROVAL", "DEFERRED"].includes(plan.status)) await t.query(`UPDATE lumi_plans SET status='NEEDS_REVISION',updated_at=$2 WHERE id=$1`, [planId, iso(now)]);
 
-  // 2. every finished run is a cost event whose AI cost is unknown: book it (lượt lỗi và vòng sửa vẫn vào sổ)
+  // 2. every finished run is a cost event. Its AI cost is MEASURED when the assistant has its own provider key and the run did not overlap another (cost-probe.ts);
+  //    otherwise it is UNKNOWN with the reason, never 0 and never estimated. Failed runs, revisions and meeting (coordination) runs are booked too (ECO-03).
   const runs = await t.query<any>(
-    `SELECT r.id AS run_id, k.id AS task_id, (k.plan_task_key IS NULL) AS planning
-       FROM lumi_task_runs r JOIN tasks k ON k.id=r.task_id
+    `SELECT r.id AS run_id, k.id AS task_id, (k.plan_task_key IS NULL) AS planning, r.finished_at,
+            pr.state AS probe_state, pr.before_usage, pr.after_usage, pr.reason AS probe_reason, pr.currency AS probe_currency,
+            (EXISTS (SELECT 1 FROM lumi_meeting_participants mp WHERE mp.task_id=k.id) OR EXISTS (SELECT 1 FROM lumi_meetings mm WHERE mm.synth_task_id=k.id)) AS meeting
+       FROM lumi_task_runs r JOIN tasks k ON k.id=r.task_id LEFT JOIN lumi_run_cost_probes pr ON pr.run_id=r.id
       WHERE k.plan_id=$1 AND r.state = ANY($2::text[])
         AND NOT EXISTS (SELECT 1 FROM lumi_ledger_entries e WHERE e.idempotency_key = 'run:' || r.id::text)`, [planId, DONE_RUN]);
   for (const r of runs) {
     const b = r.planning ? prep : exec;
     if (!b) continue;
-    await book(t, { budgetId: b.id, planId, taskId: r.task_id, runId: r.run_id, type: "ACTUAL", category: "AI", amount: null, currency: b.currency, source: "UNKNOWN", key: `run:${r.run_id}`, note: "Chi phí AI của lượt chạy chưa đo được", actor, now });
+    const category = r.meeting ? "COORD" : "AI";
+    // the 'after' reading is still being taken: wait (up to the give-up time), do not book "unknown" yet
+    if (r.probe_state === "PENDING" && r.finished_at && now.getTime() - new Date(r.finished_at).getTime() < 35 * 60_000) continue;
+    if (r.probe_state === "MEASURED" && r.probe_currency === b.currency) {
+      const amount = Math.round((Number(r.after_usage) - Number(r.before_usage)) * 1e8) / 1e8;
+      await book(t, { budgetId: b.id, planId, taskId: r.task_id, runId: r.run_id, type: "ACTUAL", category, amount, currency: b.currency, source: "PROVIDER_STATEMENT", key: `run:${r.run_id}`, note: `Đo từ mức sử dụng khóa nhà cung cấp riêng của trợ lý: ${Number(r.before_usage)} → ${Number(r.after_usage)} ${r.probe_currency}`, actor, now });
+      continue;
+    }
+    const why = r.probe_reason ? PROBE_REASON_TEXT[r.probe_reason] ?? r.probe_reason : r.probe_state === "MEASURED" ? "Đơn vị tiền của số đo khác đơn vị của ngân sách" : "Chi phí AI của lượt chạy chưa đo được";
+    await book(t, { budgetId: b.id, planId, taskId: r.task_id, runId: r.run_id, type: "ACTUAL", category, amount: null, currency: b.currency, source: "UNKNOWN", key: `run:${r.run_id}`, note: why, actor, now });
   }
 
   // 3. release commitments of tasks that ended
@@ -594,11 +607,12 @@ async function buildReportBody(t: Db, plan: any, kind: "PHASE" | "FINAL", milest
   const budgets = await t.query<any>(`SELECT * FROM lumi_budgets WHERE plan_id=$1`, [plan.id]);
   const entries = await t.query<any>(`SELECT budget_id,category,amount,source,reconciliation,entry_type FROM lumi_ledger_entries WHERE plan_id=$1`, [plan.id]);
   const byCat: Record<string, { known: number; unknown: number }> = {};
-  let rec = 0, unrec = 0;
+  let rec = 0, unrec = 0, aiKnownN = 0, aiUnknownN = 0;
   for (const e of entries) {
     if (e.entry_type !== "ACTUAL" && e.entry_type !== "ADJUST") continue;
     const c = (byCat[e.category] ??= { known: 0, unknown: 0 });
     if (e.amount === null) c.unknown += 1; else { c.known = r6(c.known + Number(e.amount)); if (e.reconciliation === "RECONCILED") rec += 1; else unrec += 1; }
+    if (e.category === "AI" || e.category === "COORD") { if (e.amount === null) aiUnknownN += 1; else if (e.source === "PROVIDER_STATEMENT") aiKnownN += 1; }
   }
   const view = (b: any) => b ? { ceiling: N(b.ceiling), currency: b.currency, committed_open: N(b.committed), actual_known: N(b.actual), unknown_count: b.unknown_count, available: b.ceiling === null ? null : r6(Number(b.ceiling) - Number(b.actual) - Number(b.committed) - Number(b.reserve)) } : null;
   const total = tasks.length, completed = tasks.filter((k: any) => k.status === "COMPLETED").length, cancelled = tasks.filter((k: any) => k.status === "CANCELLED").length;
@@ -617,7 +631,7 @@ async function buildReportBody(t: Db, plan: any, kind: "PHASE" | "FINAL", milest
     // Three different facts, never merged: a finished plan says nothing about whether the business goal was reached.
     business: { status: "NOT_ASSESSED", note: "Chưa có dữ liệu kinh doanh được đối soát; kết quả mục tiêu do Chủ chốt khi đóng mục tiêu." },
     limits: [AI_COST_LIMIT_NOTE, "Nội dung kế hoạch do bot lập, chưa được kiểm chứng sự thật; Chủ duyệt không thay cho kiểm chứng.", "Dự toán là ước tính của bot."],
-    data_sources: { ai_cost: "UNKNOWN", revenue: "NONE", plan_content: "BOT_AUTHORED_UNVERIFIED", hermes_mode: opts.hermesMode },
+    data_sources: { ai_cost: aiKnownN === 0 ? "UNKNOWN" : aiUnknownN === 0 ? "MEASURED" : "PARTIAL", ai_cost_runs: { measured: aiKnownN, unknown: aiUnknownN }, revenue: "NONE", plan_content: "BOT_AUTHORED_UNVERIFIED", hermes_mode: opts.hermesMode },
   };
 }
 

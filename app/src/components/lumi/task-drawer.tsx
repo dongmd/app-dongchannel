@@ -8,6 +8,7 @@ import { canReceiveTasks } from "@/lib/lumi/engine";
 import { outputOfTask, ownerLabel, project } from "@/lib/lumi/selectors";
 import { useLumi } from "./lumi-provider";
 import { CoordinationPanel } from "./coordination-panel";
+import { LoadedKnowledge } from "./loaded-knowledge";
 import { plainExpectedOutput, splitRequest } from "@/lib/lumi/progress";
 import { Drawer, fmtFull, LumiLink, SourceBadge, StatusBadge, NewOutputBadge } from "./ui";
 
@@ -144,6 +145,7 @@ export function TaskDetail({ taskId }: { taskId: string | null }) {
 
       {task.real && state.real && <RealPanel task={task} role={state.real.role} />}
       {task.real?.uuid && state.real && state.mode === "db" && <CoordinationPanel uuid={task.real.uuid} projectId={task.projectId} status={task.real.status} role={state.real.role} />}
+      {task.real?.uuid && state.mode === "db" && <LoadedKnowledge uuid={task.real.uuid} />}
 
       <h3 style={{ margin: "14px 0 6px" }}>Đầu ra</h3>
       {!out || !shown ? (

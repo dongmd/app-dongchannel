@@ -11,12 +11,12 @@ import { errText, lumiApi } from "@/lib/lumi/plans-client";
 import { useLumi } from "./lumi-provider";
 import { Empty, fmtTime, LumiLink, NewOutputBadge } from "./ui";
 
-type Tab = "memory" | "output" | "action" | "plan" | "change";
+type Tab = "memory" | "output" | "action" | "plan" | "change" | "kmeet";
 
 export function ApprovalsView() {
   const { state } = useLumi();
   const sp = useSearchParams();
-  const initial = (["memory", "output", "action", "plan", "change"] as const).find((t) => t === sp.get("tab")) ?? "memory";
+  const initial = (["memory", "output", "action", "plan", "change", "kmeet"] as const).find((t) => t === sp.get("tab")) ?? "memory";
   const [tab, setTab] = useState<Tab>(initial);
   const [pid, setPid] = useState(sp.get("project") ?? "");
   const focusId = sp.get("id");
@@ -51,12 +51,14 @@ export function ApprovalsView() {
         <button role="tab" aria-selected={tab === "action"} onClick={() => setTab("action")}>Hành động bên ngoài ({c.action})</button>
         {state.real && <button role="tab" aria-selected={tab === "plan"} onClick={() => setTab("plan")} data-testid="tab-plan-btn">Kế hoạch ({state.real.plansPending?.length ?? 0})</button>}
         {state.real && <button role="tab" aria-selected={tab === "change"} onClick={() => setTab("change")} data-testid="tab-change-btn">Thay đổi do PM đề xuất</button>}
+        {state.real && <button role="tab" aria-selected={tab === "kmeet"} onClick={() => setTab("kmeet")} data-testid="tab-kmeet-btn">Kiến thức &amp; họp</button>}
       </div>
       {tab === "memory" && <MemoryTab focusId={focusId} pid={pid} />}
       {tab === "output" && <OutputTab pid={pid} />}
       {tab === "action" && <ActionTab focusId={focusId} pid={pid} />}
       {tab === "plan" && <PlanTab />}
       {tab === "change" && <ChangeTab />}
+      {tab === "kmeet" && <KnowledgeMeetingTab />}
     </div>
   );
 }
@@ -105,6 +107,48 @@ function ChangeTab() {
           {done.map((c) => <div key={c.id} className="small" style={{ marginTop: 4 }} data-testid={`change-done-${c.task_code}`}>{c.task_code} → {c.to_name}: <strong>{CHANGE_STATE[c.state] ?? c.state}</strong>{c.result ? ` · ${c.result}` : ""}</div>)}
         </details>
       )}
+    </div>
+  );
+}
+
+/** IMP-04: knowledge proposals waiting for the owner (approve on the Knowledge screen, where the sources are next to the text) and meeting proposals that need the owner. */
+function KnowledgeMeetingTab() {
+  const { state, toast } = useLumi();
+  const isOwner = state.real?.role === "OWNER";
+  const [kn, setKn] = useState<any[] | null>(null); const [mt, setMt] = useState<any[] | null>(null); const [err, setErr] = useState<string | null>(null);
+  const load = useCallback(async () => {
+    const a = await lumiApi("/api/v1/lumi/knowledge/search", { method: "POST", body: { status: "PROPOSED" } });
+    const b = await lumiApi("/api/v1/lumi/meetings");
+    if (a.ok) setKn(a.data.items); else setErr(errText(a.error));
+    if (b.ok) setMt(b.data.proposals);
+  }, []);
+  useEffect(() => { void load(); const t = setInterval(() => { if (document.visibilityState === "visible") void load(); }, 6000); return () => clearInterval(t); }, [load]);
+  async function decide(id: string, decision: "APPROVE" | "REJECT") {
+    const r = await lumiApi(`/api/v1/lumi/meeting-conclusions/${id}`, { method: "POST", body: { decision } });
+    toast(r.ok ? (decision === "APPROVE" ? "Đã ghi nhận đồng ý (thay đổi thật phải làm riêng)." : "Đã từ chối.") : `Không thực hiện được: ${errText(r.error)}`);
+    void load();
+  }
+  return (
+    <div className="l-grid" style={{ gap: 12 }} data-testid="tab-kmeet">
+      {err && <div className="l-note" role="alert">Không tải được: {err}</div>}
+      <h3 style={{ margin: "0 0 2px" }}>Kiến thức chờ duyệt ({kn?.length ?? 0})</h3>
+      {kn && kn.length === 0 && <Empty>Không có đề xuất kiến thức nào đang chờ.</Empty>}
+      {(kn ?? []).map((k) => (
+        <div key={k.id} className="l-card" data-testid={`pending-kn-${k.code}`}>
+          <strong>{k.code}</strong> · {k.title} <span className="muted small">({k.scope}, đề xuất bởi {k.proposed_by})</span>
+          <div className="small muted">{(k.sources as any[]).length} nguồn · bản {k.version}</div>
+          <div style={{ marginTop: 6 }}><LumiLink href="/lumi/knowledge" className="l-btn primary sm">Xem nguồn và duyệt</LumiLink></div>
+        </div>
+      ))}
+      <h3 style={{ margin: "8px 0 2px" }}>Đề xuất từ cuộc họp ({mt?.length ?? 0})</h3>
+      {mt && mt.length === 0 && <Empty>Không có đề xuất từ cuộc họp nào đang chờ.</Empty>}
+      {(mt ?? []).map((c) => (
+        <div key={c.id} className="l-card" data-testid={`pending-mc-${c.type}`}>
+          <strong>{c.type}</strong> · {c.text} <span className="muted small">({c.meeting_code}: {c.meeting_title})</span>
+          <div className="small muted">{c.reason}</div>
+          {isOwner ? <div className="l-row" style={{ gap: 6, marginTop: 6 }}><button className="l-btn sm primary" onClick={() => void decide(c.id, "APPROVE")} data-testid={`pending-mc-approve-${c.type}`}>Đồng ý ghi nhận</button><button className="l-btn sm danger" onClick={() => void decide(c.id, "REJECT")}>Từ chối</button></div> : <div className="small muted">Chỉ OWNER quyết định.</div>}
+        </div>
+      ))}
     </div>
   );
 }

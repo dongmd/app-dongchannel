@@ -22,7 +22,7 @@ const IN_FLIGHT = ["DISPATCHED", "DISPATCH_UNCERTAIN", "RUNNING"];
 const h = (s: string) => createHash("sha256").update(s).digest("hex").slice(0, 24);
 
 /** Drop runs that were never sent (and their queue rows) so a held/reassigned task cannot be dispatched by mistake. */
-async function dropPendingRuns(t: Db, taskId: string, now: Date, why: string) {
+export async function dropPendingRuns(t: Db, taskId: string, now: Date, why: string) {
   const pend = await t.query<any>(`UPDATE lumi_task_runs SET state='CANCELLED',finished_at=$2 WHERE task_id=$1 AND state='PENDING' RETURNING id`, [taskId, iso(now)]);
   if (pend.length) await t.query(`UPDATE lumi_outbox SET state='DEAD',last_error=$2,lease_owner=NULL,lease_expires_at=NULL WHERE kind='DISPATCH_RUN' AND state IN ('PENDING','LEASED') AND aggregate_id = ANY($1::uuid[])`, [pend.map((r: any) => r.id), why]);
   return pend.length;

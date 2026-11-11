@@ -330,6 +330,13 @@
       "when": 1787278623536,
       "tag": "0046_coordination",
       "breakpoints": true
+    },
+    {
+      "idx": 47,
+      "version": "7",
+      "when": 1787278623537,
+      "tag": "0047_knowledge_meetings_cost",
+      "breakpoints": true
     }
   ]
 }

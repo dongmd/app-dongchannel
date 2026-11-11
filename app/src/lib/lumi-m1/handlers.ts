@@ -22,6 +22,7 @@ import { archiveAssistant, createAssistant, listAssistants, requestVerify, updat
 import { addDependency, answerHandoff, cancelHandoff, clearRecheck, decideChange, listChangeProposals, proposeHandoff, removeDependency, reopenTask, setProjectPmAuto, taskCoordination } from "./coordination";
 import { archiveRole, createAppointment, createBotCase, createRole, createTaskWithRole, decideBotCase, endAppointment, evaluateStaff, listRoster, setExecutionLevel, setSkill, transferAppointment } from "./roster";
 import { buildProgress } from "./progress-data";
+import { HANDLERS_IMP04 } from "./handlers-imp04";
 import { cancelPlan, closeGoal, companyOverview, createGoal, createPlan, decidePlan, getPlanDetail, reconcileLedger, recordLedger, revisePlan, setPlansEnabled, type PlanDecision } from "./plans";
 
 export type Principal =
@@ -97,6 +98,13 @@ const MESSAGES: Record<string, string> = {
   ALREADY_APPOINTED: "Đã có bổ nhiệm đang hiệu lực cho vai trò, trợ lý và phạm vi này",
   LEVEL_NEEDS_FULL: "Mức 3 chỉ dành cho trợ lý chế độ công cụ rộng do Chủ khai báo",
   LEVEL_BELOW_TOOLS: "Danh sách công cụ của trợ lý vượt mức quyền này; bỏ bớt công cụ trước",
+  NEEDS_SUPPORT: "Chưa có nguồn hoặc lý do xác định: không thể duyệt",
+  CONFLICT_ACTIVE: "Đã có mục đang hiệu lực cùng tiêu đề và phạm vi: hãy thay thế rõ mục đó",
+  SUPERSEDE_INVALID: "Chỉ thay thế được một mục đang hiệu lực cùng phạm vi",
+  USE_HANDOFF: "Việc có một PIC rõ đi thẳng bàn giao, không họp",
+  MEETING_CAP: "Đã đủ số cuộc họp Chủ cho phép cho kế hoạch này",
+  ROUND_LIMIT: "Vượt số vòng đóng góp cho phép của cuộc họp",
+  NOT_READY: "Chưa đủ điều kiện tổng hợp (còn thiếu ý kiến bắt buộc, chưa hết hạn)",
   PROJECT_BUSY: "Dự án còn việc mở, kế hoạch hoặc mục tiêu đang chạy; xử lý xong rồi mới lưu trữ",
 };
 
@@ -590,6 +598,8 @@ export const HANDLERS: Record<string, (ctx: ApiCtx, req: ApiReq) => Promise<ApiR
     return ok({});
   },
 };
+
+Object.assign(HANDLERS, HANDLERS_IMP04); // IMP-04/05 handlers live in their own file
 
 const MAX_BODY = 64 * 1024;
 const NEW_WORK = new Set(["intake", "confirm", "createTask", "startRun", "setDispatch"]);

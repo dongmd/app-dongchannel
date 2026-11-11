@@ -14,6 +14,8 @@ import { createRequire } from "node:module";
 const require = createRequire(path.join(process.cwd(), "package.json"));
 import { chromium, type Browser, type Page } from "playwright-core";
 import { startPgServer, type PgServer } from "./pgserver";
+import { postgresDb } from "./pg-adapter";
+import { contribute, meetingTick, synthesizeMeeting } from "./meetings";
 
 const CHROME = ["C:/Program Files/Google/Chrome/Application/chrome.exe", "C:/Program Files (x86)/Microsoft/Edge/Application/msedge.exe", "/usr/bin/google-chrome", "/usr/bin/chromium"].find((p) => fs.existsSync(p));
 let pg: PgServer;
@@ -925,5 +927,195 @@ PAGE: ${(await page.locator("main").innerText()).slice(0, 800)}`); });
     await vpage.getByTestId(`progress-${made.goal}`).waitFor({ timeout: 60_000 });
     assert.equal(await vpage.getByTestId("goal-create-open").count(), 0);
     await vctx.close(); await ctx.close();
+  });
+});
+
+describe("IMP-04/05 — kiến thức, họp, chi phí đo thật (adapter GIẢ, dữ liệu mô phỏng)", () => {
+  it("Kiến thức: đề xuất (nguồn) → duyệt → nạp vào việc → sửa thành v2 (bản cũ vẫn áp dụng) → duyệt v2 → việc cũ hiện v1 + cảnh báo → so sánh → trùng tiêu đề buộc thay thế → lưu trữ; tìm không dấu", async () => {
+    const ctx = await browser.newContext(); const page = await ctx.newPage();
+    assert.equal((await login(page, base, "owner@dev.local")).user?.role, "OWNER");
+    await pg.sql`UPDATE lumi_assistants SET dispatch_enabled=true WHERE slug='lumitest'`;
+    const [proj] = await pg.sql`SELECT id FROM lumi_projects WHERE slug='test-offer-us'`;
+    const [bot] = await pg.sql`SELECT id FROM lumi_assistants WHERE slug='lumitest'`;
+    await pg.sql`INSERT INTO lumi_project_members(project_id,assistant_id) VALUES (${proj!.id as string},${bot!.id as string}) ON CONFLICT DO NOTHING`;
+    await go(page, `${base}/lumi/knowledge`);
+    await page.getByTestId("knowledge-view").waitFor();
+    await clickUntil(page, "kn-add", "kn-form");
+    await page.getByTestId("kf-scope").selectOption("PROJECT");
+    await page.getByTestId("kf-project").selectOption(proj!.id as string);
+    await page.getByTestId("kf-title").fill("Độ dài mô tả sản phẩm");
+    await page.getByTestId("kf-content").fill("Mỗi mô tả tối đa 100 từ.");
+    await page.getByTestId("kf-reason").fill("Thử nghiệm cho thấy bản ngắn giữ chân tốt hơn");
+    await page.getByTestId("kf-src-title").fill("Báo cáo thử nghiệm tuần 45");
+    await page.getByTestId("kf-submit").click();
+    const item = await until(async () => (await pg.sql`SELECT id,code,status FROM lumi_knowledge_items WHERE status='PROPOSED'`)[0], "knowledge proposed");
+    const code = item.code as string;
+    await page.getByTestId(`kn-row-${code}`).waitFor({ timeout: 30_000 });
+    assert.match(await page.getByTestId(`kn-row-${code}`).innerText(), /Chờ duyệt/);
+    // chưa duyệt: việc mới KHÔNG được nạp quy tắc
+    const mk = (title: string, key: string) => page.evaluate(async ([t, a, p, k]) => {
+      const r = await fetch("/api/v1/tasks", { method: "POST", headers: { "content-type": "application/json", "idempotency-key": k! }, body: JSON.stringify({ project_id: p, assignee_id: a, title: t }) });
+      return (await r.json()).data?.task?.code as string;
+    }, [title, bot!.id as string, proj!.id as string, key] as string[]);
+    const t0 = await mk("Việc trước khi duyệt (UI IMP-04)", "ui-imp04-t0-0001");
+    assert.equal((await pg.sql`SELECT count(*)::int n FROM lumi_run_knowledge rk JOIN lumi_task_runs r ON r.id=rk.run_id JOIN tasks t ON t.id=r.task_id WHERE t.code=${t0}`)[0]!.n, 0);
+    await page.getByTestId(`kn-row-${code}`).click();
+    await page.getByTestId("kn-review").waitFor();
+    await page.getByTestId("kn-approve").click();
+    await until(async () => (await pg.sql`SELECT 1 FROM lumi_knowledge_items WHERE code=${code} AND status='ACTIVE' AND approved_version=1`).length === 1, "approved v1");
+    const t1 = await mk("Việc sau khi duyệt (UI IMP-04)", "ui-imp04-t1-0001");
+    await go(page, `${base}/lumi/projects/test-offer-us?task=${t1}`);
+    await page.getByTestId("loaded-knowledge").waitFor({ timeout: 60_000 });
+    assert.match(await page.getByTestId("loaded-knowledge").innerText(), new RegExp(`${code} bản 1`));
+    // sửa ⇒ v2 chờ duyệt; v1 vẫn áp dụng
+    await go(page, `${base}/lumi/knowledge`);
+    await page.getByTestId(`kn-row-${code}`).click();
+    await clickUntil(page, "kn-revise-open", "kn-revise-form");
+    await page.getByTestId("kn-revise-content").fill("Mỗi mô tả tối đa 150 từ.");
+    await page.getByTestId("kn-revise-submit").click();
+    await until(async () => (await pg.sql`SELECT 1 FROM lumi_knowledge_items WHERE code=${code} AND current_version=2 AND approved_version=1`).length === 1, "v2 pending, v1 in force");
+    const t2 = await mk("Việc khi v2 chưa duyệt (UI IMP-04)", "ui-imp04-t2-0001");
+    assert.match(JSON.stringify((await pg.sql`SELECT r.instruction_snapshot s FROM lumi_task_runs r JOIN tasks t ON t.id=r.task_id WHERE t.code=${t2}`)[0]!.s), /100 từ/);
+    await page.getByTestId("kn-review").waitFor({ timeout: 30_000 });
+    await page.getByTestId("kn-approve").click();
+    await until(async () => (await pg.sql`SELECT 1 FROM lumi_knowledge_items WHERE code=${code} AND approved_version=2`).length === 1, "approved v2");
+    const t3 = await mk("Việc sau khi duyệt v2 (UI IMP-04)", "ui-imp04-t3-0001");
+    assert.match(JSON.stringify((await pg.sql`SELECT r.instruction_snapshot s FROM lumi_task_runs r JOIN tasks t ON t.id=r.task_id WHERE t.code=${t3}`)[0]!.s), /150 từ/);
+    // việc cũ vẫn hiện v1 kèm cảnh báo quy tắc đã đổi
+    await go(page, `${base}/lumi/projects/test-offer-us?task=${t1}`);
+    await page.getByTestId("lk-changed").waitFor({ timeout: 60_000 });
+    assert.match(await page.getByTestId("loaded-knowledge").innerText(), /bản 1/);
+    // so sánh hai phiên bản + tìm kiếm không dấu
+    await go(page, `${base}/lumi/knowledge`);
+    await page.getByTestId("kn-q").fill("do dai mo ta");
+    await page.getByTestId(`kn-row-${code}`).waitFor({ timeout: 30_000 });
+    await page.getByTestId(`kn-row-${code}`).click();
+    await page.getByTestId("kn-compare-1").click();
+    assert.match(await page.getByTestId("kn-diff").innerText(), /100 từ[\s\S]*150 từ/);
+    // trùng tiêu đề với mục đang hiệu lực ⇒ không duyệt được cho tới khi thay thế rõ
+    await page.getByRole("button", { name: "Đóng", exact: true }).first().click();
+    await clickUntil(page, "kn-add", "kn-form");
+    await page.getByTestId("kf-scope").selectOption("PROJECT");
+    await page.getByTestId("kf-project").selectOption(proj!.id as string);
+    await page.getByTestId("kf-title").fill("Độ dài mô tả sản phẩm");
+    await page.getByTestId("kf-content").fill("Ba mươi từ là đủ.");
+    await page.getByTestId("kf-reason").fill("Muốn thay quy tắc cũ bằng bản ngắn hơn");
+    await page.getByTestId("kf-submit").click();
+    const second = await until(async () => (await pg.sql`SELECT id,code FROM lumi_knowledge_items WHERE status='PROPOSED' AND code<>${code}`)[0], "second proposal");
+    await page.getByTestId("kn-q").fill("");
+    await page.getByTestId(`kn-row-${second.code}`).click();
+    await page.getByTestId("kn-review").waitFor();
+    await page.getByTestId("kn-approve").click();
+    await page.waitForTimeout(2500);
+    assert.equal((await pg.sql`SELECT status FROM lumi_knowledge_items WHERE id=${second.id as string}`)[0]!.status, "PROPOSED", "trùng tiêu đề: chưa duyệt được khi chưa chọn thay thế");
+    await page.getByTestId("kn-supersede").selectOption({ index: 1 });
+    await page.getByTestId("kn-approve").click();
+    await until(async () => (await pg.sql`SELECT code,status FROM lumi_knowledge_items WHERE code IN (${code},${second.code as string}) ORDER BY code`).map((r) => r.status).join() === "SUPERSEDED,ACTIVE" || (await pg.sql`SELECT code,status FROM lumi_knowledge_items WHERE code IN (${code},${second.code as string}) ORDER BY code`).map((r) => `${r.code}:${r.status}`).sort().join().includes("SUPERSEDED"), "superseded");
+    assert.equal((await pg.sql`SELECT count(*)::int n FROM lumi_knowledge_items WHERE status='ACTIVE' AND scope='PROJECT' AND scope_ref=${proj!.id as string}`)[0]!.n, 1, "chỉ một mục hiệu lực");
+    // lưu trữ ⇒ không còn được nạp, vẫn mở được
+    await page.getByTestId("kn-archive-reason").fill("Hết hiệu lực");
+    await page.getByTestId("kn-archive").click();
+    await until(async () => (await pg.sql`SELECT 1 FROM lumi_knowledge_items WHERE id=${second.id as string} AND status='ARCHIVED'`).length === 1, "archived");
+    const t4 = await mk("Việc sau khi lưu trữ (UI IMP-04)", "ui-imp04-t4-0001");
+    assert.equal((await pg.sql`SELECT r.instruction_snapshot->'knowledge' k FROM lumi_task_runs r JOIN tasks t ON t.id=r.task_id WHERE t.code=${t4}`)[0]!.k, null);
+    await ctx.close();
+  });
+
+  it("Họp: mở họp bị chặn khi chỉ một bot phát biểu; mở đúng ⇒ việc đóng góp cho từng bot; đóng góp gốc + biên bản trỏ về nguồn; hệ thống phân loại kết luận; đề xuất tiền chờ Chủ và duyệt chỉ GHI NHẬN; VIEWER chỉ xem", async () => {
+    const ctx = await browser.newContext(); const page = await ctx.newPage();
+    await login(page, base, "owner@dev.local");
+    const [proj] = await pg.sql`SELECT id FROM lumi_projects WHERE slug='test-offer-us'`;
+    for (const [slug, name] of [["ui-m1", "Bot họp 1"], ["ui-m2", "Bot họp 2"], ["ui-m3", "Bot họp 3"]] as const) {
+      await pg.sql`INSERT INTO profiles(slug,name,type,status) VALUES (${slug},${name},'bot','active') ON CONFLICT DO NOTHING`;
+      await pg.sql`INSERT INTO lumi_assistants(slug,name,kind,hermes_profile,connection_state,execution_level,tool_allowlist,dispatch_enabled,run_deadline_seconds,ack_deadline_seconds,max_run_failures,max_transport_attempts,max_revision_rounds,max_runs_per_day,description)
+        VALUES (${slug},${name},'SPECIALIST',${slug},'VERIFIED',2,'["knowledge.context","outputs.submit"]',true,600,60,2,3,3,50,'Bot họp thử (mô phỏng)') ON CONFLICT (slug) DO NOTHING`;
+      await pg.sql`INSERT INTO lumi_project_members(project_id,assistant_id) SELECT ${proj!.id as string}, id FROM lumi_assistants WHERE slug=${slug} ON CONFLICT DO NOTHING`;
+    }
+    const [m1] = await pg.sql`SELECT id FROM lumi_assistants WHERE slug='ui-m1'`;
+    const [g] = await pg.sql`INSERT INTO lumi_goals(code,title,outcome,project_id,source_key,created_by) VALUES ('GL-MT','Mục tiêu họp','Kết quả',${proj!.id as string},'goal-mt-ui','test') RETURNING id`;
+    const [plan] = await pg.sql`INSERT INTO lumi_plans(code,goal_id,project_id,lead_assistant_id,status,current_version,approved_version,created_by) VALUES ('PL-MT',${g!.id as string},${proj!.id as string},${m1!.id as string},'EXECUTING',1,1,'test') RETURNING id`;
+    await pg.sql`INSERT INTO lumi_plan_versions(plan_id,version,state,body,content_hash,ceiling_amount,currency,submitted_by) VALUES (${plan!.id as string},1,'APPROVED','{}','h',10,'USD','bot:ui-m1')`;
+    await go(page, `${base}/lumi/meetings`);
+    await page.getByTestId("meetings-view").waitFor();
+    // chưa đặt trần số họp ⇒ chặn kèm hướng dẫn
+    await clickUntil(page, "mt-open", "mt-form");
+    await page.getByTestId("mf-title").fill("Dự toán chung (UI IMP-04)");
+    await page.getByTestId("mf-question").fill("Dự toán chi phí sản xuất 3 video là bao nhiêu?");
+    await page.getByTestId("mf-plan").selectOption({ label: "PL-MT (EXECUTING)" });
+    await page.getByTestId("mf-chair").selectOption({ label: "Bot họp 1" });
+    await page.getByTestId("mf-submit").click();
+    await page.getByTestId("mf-error").waitFor({ timeout: 30_000 });
+    assert.match(await page.getByTestId("mf-error").innerText(), /trần số lần họp|Chính sách|bàn giao/);
+    await page.evaluate(async () => { await fetch("/api/v1/lumi/policies", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ key: "meeting_cap", value: 5 }) }); });
+    // chỉ chủ trì phát biểu (không có ai khác) ⇒ đi thẳng bàn giao
+    await page.getByTestId("mf-submit").click();
+    await page.waitForFunction(() => /bàn giao/.test(document.querySelector("[data-testid='mf-error']")?.textContent ?? ""), null, { timeout: 30_000 });
+    assert.equal((await pg.sql`SELECT count(*)::int n FROM lumi_meetings`)[0]!.n, 0, "bị chặn thì không tạo gì");
+    await page.getByTestId("mf-part-ui-m2").check();
+    await page.getByTestId("mf-part-ui-m3").check();
+    await page.getByTestId("mf-submit").click();
+    const mt = await until(async () => (await pg.sql`SELECT id,code FROM lumi_meetings`)[0], "meeting opened");
+    const code = mt.code as string;
+    await page.getByTestId("mt-detail").waitFor({ timeout: 30_000 });
+    assert.equal((await pg.sql`SELECT count(*)::int n FROM lumi_meeting_participants WHERE meeting_id=${mt.id as string} AND task_id IS NOT NULL`)[0]!.n, 3, "mỗi bot phát biểu có một việc đóng góp");
+    assert.match(await page.getByTestId("mt-participants").innerText(), /Chủ trì/);
+    assert.match(await page.getByTestId("mt-cost").innerText(), /chưa biết|0\.0000/);
+    // các bot đóng góp (cùng lời gọi miền mà công cụ MCP dùng) rồi chủ trì tổng hợp
+    const db = postgresDb(pg.sql);
+    const bots = await pg.sql`SELECT id,slug FROM lumi_assistants WHERE slug IN ('ui-m1','ui-m2','ui-m3') ORDER BY slug`;
+    const say = (b: Record<string, unknown> | undefined, s: string) => contribute(db, { meetingCode: code, actorRef: `bot:${String(b!.slug)}`, assistantId: String(b!.id), stance: s, evidence: "Báo giá tháng 11", now: new Date() });
+    await say(bots[1], "Tôi đề xuất 100 USD"); await say(bots[2], "Tôi đề xuất 120 USD"); await say(bots[0], "Chủ trì: khoảng 110 USD");
+    await page.getByTestId("mt-contrib-3").waitFor({ timeout: 60_000 });
+    await until(async () => { await meetingTick(db, new Date()); return (await pg.sql`SELECT synth_task_id FROM lumi_meetings WHERE id=${mt.id as string}`)[0]?.synth_task_id; }, "synthesis task");
+    const ids = (await pg.sql`SELECT id FROM lumi_meeting_contributions WHERE meeting_id=${mt.id as string} ORDER BY created_at`).map((x) => x.id as string);
+    const out = await synthesizeMeeting(db, { meetingCode: code, actorRef: "bot:ui-m1", assistantId: bots[0]!.id as string, summary: "Chốt dự toán 110 USD cho 3 video", lines: [{ text: "Dự toán 110 USD", contribution_ids: [ids[0]!, ids[1]!] }],
+      conclusions: [{ type: "RECORD", text: "Dự toán 110 USD" }, { type: "BUDGET_CHANGE", text: "Tăng trần lên 300 USD", payload: { to: 300 } }], now: new Date() });
+    assert.equal(out.outcome, "DECIDED");
+    await page.getByTestId("mt-note-1").waitFor({ timeout: 60_000 });
+    assert.match(await page.getByTestId("mt-note-1").innerText(), /nguồn: đóng góp #1, #2/);
+    assert.equal(await page.getByTestId("mt-concl-1").getAttribute("data-kind"), "RECORD");
+    assert.equal(await page.getByTestId("mt-concl-2").getAttribute("data-kind"), "PROPOSAL");
+    assert.equal(await page.getByTestId("mt-concl-2").getAttribute("data-state"), "PENDING_OWNER");
+    const budgetsBefore = JSON.stringify(await pg.sql`SELECT * FROM lumi_budgets`);
+    // màn Chờ duyệt có đề xuất của họp; duyệt chỉ ghi nhận, không đổi ngân sách
+    await go(page, `${base}/lumi/approvals?tab=kmeet`);
+    await page.getByTestId("pending-mc-approve-BUDGET_CHANGE").click();
+    await until(async () => (await pg.sql`SELECT 1 FROM lumi_meeting_conclusions WHERE type='BUDGET_CHANGE' AND state='APPROVED'`).length === 1, "conclusion approved");
+    assert.equal(JSON.stringify(await pg.sql`SELECT * FROM lumi_budgets`), budgetsBefore, "kết luận họp không đổi ngân sách");
+    // VIEWER chỉ xem
+    const vctx = await browser.newContext(); const vpage = await vctx.newPage();
+    assert.equal((await login(vpage, base, "viewer@dev.local")).user?.role, "VIEWER");
+    await go(vpage, `${base}/lumi/meetings`);
+    await vpage.getByTestId(`mt-row-${code}`).click();
+    await vpage.getByTestId("mt-detail").waitFor({ timeout: 60_000 });
+    assert.equal(await vpage.locator("[data-testid='mt-open'],[data-testid^='mt-approve-'],[data-testid^='mt-reject-'],[data-testid='mt-close']").count(), 0);
+    const st = await vpage.evaluate(async () => {
+      const r1 = (await fetch("/api/v1/lumi/meetings/MT-001/close", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ reason: "viewer" }) })).status;
+      const r2 = (await fetch("/api/v1/lumi/knowledge/search", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({}) })).status;
+      return [r1, r2];
+    });
+    assert.deepEqual(st, [403, 200]);
+    await vctx.close(); await ctx.close();
+  });
+
+  it("Chi phí đo thật: thẻ nêu số ĐO THẬT và số lượt CHƯA BIẾT kèm lý do (không bao giờ là 0); lượt chồng/khóa chung không được khẳng định", async () => {
+    const ctx = await browser.newContext(); const page = await ctx.newPage();
+    await login(page, base, "owner@dev.local");
+    const [bot] = await pg.sql`SELECT id FROM lumi_assistants WHERE slug='lumitest'`;
+    const runs = await pg.sql`SELECT r.id FROM lumi_task_runs r WHERE r.assistant_id=${bot!.id as string} ORDER BY r.created_at LIMIT 3`;
+    assert.ok(runs.length >= 3, "có đủ lượt chạy từ các bài trước");
+    await pg.sql`UPDATE lumi_task_runs SET state='SUCCEEDED',started_at=now() - interval '1 minute',finished_at=now() WHERE id = ANY(${runs.map((r) => r.id as string)}::uuid[]) AND state NOT IN ('SUCCEEDED','FAILED','TIMED_OUT','CANCELLED')`;
+    await pg.sql`INSERT INTO lumi_run_cost_probes(run_id,assistant_id,state,before_usage,after_usage,currency) VALUES (${runs[0]!.id as string},${bot!.id as string},'MEASURED',0.5,0.5125,'USD') ON CONFLICT (run_id) DO NOTHING`;
+    await pg.sql`INSERT INTO lumi_run_cost_probes(run_id,assistant_id,state,reason,currency) VALUES (${runs[1]!.id as string},${bot!.id as string},'OVERLAP','RUNS_OVERLAPPED','USD') ON CONFLICT (run_id) DO NOTHING`;
+    await pg.sql`INSERT INTO lumi_run_cost_probes(run_id,assistant_id,state,reason,currency) VALUES (${runs[2]!.id as string},${bot!.id as string},'UNAVAILABLE','SHARED_KEY','USD') ON CONFLICT (run_id) DO NOTHING`;
+    await go(page, `${base}/lumi/company`);
+    const row = page.getByTestId("cost-lumitest");
+    await row.waitFor({ timeout: 60_000 });
+    assert.match(await row.innerText(), /0\.0125/);
+    assert.match(await row.innerText(), /chưa biết/);
+    await page.getByTestId("cost-card").locator("summary").click();
+    const text = await page.getByTestId("cost-card").innerText();
+    assert.match(text, /chồng nhau/); assert.match(text, /dùng chung/);
+    await ctx.close();
   });
 });

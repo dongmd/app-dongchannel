@@ -1,7 +1,7 @@
 "use client";
 
 import { usePathname } from "next/navigation";
-import { Bell, Brain, CalendarDays, Building2, FolderKanban, ListChecks, Menu, MessageCircle, Plus, RotateCcw, Server, Sparkles, Target, Users } from "lucide-react";
+import { Bell, BookOpen, Brain, CalendarDays, Building2, FolderKanban, ListChecks, Menu, MessageCircle, MessagesSquare, Plus, RotateCcw, Server, Sparkles, Target, Users } from "lucide-react";
 import { useState, type ReactNode } from "react";
 
 import { pendingBreakdown, pendingCounts } from "@/lib/lumi/selectors";
@@ -92,6 +92,16 @@ export function Shell({ children }: { children: ReactNode }) {
             <LumiLink href="/lumi/memory" aria-current={cur("/lumi/memory") ? "page" : undefined}>
               <Brain size={17} /> Bộ nhớ
             </LumiLink>
+            {real && (
+              <>
+                <LumiLink href="/lumi/knowledge" aria-current={cur("/lumi/knowledge") ? "page" : undefined}>
+                  <BookOpen size={17} /> Kiến thức
+                </LumiLink>
+                <LumiLink href="/lumi/meetings" aria-current={cur("/lumi/meetings") ? "page" : undefined}>
+                  <MessagesSquare size={17} /> Họp
+                </LumiLink>
+              </>
+            )}
             <div className="group">Hệ thống</div>
             <LumiLink href="/lumi/telegram" aria-current={cur("/lumi/telegram") ? "page" : undefined}>
               <MessageCircle size={17} /> {real ? "Telegram & kết nối" : "Telegram mô phỏng"}

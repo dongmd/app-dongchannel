@@ -32,6 +32,8 @@ import { createProject } from "./projects";
 import { createTask } from "./core-web";
 import { addDependency } from "./coordination";
 import { createAppointment, createBotCase, createRole, setSkill } from "./roster";
+import { decideKnowledge, proposeKnowledge } from "./knowledge";
+import { openMeeting } from "./meetings";
 import { handleRpc } from "./mcp";
 
 const nodeRequire = createRequire(path.join(process.cwd(), "package.json"));
@@ -112,8 +114,8 @@ describe("rollback rehearsal (PostgreSQL server, previous release code, syntheti
     assert.ok(s.kpiOk);
   });
 
-  it("2. sau khi áp 0039–0046, bản cũ vẫn chạy trên CSDL đã migrate với dữ liệu cũ (cổng bước 3)", async () => {
-    await replayMigrations(srv.sql, "0046", "0039"); // all of this release's migrations: the old code must still run on the fully migrated schema
+  it("2. sau khi áp 0039–0047, bản cũ vẫn chạy trên CSDL đã migrate với dữ liệu cũ (cổng bước 3)", async () => {
+    await replayMigrations(srv.sql, "0047", "0039"); // all of this release's migrations: the old code must still run on the fully migrated schema
     const cols = await q(`SELECT column_name FROM information_schema.columns WHERE table_name='tasks' AND column_name IN ('project_id','owner_kind','description')`);
     assert.equal(cols.length, 3);
     const s = oldSmoke();
@@ -182,7 +184,7 @@ describe("rollback rehearsal (PostgreSQL server, previous release code, syntheti
     assert.deepEqual(again.rewritten, { onHold: 0, waitingAssistant: 0 });
   });
 
-  it("3b. IMP-01/02/03: tạo mục tiêu→kế hoạch→duyệt→việc→sổ (+ vai trò, năng lực, phụ thuộc, business case), drain kế hoạch+M1 ⇒ không xóa dữ liệu, bản cũ vẫn chạy, drain lặp được", async () => {
+  it("3b. IMP-01..05: tạo mục tiêu→kế hoạch→duyệt→việc→sổ (+ vai trò, năng lực, phụ thuộc, business case), drain kế hoạch+M1 ⇒ không xóa dữ liệu, bản cũ vẫn chạy, drain lặp được", async () => {
     const db = postgresDb(srv.sql);
     const before0 = (await q(`SELECT count(*)::int n FROM tasks`))[0].n;
     await q(`INSERT INTO lumi_system_flags(key,value,set_by,set_at) VALUES ('m1_enabled','true','test',now()) ON CONFLICT (key) DO UPDATE SET value='true'`);
@@ -223,7 +225,14 @@ describe("rollback rehearsal (PostgreSQL server, previous release code, syntheti
     const down = (await createTask(db, { actorRef: "web:owner@test", clientRequestId: "rb-dep-down-00001", projectId: proj.id, assigneeId: a.id, title: "Việc dưới (diễn tập IMP-03)", now: clock })).task;
     await addDependency(db, { actorRef: "web:owner@test", taskId: down.id, dependsOnId: up.id, now: clock });
     await createBotCase(db, { actorRef: "web:owner@test", input: { title: "Business case diễn tập", work_needed: "Việc giả", volume: "không có", extra_cost: "chưa biết", owner_time_saved: "chưa biết", trial_criteria: "Không có", stop_condition: "Luôn dừng" }, now: clock });
-    const counts = async () => (await q(`SELECT (SELECT count(*)::int FROM lumi_goals) g,(SELECT count(*)::int FROM lumi_plans) p,(SELECT count(*)::int FROM lumi_plan_versions) v,(SELECT count(*)::int FROM lumi_ledger_entries) l,(SELECT count(*)::int FROM lumi_budgets) b,(SELECT count(*)::int FROM lumi_policies) pol,(SELECT count(*)::int FROM lumi_assistants) asst,(SELECT count(*)::int FROM lumi_projects) prj,(SELECT count(*)::int FROM lumi_roles) rl,(SELECT count(*)::int FROM lumi_appointments) ap,(SELECT count(*)::int FROM lumi_skills) sk,(SELECT count(*)::int FROM lumi_task_deps) dp,(SELECT count(*)::int FROM lumi_bot_cases) bc`))[0];
+    // IMP-04/05 data too: an approved knowledge item and an open meeting (two bots) with a measured cost probe
+    const kn = await proposeKnowledge(db, { actorRef: "web:owner@test", kind: "RULE", scope: "COMPANY", title: "Nguyên tắc diễn tập IMP-04", content: "Ghi rõ nguồn.", reason: "Bài diễn tập rollback", now: clock });
+    await decideKnowledge(db, { actorRef: "web:owner@test", itemId: kn.item.id, version: 1, decision: "APPROVE", now: clock });
+    await setPolicy(db, { actorRef: "web:owner@test", key: "meeting_cap", value: 3, now: clock });
+    await openMeeting(db, { actorRef: "web:owner@test", idempotencyKey: "rb-meeting-0000001", title: "Họp diễn tập", question: "Câu hỏi diễn tập?", reason: "OWNER", chairAssistantId: a.id, participants: [{ assistantId: (await q(`SELECT id FROM lumi_assistants WHERE slug='rb-imp02'`))[0].id, role: "CONTRIBUTOR" }], closesAt: new Date(clock.getTime() + 86400_000), maxRounds: 1, maxRuns: 5, endConditions: "Hết hạn", inputs: [{ kind: "KNOWLEDGE", ref: kn.item.code, version: 1 }], now: clock, planId: undefined, projectId: proj.id } as any);
+    const probeRun = (await q(`SELECT id,assistant_id FROM lumi_task_runs ORDER BY created_at LIMIT 1`))[0];
+    await q(`INSERT INTO lumi_run_cost_probes(run_id,assistant_id,state,before_usage,after_usage,currency) VALUES ($1,$2,'MEASURED',1,1.02,'USD')`, [probeRun.id, probeRun.assistant_id]);
+    const counts = async () => (await q(`SELECT (SELECT count(*)::int FROM lumi_goals) g,(SELECT count(*)::int FROM lumi_plans) p,(SELECT count(*)::int FROM lumi_plan_versions) v,(SELECT count(*)::int FROM lumi_ledger_entries) l,(SELECT count(*)::int FROM lumi_budgets) b,(SELECT count(*)::int FROM lumi_policies) pol,(SELECT count(*)::int FROM lumi_assistants) asst,(SELECT count(*)::int FROM lumi_projects) prj,(SELECT count(*)::int FROM lumi_roles) rl,(SELECT count(*)::int FROM lumi_appointments) ap,(SELECT count(*)::int FROM lumi_skills) sk,(SELECT count(*)::int FROM lumi_task_deps) dp,(SELECT count(*)::int FROM lumi_bot_cases) bc,(SELECT count(*)::int FROM lumi_knowledge_items) kn,(SELECT count(*)::int FROM lumi_knowledge_versions) kv,(SELECT count(*)::int FROM lumi_meetings) mt,(SELECT count(*)::int FROM lumi_meeting_participants) mp,(SELECT count(*)::int FROM lumi_run_cost_probes) cp`))[0];
     const c0 = await counts();
     const d = await drainPlans(db, "web:owner@test", clock);
     assert.equal(d.plansPaused, 1);
