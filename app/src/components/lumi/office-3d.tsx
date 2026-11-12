@@ -1,132 +1,89 @@
 "use client";
 
-// Cảnh Văn phòng 3D (three.js): một căn phòng có sàn, hai vách thấp và các góc làm việc.
+// Cảnh Văn phòng 3D v2 (three.js): mỗi dự án một phòng, Phòng họp trải hai cột ở giữa (OFC-07, OFC-08).
+// Nhãn và bong bóng là HTML phủ lên cảnh (chữ sắc nét, chọn được bằng bàn phím); dữ liệu đưa vào đã tính sẵn ở office-view.
 // Chỉ được tải động khi người dùng chọn 3D.
 import { useEffect, useRef, type MutableRefObject } from "react";
 import * as THREE from "three";
 import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
 
-import { colsFor, DX, DZ, layoutSpots, shortName } from "@/lib/lumi/office-layout";
-import { Avatar } from "./avatar";
+import { MEET_ID, type OfficePlan, type RoomPlan } from "@/lib/lumi/office-layout";
+import type { MeetingBoard, OfficeStatus } from "@/lib/lumi/office-state";
 
 export interface Office3DMember {
   id: string;
   name: string;
   role: string;
-  avatar: string;
   color: string;
-  archived: boolean;
-  busy: boolean;
-  waiting: boolean;
+  human: boolean;
+  status: OfficeStatus;
+  label: string;
+  bubble: string | null;
+  review: number;
+}
+export interface Office3DMeeting {
+  /** false = chế độ mô phỏng: họp chỉ có ở dữ liệu thật. */
+  available: boolean;
+  board: MeetingBoard | null;
+  seatIds: string[];
 }
 export interface Office3DHandle {
   reset: () => void;
   zoom: (factor: number) => void;
 }
 interface Props {
+  plan: OfficePlan;
   members: Office3DMember[];
+  meeting: Office3DMeeting;
   selectedId: string | null;
   onSelect: (id: string) => void;
+  onAdd: () => void;
   onUnsupported: (message: string) => void;
   handleRef: MutableRefObject<Office3DHandle | null>;
 }
 
-function roundRect(ctx: CanvasRenderingContext2D, x: number, y: number, w: number, h: number, r: number) {
-  ctx.beginPath();
-  ctx.moveTo(x + r, y);
-  ctx.arcTo(x + w, y, x + w, y + h, r);
-  ctx.arcTo(x + w, y + h, x, y + h, r);
-  ctx.arcTo(x, y + h, x, y, r);
-  ctx.arcTo(x, y, x + w, y, r);
-  ctx.closePath();
-}
+const STATUS_HEX: Record<OfficeStatus, number> = { working: 0xb095ff, review: 0xf5b84a, blocked: 0xf07474, idle: 0x52c98f, archived: 0x5a606b };
+const initials = (name: string) => name.replace(/^Trợ lý\s+/i, "").split(/\s+/).filter(Boolean).slice(0, 2).map((w) => w[0]!.toUpperCase()).join("") || "?";
+const MAX_SEATS = 8;
+const TABLE_Z = 0.5; // tâm bàn họp so với tâm phòng
 
-function drawLabel(canvas: HTMLCanvasElement, m: Office3DMember, selected: boolean) {
-  const ctx = canvas.getContext("2d")!;
-  const W = canvas.width;
-  const H = canvas.height;
-  ctx.clearRect(0, 0, W, H);
-  roundRect(ctx, 4, 4, W - 8, H - 8, H / 2 - 4);
-  ctx.fillStyle = selected ? "rgba(40,30,8,0.95)" : "rgba(12,14,20,0.82)";
-  ctx.fill();
-  ctx.lineWidth = selected ? 7 : 3;
-  ctx.strokeStyle = selected ? "#f5b84a" : "rgba(130,142,165,0.6)";
-  ctx.stroke();
-  ctx.textAlign = "center";
-  ctx.textBaseline = "middle";
-  ctx.fillStyle = m.archived ? "#f09a9a" : "#ffffff";
-  ctx.font = "700 64px system-ui, 'Segoe UI', Roboto, sans-serif";
-  ctx.fillText(shortName(m.name), W / 2, H / 2 + 3);
-}
-
-function drawCoin(canvas: HTMLCanvasElement, color: string, svgMarkup: string | null, onDone: () => void) {
-  const ctx = canvas.getContext("2d")!;
-  const S = canvas.width;
-  ctx.clearRect(0, 0, S, S);
-  const g = ctx.createLinearGradient(0, 0, S, S);
-  g.addColorStop(0, color);
-  g.addColorStop(1, `${color}aa`);
-  ctx.beginPath();
-  ctx.arc(S / 2, S / 2, S / 2 - 6, 0, Math.PI * 2);
-  ctx.fillStyle = g;
-  ctx.fill();
-  ctx.lineWidth = 9;
-  ctx.strokeStyle = "rgba(255,255,255,0.9)";
-  ctx.stroke();
-  if (!svgMarkup) return;
-  const img = new Image();
-  img.onload = () => {
-    const sz = S * 0.58;
-    ctx.drawImage(img, (S - sz) / 2, (S - sz) / 2, sz, sz);
-    onDone();
-  };
-  img.src = `data:image/svg+xml;charset=utf-8,${encodeURIComponent(svgMarkup)}`;
-}
-
-function plankTexture(): THREE.CanvasTexture {
-  const c = document.createElement("canvas");
-  c.width = c.height = 512;
-  const ctx = c.getContext("2d")!;
-  ctx.fillStyle = "#2b2a31";
-  ctx.fillRect(0, 0, 512, 512);
-  const tones = ["#2f2d36", "#2a2830", "#34313a", "#2c2b33"];
-  for (let i = 0; i < 8; i++) {
-    ctx.fillStyle = tones[i % tones.length]!;
-    ctx.fillRect(0, i * 64, 512, 62);
-    ctx.fillStyle = "rgba(0,0,0,0.35)";
-    ctx.fillRect(0, i * 64 + 62, 512, 2);
-    const off = (i * 173) % 512;
-    ctx.fillRect(off, i * 64, 2, 62);
-  }
-  const t = new THREE.CanvasTexture(c);
-  t.wrapS = t.wrapT = THREE.RepeatWrapping;
-  t.colorSpace = THREE.SRGBColorSpace;
-  return t;
-}
+interface Figure { grp: THREE.Group; head: THREE.Group; arms: [THREE.Group, THREE.Group]; mat: THREE.MeshStandardMaterial }
+interface Desk { grp: THREE.Group; fig: Figure; screen: THREE.Mesh; glow: THREE.Mesh; ring: THREE.Mesh; stack: THREE.Group; ph: number; world: THREE.Vector3 }
+interface Anchor { el: HTMLElement; x: number; y: number; z: number }
 
 class OfficeScene {
   private renderer: THREE.WebGLRenderer;
   private scene = new THREE.Scene();
   private camera: THREE.PerspectiveCamera;
   private controls: OrbitControls;
-  private room = new THREE.Group();
-  private group = new THREE.Group();
-  private sun: THREE.DirectionalLight;
-  private hits: THREE.Object3D[] = [];
-  private rings = new Map<string, THREE.Mesh>();
-  private labels = new Map<string, { canvas: HTMLCanvasElement; tex: THREE.CanvasTexture; m: Office3DMember; sprite: THREE.Sprite }>();
-  private coins = new Map<string, THREE.Sprite>();
+  private world = new THREE.Group();
+  private overlay: HTMLDivElement;
   private raf = 0;
   private ro: ResizeObserver;
   private down: { x: number; y: number; t: number } | null = null;
-  private defaultPos = new THREE.Vector3(8, 8, 10);
-  private defaultTarget = new THREE.Vector3(0, 1, 0);
-  private selected: string | null = null;
   private disposed = false;
-  private count = 0;
-  private plank = plankTexture();
+  private geo = new Map<string, THREE.BufferGeometry>();
+  private hits: THREE.Object3D[] = [];
+  private desks = new Map<string, Desk>();
+  private seats: Figure[] = [];
+  private anchors: Anchor[] = [];
+  private roomCenter = new Map<string, THREE.Vector3>();
+  private wallN = new THREE.MeshStandardMaterial({ color: 0x2a3246, roughness: 0.85, transparent: true });
+  private wallW = new THREE.MeshStandardMaterial({ color: 0x2a3246, roughness: 0.85, transparent: true });
+  private wN = 1;
+  private wW = 1;
+  private holo: THREE.Mesh | null = null;
+  private board: { canvas: HTMLCanvasElement; tex: THREE.CanvasTexture } | null = null;
+  private plan: OfficePlan | null = null;
+  private members = new Map<string, Office3DMember>();
+  private meeting: Office3DMeeting = { available: false, board: null, seatIds: [] };
+  private selected: string | null = null;
+  private fitDist = 30;
+  private flight: { t0: number; fromT: THREE.Vector3; toT: THREE.Vector3; fromP: THREE.Vector3; toP: THREE.Vector3 } | null = null;
+  private reduce = typeof matchMedia === "function" && matchMedia("(prefers-reduced-motion: reduce)").matches;
+  private ph = 0.92;
 
-  constructor(private container: HTMLDivElement, private onPick: (id: string) => void, private onLost: () => void) {
+  constructor(private container: HTMLDivElement, private onPick: (id: string) => void, private onAdd: () => void, private onLost: () => void) {
     const probe = document.createElement("canvas");
     if (!(probe.getContext("webgl2") ?? probe.getContext("webgl"))) throw new Error("webgl-unavailable");
     const w = container.clientWidth || 600;
@@ -136,6 +93,8 @@ class OfficeScene {
     this.renderer.setSize(w, h);
     this.renderer.shadowMap.enabled = true;
     this.renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+    this.renderer.toneMapping = THREE.ACESFilmicToneMapping;
+    this.renderer.toneMappingExposure = 1.05;
     this.renderer.domElement.setAttribute("aria-label", "Cảnh văn phòng 3D. Dùng danh sách thành viên bên dưới để chọn bằng bàn phím.");
     this.renderer.domElement.setAttribute("data-testid", "canvas-3d");
     container.prepend(this.renderer.domElement);
@@ -143,26 +102,37 @@ class OfficeScene {
       e.preventDefault();
       this.onLost();
     });
+    this.overlay = document.createElement("div");
+    this.overlay.className = "o3-overlay";
+    container.appendChild(this.overlay);
 
-    this.scene.background = new THREE.Color(0x0d0f15);
-    this.camera = new THREE.PerspectiveCamera(40, w / h, 0.1, 120);
-    this.camera.position.copy(this.defaultPos);
+    this.scene.background = new THREE.Color(0x0b0e15);
+    this.scene.fog = new THREE.Fog(0x0b0e15, 55, 110);
+    this.camera = new THREE.PerspectiveCamera(36, w / h, 0.1, 200);
     this.controls = new OrbitControls(this.camera, this.renderer.domElement);
     this.controls.enableDamping = true;
     this.controls.dampingFactor = 0.08;
-    this.controls.minDistance = 4;
-    this.controls.maxDistance = 40;
-    this.controls.maxPolarAngle = Math.PI * 0.47;
-    this.controls.target.copy(this.defaultTarget);
+    this.controls.minDistance = 6;
+    this.controls.minPolarAngle = 0.25;
+    this.controls.maxPolarAngle = 1.38;
 
-    // Ánh sáng ấm: nền trời mờ, nắng xiên từ góc mở của căn phòng, đèn trần vàng nhạt.
-    this.scene.add(new THREE.HemisphereLight(0xe6ecff, 0x39303a, 1.7));
-    this.sun = new THREE.DirectionalLight(0xffe2b0, 2.0);
-    this.sun.castShadow = true;
-    this.sun.shadow.mapSize.set(1024, 1024);
-    this.sun.shadow.bias = -0.0004;
-    this.scene.add(this.sun, this.sun.target);
-    this.scene.add(this.room, this.group);
+    this.scene.add(new THREE.HemisphereLight(0xb9c8ff, 0x2b2330, 1.5));
+    const sun = new THREE.DirectionalLight(0xffe0b0, 2.6);
+    sun.position.set(-10, 20, 14);
+    sun.castShadow = true;
+    sun.shadow.mapSize.set(2048, 2048);
+    sun.shadow.bias = -0.0005;
+    Object.assign(sun.shadow.camera, { left: -18, right: 18, top: 26, bottom: -26, near: 1, far: 90 });
+    this.scene.add(sun);
+    const ground = new THREE.Mesh(new THREE.PlaneGeometry(160, 160), new THREE.MeshStandardMaterial({ color: 0x0e121b, roughness: 1 }));
+    ground.rotation.x = -Math.PI / 2;
+    ground.position.y = -0.2;
+    ground.receiveShadow = true;
+    this.scene.add(ground);
+    const grid = new THREE.GridHelper(80, 80, 0x1c2333, 0x151b28);
+    grid.position.y = -0.19;
+    this.scene.add(grid);
+    this.scene.add(this.world);
 
     const el = this.renderer.domElement;
     el.addEventListener("pointerdown", this.onDown);
@@ -172,6 +142,451 @@ class OfficeScene {
     this.loop();
   }
 
+  // ───────── giao tiếp với React
+  setPlan(plan: OfficePlan, members: Office3DMember[], meeting: Office3DMeeting) {
+    this.plan = plan;
+    this.members = new Map(members.map((m) => [m.id, m]));
+    this.meeting = meeting;
+    this.build();
+    this.fit();
+    this.reset();
+  }
+  setData(members: Office3DMember[], meeting: Office3DMeeting) {
+    this.members = new Map(members.map((m) => [m.id, m]));
+    this.meeting = meeting;
+    this.applyMeeting();
+    this.rebuildOverlay();
+  }
+  setSelected(id: string | null, fly: boolean) {
+    this.selected = id;
+    for (const [mid, d] of this.desks) d.ring.visible = mid === id;
+    if (this.holo) (this.holo.material as THREE.MeshBasicMaterial).color.set(id === MEET_ID ? 0xffffff : 0xf5b84a);
+    this.overlay.querySelectorAll<HTMLElement>("[data-id]").forEach((e) => e.classList.toggle("sel", e.dataset.id === id));
+    if (fly && id) this.flyToId(id);
+  }
+  screenPositionOf(id: string): { x: number; y: number } | null {
+    const d = this.desks.get(id);
+    const p = d ? d.world.clone() : this.roomCenter.get(id)?.clone();
+    if (!p) return null;
+    p.project(this.camera);
+    const rect = this.renderer.domElement.getBoundingClientRect();
+    return { x: rect.left + ((p.x + 1) / 2) * rect.width, y: rect.top + ((1 - p.y) / 2) * rect.height };
+  }
+
+  // ───────── camera
+  private fit() {
+    const plan = this.plan;
+    if (!plan) return;
+    const pts: THREE.Vector3[] = [];
+    for (const sx of [-1, 1]) for (const sz of [-1, 1]) for (const y of [0, 3.6]) pts.push(new THREE.Vector3((sx * plan.width) / 2, y, (sz * plan.depth) / 2));
+    const cam = this.camera.clone();
+    cam.aspect = Math.max(0.45, this.camera.aspect || 1.6);
+    cam.updateProjectionMatrix();
+    const dir = new THREE.Vector3(0, Math.sin(this.ph), Math.cos(this.ph));
+    const tg = new THREE.Vector3(0, 0.5, 0);
+    let dist = 8;
+    for (; dist < 140; dist += 0.4) {
+      cam.position.copy(tg).addScaledVector(dir, dist);
+      cam.lookAt(tg);
+      cam.updateMatrixWorld(true);
+      let worst = 0;
+      for (const p of pts) {
+        const q = p.clone().project(cam);
+        worst = Math.max(worst, Math.abs(q.x), Math.abs(q.y));
+      }
+      if (worst < 0.9) break;
+    }
+    this.fitDist = dist;
+    this.controls.maxDistance = dist * 1.8;
+  }
+  reset() {
+    this.flight = null;
+    const tg = new THREE.Vector3(0, 0.5, 0);
+    this.controls.target.copy(tg);
+    this.camera.position.copy(tg).add(new THREE.Vector3(0, Math.sin(this.ph), Math.cos(this.ph)).multiplyScalar(this.fitDist));
+    this.controls.update();
+  }
+  zoom(f: number) {
+    const v = this.camera.position.clone().sub(this.controls.target).multiplyScalar(f);
+    v.setLength(Math.min(this.controls.maxDistance, Math.max(this.controls.minDistance, v.length())));
+    this.camera.position.copy(this.controls.target).add(v);
+    this.controls.update();
+  }
+  private flyToId(id: string) {
+    const roomId = id === MEET_ID ? MEET_ID : (this.desks.get(id)?.grp.userData.room as string | undefined);
+    const c = roomId ? this.roomCenter.get(roomId) : undefined;
+    if (!c) return;
+    const dir = this.camera.position.clone().sub(this.controls.target).normalize();
+    const dist = Math.max(11, this.fitDist * (id === MEET_ID ? 0.62 : 0.5));
+    const toT = new THREE.Vector3(c.x, 0.5, c.z);
+    const toP = toT.clone().addScaledVector(dir, dist);
+    if (this.reduce) {
+      this.controls.target.copy(toT);
+      this.camera.position.copy(toP);
+      this.controls.update();
+      return;
+    }
+    this.flight = { t0: performance.now(), fromT: this.controls.target.clone(), toT, fromP: this.camera.position.clone(), toP };
+  }
+
+  // ───────── dựng cảnh
+  private rb(parent: THREE.Object3D, w: number, h: number, d: number, mat: THREE.Material, x: number, y: number, z: number, b = 0.035) {
+    const key = [w, h, d, b].join();
+    let g = this.geo.get(key);
+    if (!g) {
+      const a = Math.max(0.001, w - 2 * b);
+      const c = Math.max(0.001, h - 2 * b);
+      const s = new THREE.Shape();
+      s.moveTo(-a / 2, -c / 2);
+      s.lineTo(a / 2, -c / 2);
+      s.lineTo(a / 2, c / 2);
+      s.lineTo(-a / 2, c / 2);
+      s.closePath();
+      g = new THREE.ExtrudeGeometry(s, { depth: Math.max(0.001, d - 2 * b), bevelEnabled: true, bevelThickness: b, bevelSize: b, bevelSegments: 2, curveSegments: 2 });
+      g.translate(0, 0, -(d - 2 * b) / 2);
+      this.geo.set(key, g);
+    }
+    const m = new THREE.Mesh(g, mat);
+    m.position.set(x, y, z);
+    m.castShadow = m.receiveShadow = true;
+    parent.add(m);
+    return m;
+  }
+  private std(color: number | THREE.Color, extra: THREE.MeshStandardMaterialParameters = {}) {
+    return new THREE.MeshStandardMaterial({ color, roughness: 0.75, metalness: 0.02, ...extra });
+  }
+  private figure(parent: THREE.Object3D, hex: string, human: boolean): Figure {
+    const grp = new THREE.Group();
+    parent.add(grp);
+    const mat = this.std(new THREE.Color(hex), { roughness: 0.55 });
+    const skin = this.std(0xf0cfae, { roughness: 0.6 });
+    const body = new THREE.Mesh(new THREE.CapsuleGeometry(0.3, 0.5, 6, 16), mat);
+    body.position.y = 1.25;
+    body.castShadow = true;
+    grp.add(body);
+    const head = new THREE.Group();
+    head.position.y = 1.95;
+    grp.add(head);
+    const hs = new THREE.Mesh(new THREE.SphereGeometry(0.28, 24, 18), skin);
+    hs.castShadow = true;
+    head.add(hs);
+    const hair = new THREE.Mesh(new THREE.SphereGeometry(0.295, 24, 12, 0, Math.PI * 2, 0, Math.PI * 0.55), this.std(human ? 0x3a2a20 : 0x23262f));
+    hair.position.y = 0.02;
+    hair.rotation.x = -0.25;
+    head.add(hair);
+    const eye = new THREE.MeshBasicMaterial({ color: 0x14171f });
+    for (const x of [-0.1, 0.1]) {
+      const e = new THREE.Mesh(new THREE.SphereGeometry(0.035, 8, 8), eye);
+      e.position.set(x, 0.03, 0.255);
+      head.add(e);
+    }
+    const mk = (s: number) => {
+      const p = new THREE.Group();
+      p.position.set(s * 0.36, 1.5, 0);
+      grp.add(p);
+      const a = new THREE.Mesh(new THREE.CapsuleGeometry(0.08, 0.5, 4, 8), mat);
+      a.position.y = -0.28;
+      a.castShadow = true;
+      p.add(a);
+      p.rotation.x = -0.9;
+      return p;
+    };
+    return { grp, head, arms: [mk(-1), mk(1)], mat };
+  }
+
+  private disposeWorld() {
+    this.world.traverse((o) => {
+      const m = o as THREE.Mesh;
+      m.geometry?.dispose?.();
+      const mat = m.material as THREE.Material | THREE.Material[] | undefined;
+      for (const x of Array.isArray(mat) ? mat : mat ? [mat] : []) {
+        (x as THREE.MeshBasicMaterial).map?.dispose?.();
+        x.dispose();
+      }
+    });
+    this.world.clear();
+    this.geo.clear();
+    this.hits = [];
+    this.desks.clear();
+    this.seats = [];
+    this.roomCenter.clear();
+    this.holo = null;
+    this.board = null;
+  }
+
+  private build() {
+    this.disposeWorld();
+    const plan = this.plan!;
+    for (const r of plan.rooms) {
+      const g = new THREE.Group();
+      g.position.set(r.x, 0, r.z);
+      this.world.add(g);
+      this.roomCenter.set(r.id, new THREE.Vector3(r.x, 0, r.z));
+      const meet = r.kind === "meet";
+      const rc = new THREE.Color(r.accent);
+      const base = new THREE.Color(0x2b3245);
+      this.rb(g, r.w, 0.2, r.d, this.std(base.clone().lerp(rc, meet ? 0.07 : 0.16), { roughness: 0.9 }), 0, -0.1, 0, 0.05);
+      this.rb(g, r.w - 0.5, 0.02, r.d - 0.5, this.std(base.clone().lerp(rc, meet ? 0.12 : 0.3), { roughness: 1 }), 0, 0.01, 0.1, 0.005);
+      this.rb(g, r.w + 0.2, 1.9, 0.2, this.wallN, 0, 0.95, -r.d / 2 - 0.05);
+      this.rb(g, 0.2, 1.9, r.d + 0.2, this.wallW, -r.w / 2 - 0.05, 0.95, 0);
+      const trim = this.std(rc, { emissive: rc, emissiveIntensity: 0.5, roughness: 0.5 });
+      this.rb(g, r.w + 0.24, 0.07, 0.26, trim, 0, 1.93, -r.d / 2 - 0.05, 0.01);
+      this.rb(g, 0.26, 0.07, r.d + 0.24, trim, -r.w / 2 - 0.05, 1.93, 0, 0.01);
+      const win = this.std(0x8fb4ff, { emissive: 0x5f8fe8, emissiveIntensity: 0.6, roughness: 0.3 });
+      for (const x of meet ? [-6, 6] : [-1.8, 1.8]) this.rb(g, 1.8, 0.9, 0.04, win, x, 1.15, -r.d / 2 + 0.07, 0.01);
+      this.rb(g, 1.5, 1.2, 0.4, this.std(0x6e5638), r.w / 2 - 1, 0.6, -r.d / 2 + 0.3);
+      ["#d96b5a", "#5a8fd9", "#e0b44a", "#6fbf8a"].forEach((c, i) => this.rb(g, 0.28, 0.22, 0.3, this.std(new THREE.Color(c)), r.w / 2 - 1.45 + i * 0.31, 0.55 + (i % 2) * 0.32, -r.d / 2 + 0.35, 0.01));
+      const pot = new THREE.Mesh(new THREE.CylinderGeometry(0.26, 0.2, 0.42, 16), this.std(0x4a3a2c));
+      pot.position.set(-r.w / 2 + 0.55, 0.21, -r.d / 2 + 0.55);
+      pot.castShadow = true;
+      const leaf = new THREE.Mesh(new THREE.IcosahedronGeometry(0.42, 1), this.std(0x2f8a5c));
+      leaf.position.set(-r.w / 2 + 0.55, 0.85, -r.d / 2 + 0.55);
+      leaf.castShadow = true;
+      g.add(pot, leaf);
+      for (const x of meet ? [-4, 0, 4] : [0]) {
+        const pl = new THREE.PointLight(0xffd9a0, 9, 12, 1.6);
+        pl.position.set(x, 3.6, 0);
+        g.add(pl);
+      }
+      if (meet) this.buildMeeting(g, r);
+      else this.buildDesks(g, r);
+    }
+    this.applyMeeting();
+    this.rebuildOverlay();
+    this.setSelected(this.selected, false);
+  }
+
+  private buildDesks(g: THREE.Group, r: RoomPlan) {
+    if (r.desks.length === 0) {
+      // phòng trống: một bàn chưa có người
+      this.rb(g, 2.3, 0.12, 1.1, this.std(0x3a4155), 0, 0.95, -0.3);
+      for (const [x, z] of [[-1.05, -0.4], [1.05, -0.4], [-1.05, 0.4], [1.05, 0.4]] as const) this.rb(g, 0.09, 0.95, 0.09, this.std(0x20242e), x, 0.475, -0.3 + z, 0.01);
+      return;
+    }
+    for (const spot of r.desks) {
+      const m = this.members.get(spot.memberId);
+      const hex = m?.color ?? "#59627a";
+      const col = new THREE.Color(hex);
+      const dg = new THREE.Group();
+      dg.position.set(spot.x, 0, spot.z);
+      dg.userData.room = r.id;
+      g.add(dg);
+      this.rb(dg, 2.3, 0.12, 1.1, this.std(m?.status === "archived" ? 0x4a4f5a : 0xa07a4d), 0, 0.95, 0);
+      for (const [x, z] of [[-1.05, -0.4], [1.05, -0.4], [-1.05, 0.4], [1.05, 0.4]] as const) this.rb(dg, 0.09, 0.95, 0.09, this.std(0x20242e), x, 0.475, z, 0.01);
+      const screen = this.rb(dg, 0.95, 0.6, 0.06, this.std(0x07090d, { emissive: col, emissiveIntensity: 0.3 }), 0, 1.55, 0.1, 0.02);
+      this.rb(dg, 0.1, 0.3, 0.1, this.std(0x1c1f27), 0, 1.2, 0.1, 0.01);
+      this.rb(dg, 0.55, 0.03, 0.2, this.std(0x171a22), 0, 1.03, -0.25, 0.01);
+      const stack = new THREE.Group();
+      stack.position.set(0.85, 1.01, -0.25);
+      dg.add(stack);
+      for (let i = 0; i < 4; i++) {
+        const p = this.rb(stack, 0.46, 0.035, 0.34, this.std(0xf2f4fa, { roughness: 0.9 }), 0, i * 0.04, 0, 0.005);
+        p.rotation.y = i % 2 ? 0.12 : -0.1;
+        p.visible = false;
+      }
+      this.rb(dg, 0.9, 0.1, 0.9, this.std(0x20242e), 0, 0.62, -0.95);
+      this.rb(dg, 0.9, 0.9, 0.1, this.std(0x20242e), 0, 1.1, -1.4);
+      const fig = this.figure(dg, hex, m?.human ?? false);
+      fig.grp.position.set(0, 0, -0.95);
+      const ring = new THREE.Mesh(new THREE.RingGeometry(1.75, 1.9, 56), new THREE.MeshBasicMaterial({ color: 0xf5b84a, side: THREE.DoubleSide }));
+      ring.rotation.x = -Math.PI / 2;
+      ring.position.set(0, 0.03, -0.4);
+      ring.visible = false;
+      dg.add(ring);
+      const glow = new THREE.Mesh(new THREE.CircleGeometry(1.7, 40), new THREE.MeshBasicMaterial({ color: 0xf5b84a, transparent: true, opacity: 0, depthWrite: false }));
+      glow.rotation.x = -Math.PI / 2;
+      glow.position.set(0, 0.025, -0.4);
+      dg.add(glow);
+      const hit = new THREE.Mesh(new THREE.BoxGeometry(2.6, 3.2, 2.8), new THREE.MeshBasicMaterial({ visible: false }));
+      hit.position.set(0, 1.6, -0.3);
+      hit.userData.pick = spot.memberId;
+      dg.add(hit);
+      this.hits.push(hit);
+      this.desks.set(spot.memberId, { grp: dg, fig, screen, glow, ring, stack, ph: Math.random() * 6, world: new THREE.Vector3(r.x + spot.x, 1.3, r.z + spot.z - 0.8) });
+    }
+  }
+
+  private buildMeeting(g: THREE.Group, r: RoomPlan) {
+    // bảng họp trên vách sau: ba cột, vẽ lại khi dữ liệu họp đổi
+    const canvas = document.createElement("canvas");
+    canvas.width = 1152;
+    canvas.height = 240;
+    const tex = new THREE.CanvasTexture(canvas);
+    tex.colorSpace = THREE.SRGBColorSpace;
+    this.board = { canvas, tex };
+    const bm = new THREE.Mesh(new THREE.PlaneGeometry(7.2, 1.5), new THREE.MeshBasicMaterial({ map: tex, toneMapped: false }));
+    bm.position.set(0, 1.1, -r.d / 2 + 0.08);
+    g.add(bm);
+    this.rb(g, 7.4, 1.7, 0.05, this.std(0x0d1017), 0, 1.1, -r.d / 2 + 0.05, 0.01);
+    const table = new THREE.Mesh(new THREE.CylinderGeometry(1, 1, 0.12, 48), this.std(0xc9a46e));
+    table.scale.set(3, 1, 1.45);
+    table.position.set(0, 0.85, TABLE_Z);
+    table.castShadow = table.receiveShadow = true;
+    g.add(table);
+    const leg = new THREE.Mesh(new THREE.CylinderGeometry(0.35, 0.5, 0.8, 20), this.std(0x20242e));
+    leg.position.set(0, 0.42, TABLE_Z);
+    leg.castShadow = true;
+    g.add(leg);
+    const holo = new THREE.Mesh(new THREE.TorusGeometry(0.55, 0.025, 8, 48), new THREE.MeshBasicMaterial({ color: 0xf5b84a, transparent: true, opacity: 0.35 }));
+    holo.rotation.x = Math.PI / 2;
+    holo.position.set(0, 1.02, TABLE_Z);
+    g.add(holo);
+    this.holo = holo;
+    const chairMat = this.std(0x20242e);
+    for (let k = 0; k < MAX_SEATS; k++) {
+      const a = (k * Math.PI) / 4;
+      const px = Math.cos(a) * 3.55;
+      const pz = TABLE_Z + Math.sin(a) * 2.0;
+      const yaw = Math.atan2(-px, -(pz - TABLE_Z));
+      const ch = new THREE.Group();
+      ch.position.set(px, 0, pz);
+      ch.rotation.y = yaw;
+      g.add(ch);
+      this.rb(ch, 0.8, 0.1, 0.8, chairMat, 0, 0.62, 0);
+      this.rb(ch, 0.8, 0.8, 0.1, chairMat, 0, 1.05, -0.42);
+      const f = this.figure(g, "#8e9ab1", false);
+      f.grp.position.set(px, 0, pz);
+      f.grp.rotation.y = yaw;
+      f.arms.forEach((arm) => (arm.rotation.x = -0.6));
+      f.grp.visible = false;
+      this.seats.push(f);
+    }
+    const hit = new THREE.Mesh(new THREE.BoxGeometry(8.5, 3, 4.8), new THREE.MeshBasicMaterial({ visible: false }));
+    hit.position.set(0, 1.5, TABLE_Z);
+    hit.userData.pick = MEET_ID;
+    g.add(hit);
+    this.hits.push(hit);
+  }
+
+  /** Người đang họp ngồi vào bàn họp (bàn riêng để trống); bảng trên tường vẽ lại. */
+  private applyMeeting() {
+    const seatIds = this.meeting.seatIds.filter((id) => this.members.has(id)).slice(0, MAX_SEATS);
+    this.seats.forEach((f, i) => {
+      const m = seatIds[i] ? this.members.get(seatIds[i]!) : undefined;
+      f.grp.visible = !!m;
+      if (m) f.mat.color.set(m.color);
+    });
+    for (const [id, d] of this.desks) d.fig.grp.visible = !seatIds.includes(id);
+    this.drawBoard();
+  }
+  private drawBoard() {
+    if (!this.board) return;
+    const { canvas, tex } = this.board;
+    const x = canvas.getContext("2d")!;
+    x.fillStyle = "#10151f";
+    x.fillRect(0, 0, 1152, 240);
+    x.fillStyle = "#8e9ab1";
+    x.font = "700 20px system-ui, 'Segoe UI', sans-serif";
+    x.fillText("BẢNG HỌP", 24, 34);
+    const hex = ["#b095ff", "#f5b84a", "#8e9ab1"];
+    if (!this.meeting.available) {
+      x.fillStyle = "#a2abba";
+      x.font = "400 22px system-ui, 'Segoe UI', sans-serif";
+      x.fillText("Họp chỉ có ở dữ liệu thật (đăng nhập).", 24, 120);
+    } else {
+      (this.meeting.board?.columns ?? []).forEach((c, i) => {
+        const X = 24 + i * 372;
+        x.fillStyle = "#1b2230";
+        x.fillRect(X, 50, 348, 172);
+        x.fillStyle = hex[i] ?? "#8e9ab1";
+        x.fillRect(X, 50, 348, 5);
+        x.font = "700 22px system-ui, 'Segoe UI', sans-serif";
+        x.fillText(`${c.title}  ${c.count}`, X + 14, 86);
+        x.fillStyle = "#e9edf5";
+        x.font = "400 17px system-ui, 'Segoe UI', sans-serif";
+        c.lines.forEach((t, j) => x.fillText(t, X + 14, 118 + j * 34));
+        if (c.lines.length === 0) {
+          x.fillStyle = "#a2abba";
+          x.fillText("Chưa có", X + 14, 118);
+        }
+      });
+    }
+    tex.needsUpdate = true;
+  }
+
+  // ───────── nhãn HTML (textContent, không innerHTML: tên trợ lý do người dùng nhập)
+  private mk<K extends keyof HTMLElementTagNameMap>(tag: K, cls: string, text?: string) {
+    const e = document.createElement(tag);
+    e.className = cls;
+    if (text !== undefined) e.textContent = text;
+    return e;
+  }
+  private idBlock(name: string, role: string) {
+    const s = this.mk("span", "o3-id");
+    s.append(this.mk("b", "", name), this.mk("i", "", role));
+    return s;
+  }
+  private rebuildOverlay() {
+    this.overlay.replaceChildren();
+    this.anchors = [];
+    const plan = this.plan;
+    if (!plan) return;
+    const put = (el: HTMLElement, x: number, y: number, z: number) => {
+      this.overlay.appendChild(el);
+      this.anchors.push({ el, x, y, z });
+    };
+    const seated = new Set(this.meeting.seatIds);
+    for (const r of plan.rooms) {
+      const rl = this.mk("div", "o3-room");
+      rl.append(this.mk("b", "", r.name.toUpperCase()), this.mk("span", "", r.sub));
+      put(rl, r.x, 0.02, r.z + r.d / 2 - 0.25);
+      if (r.kind === "meet") {
+        const open = this.meeting.board?.open.length ?? 0;
+        const t = this.mk("button", `o3-tag${this.selected === MEET_ID ? " sel" : ""}`);
+        t.type = "button";
+        t.dataset.id = MEET_ID;
+        t.setAttribute("aria-label", "Phòng họp");
+        if (this.meeting.available && open > 0) t.appendChild(this.mk("div", "o3-bub", open === 1 ? this.meeting.board!.open[0]!.title : `${open} cuộc họp đang mở`));
+        const card = this.mk("div", "o3-card");
+        card.append(this.mk("span", "o3-coin", "PH"), this.idBlock("Phòng họp", this.meeting.available ? "Họp bất đồng bộ" : "Cần dữ liệu thật"), this.mk("span", `o3-st ${open > 0 ? "st-working" : "st-idle"}`, !this.meeting.available ? "Mô phỏng" : open > 0 ? "Đang họp" : "Trống"));
+        t.appendChild(card);
+        t.onclick = () => this.onPick(MEET_ID);
+        put(t, r.x, 2.3, r.z + TABLE_Z);
+        continue;
+      }
+      if (r.desks.length === 0) {
+        const b = this.mk("button", "o3-add", "+ Thêm trợ lý");
+        b.type = "button";
+        b.onclick = () => this.onAdd();
+        put(b, r.x, 1.7, r.z - 0.3);
+        continue;
+      }
+      for (const spot of r.desks) {
+        const m = this.members.get(spot.memberId);
+        if (!m) continue;
+        const inMeet = seated.has(m.id);
+        const t = this.mk("button", `o3-tag${this.selected === m.id ? " sel" : ""}`);
+        t.type = "button";
+        t.dataset.id = m.id;
+        t.setAttribute("aria-label", `${m.name}, ${inMeet ? "đang họp" : m.label}`);
+        if (m.bubble && !inMeet) t.appendChild(this.mk("div", "o3-bub", m.bubble));
+        const card = this.mk("div", "o3-card");
+        const coin = this.mk("span", "o3-coin", initials(m.name));
+        coin.style.background = m.color;
+        card.append(coin, this.idBlock(m.name, m.role.split(" · ")[0] ?? m.role), this.mk("span", `o3-st st-${inMeet ? "working" : m.status}`, inMeet ? "Đang họp" : m.human ? (m.review > 0 ? "Chờ duyệt" : "Online") : m.label));
+        t.appendChild(card);
+        t.onclick = () => this.onPick(m.id);
+        put(t, r.x + spot.x, 2.55, r.z + spot.z - 0.95);
+      }
+    }
+  }
+
+  // ───────── tương tác
+  private onDown = (e: PointerEvent) => {
+    this.down = { x: e.clientX, y: e.clientY, t: performance.now() };
+  };
+  private onUp = (e: PointerEvent) => {
+    const d = this.down;
+    this.down = null;
+    if (!d) return;
+    if (Math.hypot(e.clientX - d.x, e.clientY - d.y) > 8 || performance.now() - d.t > 700) return;
+    const rect = this.renderer.domElement.getBoundingClientRect();
+    const ray = new THREE.Raycaster();
+    ray.setFromCamera(new THREE.Vector2(((e.clientX - rect.left) / rect.width) * 2 - 1, -((e.clientY - rect.top) / rect.height) * 2 + 1), this.camera);
+    const hit = ray.intersectObjects(this.hits, false)[0];
+    const id = hit?.object.userData.pick as string | undefined;
+    if (id) this.onPick(id);
+  };
   private resize() {
     if (this.disposed) return;
     const w = this.container.clientWidth;
@@ -180,341 +595,103 @@ class OfficeScene {
     this.renderer.setSize(w, h);
     this.camera.aspect = w / h;
     this.camera.updateProjectionMatrix();
-    this.scaleLabels();
-  }
-
-  /** Màn hình dọc (điện thoại) phóng nhãn lên một chút để vẫn đọc được tên. */
-  private scaleLabels() {
-    const k = this.camera.aspect < 1 ? 1.45 : 1;
-    for (const l of this.labels.values()) l.sprite.scale.set(1.6 * k, 0.42 * k, 1);
-  }
-
-  private onDown = (e: PointerEvent) => {
-    this.down = { x: e.clientX, y: e.clientY, t: performance.now() };
-  };
-  private onUp = (e: PointerEvent) => {
-    const d = this.down;
-    this.down = null;
-    if (!d) return;
-    if (Math.hypot(e.clientX - d.x, e.clientY - d.y) > 8 || performance.now() - d.t > 700) return; // kéo xoay, không phải chạm
-    const id = this.pick(e.clientX, e.clientY);
-    if (id) this.onPick(id);
-  };
-  private pick(cx: number, cy: number): string | null {
-    const rect = this.renderer.domElement.getBoundingClientRect();
-    const ndc = new THREE.Vector2(((cx - rect.left) / rect.width) * 2 - 1, -((cy - rect.top) / rect.height) * 2 + 1);
-    const ray = new THREE.Raycaster();
-    ray.setFromCamera(ndc, this.camera);
-    const hit = ray.intersectObjects(this.hits, false)[0];
-    return (hit?.object.userData.memberId as string | undefined) ?? null;
-  }
-
-  /** Dùng cho kiểm thử: chiếu vị trí một thành viên ra tọa độ trang. */
-  screenPositionOf(id: string): { x: number; y: number } | null {
-    const hit = this.hits.find((o) => o.userData.memberId === id);
-    if (!hit) return null;
-    const p = hit.getWorldPosition(new THREE.Vector3());
-    p.y += 0.2;
-    p.project(this.camera);
-    const rect = this.renderer.domElement.getBoundingClientRect();
-    return { x: rect.left + ((p.x + 1) / 2) * rect.width, y: rect.top + ((1 - p.y) / 2) * rect.height };
-  }
-
-  /**
-   * Góc nhìn mặc định: từ góc mở của căn phòng (phía trước, bên phải) nhìn vào hai vách.
-   * Lùi camera dần cho tới khi mọi góc sàn, đỉnh vách và đầu người (kể cả hàng sát camera) nằm trong khung hình,
-   * nên 3, 6 hay 9 thành viên, màn ngang hay dọc đều vừa khít.
-   */
-  private fit() {
-    const n = Math.max(1, this.count);
-    const cols = Math.min(colsFor(n), n);
-    const rows = Math.ceil(n / colsFor(n));
-    const W = (cols - 1) * DX + 5.4;
-    const D = (rows - 1) * DZ + 5.4;
-    const pts: THREE.Vector3[] = [];
-    for (const sx of [-1, 1]) for (const sz of [-1, 1]) for (const y of [0, 1.7]) pts.push(new THREE.Vector3((sx * W) / 2, y, (sz * D) / 2));
-    for (const sp of layoutSpots(n)) {
-      pts.push(new THREE.Vector3(sp.x, 3.0, sp.z + 0.9), new THREE.Vector3(sp.x + 1.3, 0, sp.z + 1.9), new THREE.Vector3(sp.x - 1.3, 0, sp.z + 1.9));
-    }
-    const dir = new THREE.Vector3(0.62, 0.74, 0.78).normalize();
-    const target = new THREE.Vector3(0, 0.9, 0.2);
-    const cam = this.camera.clone();
-    cam.aspect = Math.max(0.45, this.camera.aspect || 1.6);
-    cam.updateProjectionMatrix();
-    const tanV = Math.tan(THREE.MathUtils.degToRad(cam.fov / 2));
-    const tanH = tanV * cam.aspect;
-    const measure = (d: number) => {
-      cam.position.copy(target).addScaledVector(dir, d);
-      cam.lookAt(target);
-      cam.updateMatrixWorld(true);
-      let minX = 9, maxX = -9, minY = 9, maxY = -9;
-      for (const p of pts) {
-        const q = p.clone().project(cam);
-        minX = Math.min(minX, q.x); maxX = Math.max(maxX, q.x);
-        minY = Math.min(minY, q.y); maxY = Math.max(maxY, q.y);
-      }
-      return { minX, maxX, minY, maxY, worst: Math.max(Math.abs(minX), Math.abs(maxX), Math.abs(minY), Math.abs(maxY)) };
-    };
-    let dist = 7;
-    // Cân giữa khung hình (dịch tâm nhìn) rồi lùi vừa đủ; lặp vài lần cho hội tụ.
-    for (let pass = 0; pass < 3; pass++) {
-      dist = 6;
-      while (dist < 70 && measure(dist).worst > 0.92) dist += 0.3;
-      const m = measure(dist);
-      const cx = (m.minX + m.maxX) / 2;
-      const cy = (m.minY + m.maxY) / 2;
-      const right = new THREE.Vector3().setFromMatrixColumn(cam.matrixWorld, 0);
-      const up = new THREE.Vector3().setFromMatrixColumn(cam.matrixWorld, 1);
-      target.addScaledVector(right, cx * dist * tanH).addScaledVector(up, cy * dist * tanV);
-    }
-    dist = 6;
-    while (dist < 70 && measure(dist).worst > 0.92) dist += 0.3;
-    this.defaultTarget.copy(target);
-    this.defaultPos.copy(target).addScaledVector(dir, dist);
-    this.controls.maxDistance = Math.max(30, dist * 2);
-  }
-
-  reset() {
+    const prev = this.fitDist;
     this.fit();
-    this.camera.position.copy(this.defaultPos);
-    this.controls.target.copy(this.defaultTarget);
-    this.controls.update();
-  }
-  zoom(f: number) {
-    const v = this.camera.position.clone().sub(this.controls.target).multiplyScalar(f);
-    const len = Math.min(this.controls.maxDistance, Math.max(this.controls.minDistance, v.length()));
-    v.setLength(len);
-    this.camera.position.copy(this.controls.target).add(v);
-    this.controls.update();
+    if (Math.abs(prev - this.fitDist) > 0.5 && !this.flight) this.reset();
   }
 
-  setSelected(id: string | null) {
-    this.selected = id;
-    for (const [mid, ring] of this.rings) ring.visible = mid === id;
-    for (const [mid, l] of this.labels) {
-      drawLabel(l.canvas, l.m, mid === id);
-      l.tex.needsUpdate = true;
-    }
-  }
-
-  private disposeGroup(g: THREE.Group) {
-    g.traverse((o) => {
-      const mesh = o as THREE.Mesh;
-      mesh.geometry?.dispose?.();
-      const mat = mesh.material as THREE.Material | THREE.Material[] | undefined;
-      for (const m of Array.isArray(mat) ? mat : mat ? [mat] : []) {
-        const mm = m as THREE.MeshBasicMaterial;
-        if (mm.map && mm.map !== this.plank) mm.map.dispose();
-        m.dispose();
-      }
-    });
-    g.clear();
-  }
-
-  setMembers(members: Office3DMember[], iconSvg: (avatar: string) => string | null) {
-    this.disposeGroup(this.group);
-    this.hits = [];
-    this.rings.clear();
-    this.labels.clear();
-    this.coins.clear();
-    this.count = members.length;
-    const spots = layoutSpots(members.length);
-    members.forEach((m, i) => this.group.add(this.buildDesk(m, spots[i]!.x, spots[i]!.z, iconSvg(m.avatar))));
-    this.buildRoom();
-    this.scaleLabels();
-    this.reset();
-    this.setSelected(this.selected);
-  }
-
-  /** Sàn, hai vách thấp (sau và trái), thảm, cửa sổ và cây cảnh; kích thước theo số hàng/cột. */
-  private buildRoom() {
-    this.disposeGroup(this.room);
-    const n = Math.max(1, this.count);
-    const cols = Math.min(colsFor(n), n);
-    const rows = Math.ceil(n / colsFor(n));
-    const W = (cols - 1) * DX + 5.4;
-    const D = (rows - 1) * DZ + 5.4;
-    const std = (color: number, extra: Partial<THREE.MeshStandardMaterialParameters> = {}) => new THREE.MeshStandardMaterial({ color, roughness: 0.85, ...extra });
-
-    const floorMat = std(0xffffff, { map: this.plank, roughness: 0.9 });
-    this.plank.repeat.set(W / 3.2, D / 3.2);
-    const floor = new THREE.Mesh(new THREE.PlaneGeometry(W, D), floorMat);
-    floor.rotation.x = -Math.PI / 2;
-    floor.receiveShadow = true;
-    this.room.add(floor);
-    // Nền ngoài phòng tối hơn để căn phòng nổi lên.
-    const outer = new THREE.Mesh(new THREE.PlaneGeometry(90, 90), std(0x0f1118));
-    outer.rotation.x = -Math.PI / 2;
-    outer.position.y = -0.02;
-    outer.receiveShadow = true;
-    this.room.add(outer);
-
-    const H = 1.7;
-    const wallMat = std(0x343b4d);
-    const trimMat = new THREE.MeshStandardMaterial({ color: 0xf5b84a, emissive: 0xf5b84a, emissiveIntensity: 0.35, roughness: 0.5 });
-    const back = new THREE.Mesh(new THREE.BoxGeometry(W + 0.3, H, 0.24), wallMat);
-    back.position.set(0, H / 2, -D / 2 - 0.12);
-    back.castShadow = back.receiveShadow = true;
-    const left = new THREE.Mesh(new THREE.BoxGeometry(0.24, H, D + 0.3), wallMat);
-    left.position.set(-W / 2 - 0.12, H / 2, 0);
-    left.castShadow = left.receiveShadow = true;
-    this.room.add(back, left);
-    const trimB = new THREE.Mesh(new THREE.BoxGeometry(W + 0.34, 0.06, 0.3), trimMat);
-    trimB.position.set(0, H + 0.03, -D / 2 - 0.12);
-    const trimL = new THREE.Mesh(new THREE.BoxGeometry(0.3, 0.06, D + 0.34), trimMat);
-    trimL.position.set(-W / 2 - 0.12, H + 0.03, 0);
-    this.room.add(trimB, trimL);
-    // Chân tường sáng hơn một chút.
-    const base = new THREE.Mesh(new THREE.BoxGeometry(W + 0.3, 0.14, 0.3), std(0x232838));
-    base.position.set(0, 0.07, -D / 2 - 0.1);
-    this.room.add(base);
-
-    // Cửa sổ trên vách sau: các ô sáng nhạt.
-    const winMat = new THREE.MeshStandardMaterial({ color: 0x9ec3ff, emissive: 0x7aa7ff, emissiveIntensity: 0.55, roughness: 0.3 });
-    const wins = Math.max(2, Math.round(W / 4.2));
-    for (let i = 0; i < wins; i++) {
-      const wx = -W / 2 + ((i + 0.5) * W) / wins;
-      const win = new THREE.Mesh(new THREE.BoxGeometry(1.5, 0.7, 0.06), winMat);
-      win.position.set(wx, 1.0, -D / 2 + 0.02);
-      this.room.add(win);
-    }
-    // Cây cảnh ở góc trong.
-    const pot = new THREE.Mesh(new THREE.CylinderGeometry(0.28, 0.22, 0.45, 16), std(0x4a3a2c));
-    pot.position.set(-W / 2 + 0.55, 0.22, -D / 2 + 0.55);
-    pot.castShadow = true;
-    const leaves = new THREE.Mesh(new THREE.SphereGeometry(0.42, 16, 12), std(0x2f7a52));
-    leaves.position.set(-W / 2 + 0.55, 0.85, -D / 2 + 0.55);
-    leaves.castShadow = true;
-    this.room.add(pot, leaves);
-
-    // Đèn trần: hai vùng sáng ấm.
-    for (const [lx, lz] of [[-W * 0.2, -D * 0.2], [W * 0.22, D * 0.18]] as const) {
-      const pl = new THREE.PointLight(0xffd9a0, 14, 16, 1.6);
-      pl.position.set(lx, 4.2, lz);
-      this.room.add(pl);
-    }
-    // Nắng: từ góc mở (phía trước, bên phải), bao phủ cả căn phòng.
-    this.sun.position.set(W * 0.7, 9, D * 0.8);
-    this.sun.target.position.set(0, 0, 0);
-    const sc = this.sun.shadow.camera;
-    const ext = Math.max(W, D) * 0.9;
-    sc.left = -ext;
-    sc.right = ext;
-    sc.top = ext;
-    sc.bottom = -ext;
-    sc.near = 1;
-    sc.far = 40;
-    sc.updateProjectionMatrix();
-  }
-
-  /** Một góc làm việc: thảm, bàn, màn hình, ghế, vách ngăn thấp, người ngồi, đồng xu avatar và nhãn tên ngắn. */
-  private buildDesk(m: Office3DMember, x: number, z: number, svg: string | null): THREE.Group {
-    const g = new THREE.Group();
-    g.position.set(x, 0, z);
-    const std = (color: number, extra: Partial<THREE.MeshStandardMaterialParameters> = {}) => new THREE.MeshStandardMaterial({ color, roughness: 0.7, ...extra });
-    const box = (w: number, h: number, d: number, color: number, px: number, py: number, pz: number, extra: Partial<THREE.MeshStandardMaterialParameters> = {}) => {
-      const mesh = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), std(color, extra));
-      mesh.position.set(px, py, pz);
-      mesh.castShadow = mesh.receiveShadow = true;
-      g.add(mesh);
-      return mesh;
-    };
-    const accent = new THREE.Color(m.archived ? "#5a606b" : m.color);
-    // Thảm theo màu avatar.
-    const rug = new THREE.Mesh(new THREE.BoxGeometry(3.2, 0.03, 3.0), std(accent.getHex(), { roughness: 1, transparent: true, opacity: 0.38 }));
-    rug.position.set(0, 0.016, 0.5);
-    rug.receiveShadow = true;
-    g.add(rug);
-    // Bàn gỗ ấm.
-    box(2.3, 0.12, 1.15, m.archived ? 0x4a4f5a : 0x9a7449, 0, 0.95, 0);
-    for (const [lx, lz] of [[-1.05, -0.45], [1.05, -0.45], [-1.05, 0.45], [1.05, 0.45]] as const) box(0.09, 0.95, 0.09, 0x272b35, lx, 0.475, lz);
-    // Vách ngăn thấp phía sau và bên trái tạo cảm giác "góc làm việc".
-    box(2.6, 0.9, 0.08, 0x3b4256, 0, 0.45, -0.72);
-    box(0.08, 0.9, 1.9, 0x3b4256, -1.3, 0.45, 0.1);
-    // Màn hình hướng về người ngồi, có sáng theo màu avatar.
-    box(0.95, 0.58, 0.05, 0x0e1014, 0, 1.52, -0.3);
-    box(0.84, 0.46, 0.02, 0x000000, 0, 1.52, -0.27, { emissive: accent, emissiveIntensity: m.busy ? 1.2 : 0.4, color: 0x05070a });
-    box(0.1, 0.3, 0.1, 0x1c1f27, 0, 1.18, -0.3);
-    box(0.5, 0.03, 0.2, 0x181b22, 0, 1.03, 0.1); // bàn phím
-    // Ghế.
-    box(0.82, 0.1, 0.82, 0x20242e, 0, 0.62, 0.95);
-    box(0.82, 0.85, 0.1, 0x20242e, 0, 1.05, 1.4);
-    box(0.1, 0.6, 0.1, 0x14161c, 0, 0.3, 0.95);
-    // Người ngồi (quay lưng ra phía ghế, hướng về màn hình): thân, đầu, hai tay.
-    const bodyMat = std(accent.getHex(), { roughness: 0.55 });
-    const body = new THREE.Mesh(new THREE.CylinderGeometry(0.33, 0.38, 0.9, 20), bodyMat);
-    body.position.set(0, 1.15, 0.95);
-    body.castShadow = true;
-    g.add(body);
-    for (const sx of [-0.36, 0.36]) {
-      const arm = new THREE.Mesh(new THREE.CylinderGeometry(0.09, 0.09, 0.7, 10), bodyMat);
-      arm.rotation.x = Math.PI / 2.6;
-      arm.position.set(sx, 1.22, 0.55);
-      arm.castShadow = true;
-      g.add(arm);
-    }
-    const head = new THREE.Mesh(new THREE.SphereGeometry(0.3, 24, 18), std(0xf0d3b3, { roughness: 0.6 }));
-    head.position.set(0, 1.88, 0.95);
-    head.castShadow = true;
-    g.add(head);
-    // Đèn trạng thái.
-    const led = new THREE.Mesh(new THREE.SphereGeometry(0.07, 12, 10), new THREE.MeshBasicMaterial({ color: m.waiting ? 0xf5b84a : m.busy ? 0xb095ff : 0x52c98f }));
-    led.position.set(0.95, 1.05, 0.3);
-    g.add(led);
-
-    // Đồng xu avatar nhỏ (luôn quay về phía camera) và nhãn tên ngắn.
-    const coinCanvas = document.createElement("canvas");
-    coinCanvas.width = coinCanvas.height = 256;
-    const coinTex = new THREE.CanvasTexture(coinCanvas);
-    coinTex.colorSpace = THREE.SRGBColorSpace;
-    drawCoin(coinCanvas, m.color, svg, () => { coinTex.needsUpdate = true; });
-    coinTex.needsUpdate = true;
-    const coin = new THREE.Sprite(new THREE.SpriteMaterial({ map: coinTex, transparent: true }));
-    coin.scale.set(0.62, 0.62, 1);
-    coin.position.set(-0.5, 2.55, 0.95);
-    g.add(coin);
-    this.coins.set(m.id, coin);
-
-    const labelCanvas = document.createElement("canvas");
-    labelCanvas.width = 420;
-    labelCanvas.height = 110;
-    drawLabel(labelCanvas, m, false);
-    const labelTex = new THREE.CanvasTexture(labelCanvas);
-    labelTex.colorSpace = THREE.SRGBColorSpace;
-    const label = new THREE.Sprite(new THREE.SpriteMaterial({ map: labelTex, transparent: true, depthTest: false }));
-    label.scale.set(1.6, 0.42, 1);
-    label.position.set(0.2, 2.55, 0.95);
-    label.renderOrder = 10;
-    g.add(label);
-    this.labels.set(m.id, { canvas: labelCanvas, tex: labelTex, m, sprite: label });
-
-    const ring = new THREE.Mesh(new THREE.RingGeometry(1.7, 1.86, 48), new THREE.MeshBasicMaterial({ color: 0xf5b84a, side: THREE.DoubleSide }));
-    ring.rotation.x = -Math.PI / 2;
-    ring.position.set(0, 0.05, 0.5);
-    ring.visible = false;
-    g.add(ring);
-    this.rings.set(m.id, ring);
-
-    const hit = new THREE.Mesh(new THREE.BoxGeometry(2.5, 3.0, 2.4), new THREE.MeshBasicMaterial({ visible: false }));
-    hit.position.set(0, 1.5, 0.5);
-    hit.userData.memberId = m.id;
-    g.add(hit);
-    this.hits.push(hit);
-    return g;
-  }
-
+  // ───────── vòng lặp
+  private v3 = new THREE.Vector3();
   private loop = () => {
     if (this.disposed) return;
     this.raf = requestAnimationFrame(this.loop);
-    const t = performance.now() / 1000;
-    for (const [id, coin] of this.coins) coin.position.y = 2.55 + Math.sin(t * 1.6 + id.length) * 0.04;
-    if (this.selected) {
-      const r = this.rings.get(this.selected);
-      if (r) r.scale.setScalar(1 + Math.sin(t * 3) * 0.03);
+    if (document.visibilityState === "hidden") return;
+    const now = performance.now();
+    const t = now / 1000;
+    if (this.flight) {
+      const f = this.flight;
+      const k = Math.min(1, (now - f.t0) / 650);
+      const e = k < 0.5 ? 2 * k * k : 1 - Math.pow(-2 * k + 2, 2) / 2;
+      this.controls.target.lerpVectors(f.fromT, f.toT, e);
+      this.camera.position.lerpVectors(f.fromP, f.toP, e);
+      if (k >= 1) this.flight = null;
     }
     this.controls.update();
+    // tường mờ khi nhìn từ phía sau để luôn thấy bên trong phòng
+    const cp = this.camera.position;
+    this.wN += ((cp.z < -(this.plan?.depth ?? 0) / 2 ? 0.12 : 1) - this.wN) * 0.12;
+    this.wW += ((cp.x < -(this.plan?.width ?? 0) / 2 ? 0.12 : 1) - this.wW) * 0.12;
+    this.wallN.opacity = this.wN;
+    this.wallN.transparent = this.wN < 0.99;
+    this.wallW.opacity = this.wW;
+    this.wallW.transparent = this.wW < 0.99;
+    if (!this.reduce) this.animate(t);
+    const meetOpen = (this.meeting.board?.open.length ?? 0) > 0;
+    if (this.holo) {
+      const mat = this.holo.material as THREE.MeshBasicMaterial;
+      mat.opacity = meetOpen ? 0.9 : 0.3;
+      this.holo.scale.setScalar(meetOpen && !this.reduce ? 1 + Math.sin(t * 4) * 0.12 : 1);
+      this.holo.rotation.z = this.reduce ? 0 : t * 0.6;
+    }
     this.renderer.render(this.scene, this.camera);
+    const w = this.container.clientWidth;
+    const h = this.container.clientHeight;
+    for (const a of this.anchors) {
+      this.v3.set(a.x, a.y, a.z).project(this.camera);
+      const behind = this.v3.z > 1;
+      a.el.style.display = behind ? "none" : "";
+      if (behind) continue;
+      a.el.style.left = `${((this.v3.x + 1) / 2) * w}px`;
+      a.el.style.top = `${((1 - this.v3.y) / 2) * h}px`;
+      a.el.style.zIndex = String(Math.round(1000 - this.v3.z * 500));
+    }
   };
+  private animate(t: number) {
+    for (const [id, d] of this.desks) {
+      const m = this.members.get(id);
+      const st: OfficeStatus = m?.status ?? "idle";
+      const scr = d.screen.material as THREE.MeshStandardMaterial;
+      const glow = d.glow.material as THREE.MeshBasicMaterial;
+      scr.emissive.setHex(STATUS_HEX[st]);
+      const { head, arms } = d.fig;
+      d.stack.children.forEach((p, i) => (p.visible = i < Math.min(m?.review ?? 0, 4)));
+      if (st === "working") {
+        arms[0].rotation.x = -1.0 + Math.sin(t * 13 + d.ph) * 0.12;
+        arms[1].rotation.x = -1.0 + Math.sin(t * 13 + d.ph + 2) * 0.12;
+        head.position.y = 1.95 + Math.sin(t * 5 + d.ph) * 0.015;
+        head.rotation.y = Math.sin(t * 1.2 + d.ph) * 0.12;
+        scr.emissiveIntensity = 0.9 + Math.sin(t * 7 + d.ph) * 0.25;
+        glow.opacity = 0;
+      } else if (st === "review") {
+        arms[1].rotation.x = -Math.PI + 0.4 + Math.sin(t * 4) * 0.3;
+        arms[0].rotation.x = -0.5;
+        head.position.y = 1.95;
+        head.rotation.y = Math.sin(t * 1.5) * 0.2;
+        scr.emissiveIntensity = 0.3;
+        glow.color.setHex(0xf5b84a);
+        glow.opacity = 0.14 + Math.sin(t * 3) * 0.08;
+      } else if (st === "blocked") {
+        arms[0].rotation.x = arms[1].rotation.x = -0.3;
+        head.position.y = 1.95;
+        head.rotation.y = Math.sin(t * 0.9 + d.ph) * 0.3;
+        scr.emissiveIntensity = 0.25;
+        glow.color.setHex(0xf07474);
+        glow.opacity = 0.08;
+      } else {
+        arms[0].rotation.x = arms[1].rotation.x = -0.3;
+        head.position.y = 1.95 + (st === "archived" ? 0 : Math.sin(t * 1.8 + d.ph) * 0.012);
+        head.rotation.y = st === "archived" ? 0 : Math.sin(t * 0.7 + d.ph) * 0.35;
+        scr.emissiveIntensity = 0.2;
+        glow.opacity = 0;
+      }
+    }
+    this.seats.forEach((f, i) => {
+      if (!f.grp.visible) return;
+      f.head.position.y = 1.95 + Math.sin(t * 6 + i) * 0.02;
+      f.head.rotation.y = Math.sin(t * 1.3 + i) * 0.25;
+      f.arms[1].rotation.x = -0.6 + Math.sin(t * 3 + i) * 0.35;
+    });
+  }
 
   dispose() {
     this.disposed = true;
@@ -523,40 +700,30 @@ class OfficeScene {
     const el = this.renderer.domElement;
     el.removeEventListener("pointerdown", this.onDown);
     el.removeEventListener("pointerup", this.onUp);
-    this.disposeGroup(this.group);
-    this.disposeGroup(this.room);
-    this.plank.dispose();
+    this.disposeWorld();
+    this.wallN.dispose();
+    this.wallW.dispose();
     this.controls.dispose();
     this.renderer.dispose();
+    this.overlay.remove();
     el.remove();
   }
 }
 
-export function Office3D({ members, selectedId, onSelect, onUnsupported, handleRef }: Props) {
+export function Office3D({ plan, members, meeting, selectedId, onSelect, onAdd, onUnsupported, handleRef }: Props) {
   const mountRef = useRef<HTMLDivElement>(null);
-  const iconsRef = useRef<HTMLDivElement>(null);
   const sceneRef = useRef<OfficeScene | null>(null);
-  const cb = useRef({ onSelect, onUnsupported });
-  cb.current = { onSelect, onUnsupported };
-  const selRef = useRef(selectedId);
-  selRef.current = selectedId;
-
-  const iconSvg = (avatar: string): string | null => {
-    const svg = iconsRef.current?.querySelector(`[data-avatar="${avatar}"] svg`);
-    if (!svg) return null;
-    const clone = svg.cloneNode(true) as SVGElement;
-    clone.setAttribute("xmlns", "http://www.w3.org/2000/svg");
-    clone.setAttribute("width", "128");
-    clone.setAttribute("height", "128");
-    return new XMLSerializer().serializeToString(clone).replace(/currentColor/g, "#0e1013");
-  };
+  const cb = useRef({ onSelect, onAdd, onUnsupported });
+  cb.current = { onSelect, onAdd, onUnsupported };
+  const live = useRef({ plan, members, meeting, selectedId });
+  live.current = { plan, members, meeting, selectedId };
 
   useEffect(() => {
     const el = mountRef.current;
     if (!el) return;
     let scene: OfficeScene;
     try {
-      scene = new OfficeScene(el, (id) => cb.current.onSelect(id), () => cb.current.onUnsupported("Trình duyệt đã dừng đồ họa 3D."));
+      scene = new OfficeScene(el, (id) => cb.current.onSelect(id), () => cb.current.onAdd(), () => cb.current.onUnsupported("Trình duyệt đã dừng đồ họa 3D."));
     } catch {
       cb.current.onUnsupported("Trình duyệt hoặc thiết bị này không hỗ trợ WebGL.");
       return;
@@ -564,6 +731,9 @@ export function Office3D({ members, selectedId, onSelect, onUnsupported, handleR
     sceneRef.current = scene;
     handleRef.current = { reset: () => scene.reset(), zoom: (f) => scene.zoom(f) };
     (window as unknown as { __lumiOffice3D?: OfficeScene }).__lumiOffice3D = scene;
+    scene.setSelected(live.current.selectedId, false);
+    scene.setPlan(live.current.plan, live.current.members, live.current.meeting);
+    scene.setSelected(live.current.selectedId, false);
     return () => {
       scene.dispose();
       sceneRef.current = null;
@@ -573,23 +743,27 @@ export function Office3D({ members, selectedId, onSelect, onUnsupported, handleR
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // Danh sách thành viên đổi (thêm/sửa/lưu trữ): dựng lại cảnh ngay, giữ thành viên đang chọn.
-  const key = members.map((m) => `${m.id}|${m.name}|${m.role}|${m.avatar}|${m.archived}|${m.busy}|${m.waiting}`).join(";");
+  // Cấu trúc đổi (phòng, bàn, màu): dựng lại cảnh. Trạng thái, bong bóng, họp đổi: chỉ cập nhật.
+  const structure = plan.rooms.map((r) => `${r.id}:${r.d}:${r.desks.map((d) => `${d.memberId}@${d.x},${d.z}`).join("|")}`).join(";") + "#" + members.map((m) => `${m.id}${m.color}${m.human ? "h" : "b"}`).join(",");
+  const first = useRef(true);
   useEffect(() => {
-    sceneRef.current?.setMembers(members, iconSvg);
-    sceneRef.current?.setSelected(selRef.current);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [key]);
+    if (first.current) {
+      first.current = false;
+      return;
+    }
+    sceneRef.current?.setPlan(live.current.plan, live.current.members, live.current.meeting);
+    sceneRef.current?.setSelected(live.current.selectedId, false);
+  }, [structure]);
+  const dyn = members.map((m) => `${m.id}|${m.name}|${m.role}|${m.status}|${m.label}|${m.bubble ?? ""}|${m.review}`).join(";") + "#" + meeting.available + ":" + JSON.stringify(meeting.board?.columns ?? []) + ":" + meeting.seatIds.join(",");
   useEffect(() => {
-    sceneRef.current?.setSelected(selectedId);
+    sceneRef.current?.setData(live.current.members, live.current.meeting);
+    sceneRef.current?.setSelected(live.current.selectedId, false);
+  }, [dyn]);
+  const lastSel = useRef<string | null>(null);
+  useEffect(() => {
+    sceneRef.current?.setSelected(selectedId, selectedId !== null && selectedId !== lastSel.current);
+    lastSel.current = selectedId;
   }, [selectedId]);
 
-  return (
-    <>
-      <div ref={mountRef} style={{ position: "absolute", inset: 0 }} />
-      <div ref={iconsRef} style={{ display: "none" }} aria-hidden>
-        {members.map((m) => <Avatar key={`${m.id}-${m.avatar}`} avatar={m.avatar} size={64} />)}
-      </div>
-    </>
-  );
+  return <div ref={mountRef} style={{ position: "absolute", inset: 0 }} />;
 }
