@@ -1,7 +1,7 @@
 "use client";
 
 import { usePathname } from "next/navigation";
-import { Bell, BookOpen, Brain, CalendarDays, Building2, FolderKanban, ListChecks, Menu, MessageCircle, MessagesSquare, Plus, RotateCcw, Server, Sparkles, Target, Users, Wallet, CalendarClock, Lightbulb, LayoutTemplate, Search as SearchIcon, Settings as SettingsIcon } from "lucide-react";
+import { Bell, BookOpen, Brain, CalendarDays, Building2, FolderKanban, ListChecks, Menu, MessageCircle, MessagesSquare, Plus, RotateCcw, Server, Sparkles, Target, Users, Wallet, CalendarClock, Lightbulb, LayoutTemplate, Search as SearchIcon, Settings as SettingsIcon, ShieldCheck, Plug, Radar } from "lucide-react";
 import { useState, type ReactNode } from "react";
 
 import { pendingBreakdown, pendingCounts } from "@/lib/lumi/selectors";
@@ -117,6 +117,15 @@ export function Shell({ children }: { children: ReactNode }) {
                 </LumiLink>
                 <LumiLink href="/lumi/settings" aria-current={cur("/lumi/settings") ? "page" : undefined}>
                   <SettingsIcon size={17} /> Cài đặt
+                </LumiLink>
+                <LumiLink href="/lumi/opportunities" aria-current={cur("/lumi/opportunities") ? "page" : undefined}>
+                  <Radar size={17} /> Cơ hội
+                </LumiLink>
+                <LumiLink href="/lumi/autonomy" aria-current={cur("/lumi/autonomy") ? "page" : undefined}>
+                  <ShieldCheck size={17} /> Tự chủ
+                </LumiLink>
+                <LumiLink href="/lumi/integrations" aria-current={cur("/lumi/integrations") ? "page" : undefined}>
+                  <Plug size={17} /> Tích hợp
                 </LumiLink>
               </>
             )}

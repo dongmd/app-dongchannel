@@ -4,7 +4,7 @@ import { LumiError } from "./core";
 import type { ApiCtx, ApiReq, ApiRes } from "./handlers";
 import { listCostLimits, removeCostLimit, setCostLimit } from "./cost-limits";
 import { buildCostSummary } from "./cost-summary";
-import { adjustMoney, areaResults, assistantHealth, createExperiment, decideExperiment, listExperiments, listMoney, lockExperiment, moneySummary, recordExperimentResult, recordMoney } from "./finance";
+import { adjustMoney, areaResults, economyReport, assistantHealth, createExperiment, decideExperiment, listExperiments, listMoney, lockExperiment, moneySummary, recordExperimentResult, recordMoney } from "./finance";
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const uuid = (v: unknown, name: string): string => { if (typeof v !== "string" || !UUID.test(v)) throw new LumiError("VALIDATION_ERROR", 400, { missing: [`${name}(uuid)`] }); return v; };
@@ -38,6 +38,7 @@ export const HANDLERS_IMP05: Record<string, (ctx: ApiCtx, req: ApiReq) => Promis
     user(req); const b = req.body ?? {}; const projectId = b.project_id ? uuid(b.project_id, "project_id") : undefined;
     return ok({ summary: await moneySummary(ctx.db, { projectId, from: str(b.from), to: str(b.to) }), entries: await listMoney(ctx.db, { projectId }) });
   },
+  async economyReport(ctx, req) { user(req); const b = req.body ?? {}; return ok(await economyReport(ctx.db, { projectId: b.project_id ? uuid(b.project_id, "project_id") : undefined, from: str(b.from), to: str(b.to), now: ctx.now() })); },
   async dashboardFinance(ctx, req) { user(req); return ok({ areas: await areaResults(ctx.db), health: await assistantHealth(ctx.db, ctx.now()) }); },
   // ── experiments (ECO-04)
   async listExperiments(ctx, req) { user(req); return ok({ experiments: await listExperiments(ctx.db) }); },

@@ -5,6 +5,8 @@ const nextConfig: NextConfig = {
   reactStrictMode: true,
   ...(process.env.NEXT_STANDALONE === "1" ? { output: "standalone" as const } : {}),
   poweredByHeader: false,
+  // Không dùng next/image: tắt bộ tối ưu ảnh (bề mặt tấn công của các lỗ hổng Image Optimization đã biết).
+  images: { unoptimized: true },
   typedRoutes: true,
   serverExternalPackages: ["postgres"],
   async headers() {

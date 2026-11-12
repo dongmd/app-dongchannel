@@ -38,7 +38,7 @@ async function waitHttp(url: string, ms = 240_000) {
 function startNext(port: number, extra: Record<string, string>): ChildProcess {
   const c = spawn(process.execPath, [nextBin(), "dev", "-p", String(port)], {
     cwd: process.cwd(), stdio: process.env.LUMI_UI_LOG ? ["ignore", fs.openSync(process.env.LUMI_UI_LOG, "a"), fs.openSync(process.env.LUMI_UI_LOG, "a")] : "ignore",
-    env: { ...process.env, DATABASE_URL: pg.url, NEXTAUTH_URL: `http://localhost:${port}`, NEXTAUTH_SECRET: "ui-test-only-secret-0123456789abcdef0123", NODE_ENV: "development", ...extra },
+    env: { ...process.env, DATABASE_URL: pg.url, NEXTAUTH_URL: `http://localhost:${port}`, NEXTAUTH_SECRET: "ui-test-only-secret-0123456789abcdef0123", NODE_ENV: "development", NODE_OPTIONS: "--max-old-space-size=4096", ...extra },
   });
   kids.push(c);
   return c;
@@ -1294,6 +1294,120 @@ describe("Đợt 6 — Routine, Ý tưởng, Mẫu việc, Cài đặt, Tìm ki�
     const sts = [await post("/api/v1/lumi/settings", { key: "proposal_expiry_days", value: 3 }), await post("/api/v1/lumi/ideas", { title: "xyz", body: "abc" }), await post("/api/v1/lumi/routines/pause", { paused: true })];
     assert.deepEqual(sts, [403, 403, 403]);
     assert.deepEqual(await cnt(), before);
+    await ctx.close();
+  });
+});
+
+describe("Đợt 7 — hệ cũ Affiliate / YouTube / Money OS còn chạy trên dữ liệu thật (OWNER, chỉ đọc)", () => {
+  it("OWNER mở được mọi màn kinh doanh cũ: không lỗi 5xx, không «Application error», có nội dung; chưa đăng nhập bị chuyển về /login", async () => {
+    const ctx = await browser.newContext(); const page = await ctx.newPage();
+    assert.equal((await login(page, base, "owner@dev.local")).user?.role, "OWNER");
+    const routes = ["/aff", "/aff/offers", "/aff/offers/new", "/aff/results", "/aff/markets", "/aff/angles", "/youtube", "/youtube/videos", "/youtube/videos/new", "/youtube/ideas", "/youtube/niches", "/youtube/production", "/youtube/performance",
+      "/moneyos", "/moneyos/opportunities", "/moneyos/signals", "/moneyos/clusters", "/moneyos/trends", "/moneyos/candidates", "/moneyos/evidence", "/moneyos/agents", "/memory", "/tasks", "/search", "/admin"];
+    const bad: string[] = [];
+    for (const r of routes) {
+      const resp = await page.goto(`${base}${r}`, { waitUntil: "domcontentloaded" }).catch(() => null);
+      const status = resp?.status() ?? 0;
+      await page.waitForTimeout(400);
+      const text = (await page.locator("body").innerText().catch(() => "")) || "";
+      if (status >= 500 || status === 0 || /Application error|Internal Server Error|This page could not be found/i.test(text) || text.trim().length < 20) bad.push(`${r} -> ${status} ${text.slice(0, 80).replace(/\s+/g, " ")}`);
+    }
+    assert.deepEqual(bad, [], `màn lỗi:\n${bad.join("\n")}`);
+    await ctx.close();
+    const anon = await browser.newContext(); const ap = await anon.newPage();
+    for (const r of ["/aff", "/youtube", "/moneyos"]) { await go(ap, `${base}${r}`); assert.match(ap.url(), /\/login/, `${r} chưa đăng nhập phải về /login`); }
+    await anon.close();
+  });
+});
+
+describe("Đợt 7 — Tự chủ, Tích hợp, Báo cáo kinh tế, Cơ hội (adapter GIẢ, dữ liệu mô phỏng)", () => {
+  it("OWNER: ma trận tự chủ (loại rủi ro không có «Tự động») → tích hợp nêu thiếu gì → báo cáo kinh tế có công thức và CSV → cơ hội: ghi, trùng, chấm điểm có thành phần, đề xuất và chấp nhận tuyến", async () => {
+    const ctx = await browser.newContext(); const page = await ctx.newPage();
+    assert.equal((await login(page, base, "owner@dev.local")).user?.role, "OWNER");
+    const [proj] = await pg.sql`SELECT id FROM lumi_projects WHERE slug='test-offer-us'`;
+    // ma trận tự chủ
+    await go(page, `${base}/lumi/autonomy`);
+    await page.getByTestId("autonomy-view").waitFor({ timeout: 60_000 });
+    assert.match(await page.getByTestId("am-mode-research").innerText(), /Tự động/);
+    assert.match(await page.getByTestId("am-mode-publish_wordpress").innerText(), /Cần giấy ủy quyền/);
+    assert.equal(await page.getByTestId("am-select-publish_wordpress").locator("option[value='AUTO']").count(), 0, "loại xuất bản không có lựa chọn Tự động");
+    await page.getByTestId("am-select-research").selectOption("OFF");
+    await until(async () => (await pg.sql`SELECT mode FROM lumi_autonomy_rules WHERE action_type='research'`)[0]?.mode === "OFF", "rule saved");
+    await page.locator("[data-testid='am-research'][data-mode='OFF']").waitFor({ timeout: 30_000 });
+    // tích hợp
+    await go(page, `${base}/lumi/integrations`);
+    await page.getByTestId("integrations-view").waitFor({ timeout: 60_000 });
+    assert.equal(await page.locator("[data-testid='int-affiliate_net'][data-status='NOT_BUILT']").count(), 1);
+    assert.equal(await page.locator("[data-testid='int-wordpress']").count(), 1);
+    const intText = await page.getByTestId("integrations-view").innerText();
+    assert.doesNotMatch(intText, /postgres:\/\//i, "không lộ chuỗi kết nối");
+    // báo cáo kinh tế
+    await pg.sql`INSERT INTO lumi_money_entries(project_id,ledger,state,amount,currency,source,idempotency_key,created_by,period_start,period_end) VALUES (${proj!.id as string},'COMMISSION','PAID',77,'USD','Sao kê (thử UI)','ui-eco-report-0001','web:owner@dev.local','2026-10-01','2026-10-31')`;
+    await go(page, `${base}/lumi/finance`);
+    await page.getByTestId("finance-view").waitFor({ timeout: 60_000 });
+    await page.getByTestId("fin-tab-report").click();
+    await page.getByTestId("fin-report").waitFor({ timeout: 30_000 });
+    await page.getByTestId("rp-note").waitFor({ timeout: 30_000 });
+    assert.match(await page.getByTestId("rp-COMMISSION").innerText(), /đã trả\/thu \d+/);
+    await page.getByTestId("rp-from").fill("2026-12-01");
+    await page.getByTestId("rp-run").click();
+    await page.getByTestId("rp-note").waitFor({ timeout: 30_000 });
+    // cơ hội
+    await go(page, `${base}/lumi/opportunities`);
+    await page.getByTestId("opportunities-view").waitFor({ timeout: 60_000 });
+    await page.getByTestId("sig-title").fill("Đồng hồ cơ giá rẻ");
+    await page.getByTestId("sig-submit").click();
+    await until(async () => (await pg.sql`SELECT count(*)::int n FROM opportunity_signals WHERE title='Đồng hồ cơ giá rẻ'`)[0]!.n === 1, "signal created");
+    await page.getByTestId("sig-title").fill("đồng hồ cơ  GIÁ RẺ");
+    await page.getByTestId("sig-submit").click();
+    await page.waitForTimeout(1200);
+    assert.equal((await pg.sql`SELECT count(*)::int n FROM opportunity_signals WHERE title LIKE 'Đồng hồ cơ%'`)[0]!.n, 1, "trùng không lưu hai lần");
+    const t = "Đồng hồ cơ giá rẻ";
+    await page.getByTestId(`sig-${t}`).locator("details", { hasText: "Chấm điểm" }).locator("summary").click();
+    await page.getByTestId(`sc-audience_usefulness-${t}`).fill("0.9");
+    await page.getByTestId(`sc-search_opportunity-${t}`).fill("0.5");
+    await page.getByTestId(`sc-go-${t}`).click();
+    await page.getByTestId(`sig-score-${t}`).waitFor({ timeout: 30_000 });
+    assert.match(await page.getByTestId(`sig-score-${t}`).innerText(), /chưa biết/);
+    assert.match(await page.getByTestId(`sig-score-${t}`).innerText(), /khớp/);
+    await page.getByTestId(`rt-reason-${t}`).fill("Theo dõi thêm một tuần");
+    await page.getByTestId(`rt-go-${t}`).click();
+    await page.getByTestId("route-accept-WATCHLIST").waitFor({ timeout: 30_000 });
+    await page.getByTestId("route-accept-WATCHLIST").click();
+    await page.getByTestId("route-ACCEPTED-WATCHLIST").waitFor({ timeout: 30_000 });
+    await ctx.close();
+  });
+
+  it("VIEWER: xem được bốn màn mới, không có điều khiển ghi; API ghi 403 và không đổi gì", async () => {
+    const ctx = await browser.newContext(); const page = await ctx.newPage();
+    assert.equal((await login(page, base, "viewer@dev.local")).user?.role, "VIEWER");
+    const cnt = async () => (await pg.sql`SELECT (SELECT count(*)::int FROM lumi_autonomy_rules) a,(SELECT count(*)::int FROM opportunity_signals) s,(SELECT count(*)::int FROM lumi_money_entries) m`)[0]!;
+    const before = await cnt();
+    await go(page, `${base}/lumi/autonomy`); await page.getByTestId("autonomy-view").waitFor({ timeout: 60_000 });
+    assert.equal(await page.locator("[data-testid^='am-select-']").count(), 0);
+    await go(page, `${base}/lumi/integrations`); await page.getByTestId("integrations-view").waitFor({ timeout: 60_000 });
+    await go(page, `${base}/lumi/opportunities`); await page.getByTestId("opportunities-view").waitFor({ timeout: 60_000 });
+    assert.equal(await page.getByTestId("sig-form").count(), 0);
+    const post = (u: string, b: unknown) => page.evaluate(async ([url, body]) => (await fetch(url as string, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) })).status, [u, b] as [string, unknown]);
+    assert.deepEqual([await post("/api/v1/lumi/autonomy", { action_type: "research", mode: "OFF" }), await post("/api/v1/lumi/signals", { kind: "KEYWORD", title: "xyz abc" })], [403, 403]);
+    assert.deepEqual(await cnt(), before);
+    await ctx.close();
+  });
+});
+
+describe("NFR-01 — dùng được ở 428 px, không cuộn ngang (OWNER, mọi màn Dong-Lumi)", () => {
+  it("không màn nào làm trang rộng hơn khung nhìn 428 px (bảng được phép cuộn trong khung riêng)", async () => {
+    const ctx = await browser.newContext({ viewport: { width: 428, height: 900 } }); const page = await ctx.newPage();
+    assert.equal((await login(page, base, "owner@dev.local")).user?.role, "OWNER");
+    const routes = ["/lumi", "/lumi/approvals", "/lumi/projects", "/lumi/tasks", "/lumi/company", "/lumi/org", "/lumi/knowledge", "/lumi/knowledge/review", "/lumi/meetings", "/lumi/finance", "/lumi/routines", "/lumi/ideas", "/lumi/templates", "/lumi/search", "/lumi/settings", "/lumi/opportunities", "/lumi/autonomy", "/lumi/integrations", "/lumi/admin", "/lumi/telegram"];
+    const wide: string[] = [];
+    for (const r of routes) {
+      await go(page, `${base}${r}`);
+      await page.waitForTimeout(1500);
+      const m = await page.evaluate(() => ({ sw: document.documentElement.scrollWidth, iw: window.innerWidth }));
+      if (m.sw > m.iw + 1) wide.push(`${r}: ${m.sw}px > ${m.iw}px`);
+    }
+    assert.deepEqual(wide, [], `màn cuộn ngang ở 428px:\n${wide.join("\n")}`);
     await ctx.close();
   });
 });

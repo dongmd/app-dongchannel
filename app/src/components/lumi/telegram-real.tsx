@@ -35,7 +35,7 @@ function TelegramReal() {
         <p style={{ margin: "4px 0" }}>
           Gửi cho bot{real.telegramBot ? <> <strong>@{real.telegramBot}</strong></> : null} một tin bắt đầu bằng <code>Giao việc:</code>, nêu tên dự án và người nhận, ví dụ:
         </p>
-        <pre style={{ margin: "6px 0" }}>Giao việc: soạn 3 tiêu đề quảng cáo cho {state.projects[0]?.name ?? "Test offer US"}, giao cho {real.assistants[0]?.slug ?? "lumitest"}</pre>
+        <pre style={{ margin: "6px 0", whiteSpace: "pre-wrap", overflowWrap: "anywhere" }}>Giao việc: soạn 3 tiêu đề quảng cáo cho {state.projects[0]?.name ?? "Test offer US"}, giao cho {real.assistants[0]?.slug ?? "lumitest"}</pre>
         <p className="small muted" style={{ margin: 0 }}>Bot trả lời mã bản nháp (dạng <code>OK xxxxxxxx</code>); bản nháp hiện ngay bên dưới và hết hạn sau 15 phút.</p>
       </div>
 

@@ -10,6 +10,7 @@
  * terminal/browser from acting with credentials the profile already holds (TDD 8.11.4 lists exactly what is and is not enforced).
  */
 import { getPolicy } from "./policies";
+import { effectiveMode } from "./autonomy-matrix";
 import { createHash, randomUUID } from "node:crypto";
 import { LumiError, activity, audit, createRun, enqueueNotify, flag, requireRole, type Db, type HermesPort } from "./core";
 
@@ -120,6 +121,12 @@ export async function requestAction(db: Db, i: ActionRequestInput): Promise<Acti
     const [proj] = await t.query<any>(`SELECT id,status FROM lumi_projects WHERE id=$1`, [i.projectId]);
     if (!proj || proj.status !== "ACTIVE") return deny("PROJECT_NOT_ACTIVE");
 
+    // APR-07: the owner's autonomy matrix. OFF stops here; AUTO (only ever for non-spending, non-publishing types) passes without a grant but is logged; GRANT continues into the grant/approval flow below.
+    if (!i.requestId) {
+      const m = await effectiveMode(t, i.actionType);
+      if (m.mode === "OFF") return deny("ACTION_OFF_BY_POLICY");
+      if (m.mode === "AUTO" && !((i.amount ?? 0) > 0)) { await logDecision(t, i, hash, "ALLOW", "AUTO_BY_POLICY"); return { decision: "ALLOW", reason: "AUTO_BY_POLICY" }; }
+    }
     // A previously approved request is used ONCE, for the exact same parameters.
     if (i.requestId) {
       const [rq] = await t.query<any>(`SELECT * FROM lumi_action_requests WHERE id=$1 AND assistant_id=$2 FOR UPDATE`, [i.requestId, i.assistantId]);

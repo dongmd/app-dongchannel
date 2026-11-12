@@ -226,3 +226,7 @@
 @media (max-width: 640px) { .l-tgrow { flex-wrap: wrap; } .l-tgrow-time { width: auto; } .l-tgrow > span:nth-child(3) { flex: 1 0 100% !important; order: 3; } .l-tgrow > span:last-child { margin-left: auto; } }
 
 @media (max-width: 860px) { .l-dash-new { display: none; } .l-videorow select, .l-tgrow, .l-opentask { min-height: 44px; } }
+
+/* NFR-01: bảng rộng cuộn trong khung riêng, không làm cả trang cuộn ngang ở 428 px */
+.l-table { display: block; max-width: 100%; overflow-x: auto; }
+.l-card, .l-grid > * { min-width: 0; }

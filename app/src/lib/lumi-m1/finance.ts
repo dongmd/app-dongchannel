@@ -53,7 +53,7 @@ const EFFECTIVE_SQL = `
     SELECT r.id AS root_id, r.id, r.created_at, 0 AS d FROM lumi_money_entries r WHERE r.parent_id IS NULL
     UNION ALL SELECT c.root_id, e.id, e.created_at, c.d+1 FROM lumi_money_entries e JOIN chain c ON e.parent_id=c.id WHERE c.d < 20
   ), latest AS (SELECT DISTINCT ON (root_id) root_id, id FROM chain ORDER BY root_id, d DESC, created_at DESC)
-  SELECT m.*, l.root_id, p.name AS project_name, p.area FROM latest l JOIN lumi_money_entries m ON m.id=l.id JOIN lumi_projects p ON p.id=m.project_id`;
+  SELECT m.*, m.period_start::text AS ps, m.period_end::text AS pe, l.root_id, p.name AS project_name, p.area FROM latest l JOIN lumi_money_entries m ON m.id=l.id JOIN lumi_projects p ON p.id=m.project_id`;
 
 export async function adjustMoney(db: Db, a: { actorRef: string; entryId: string; toState: MoneyState; amount?: number; note?: string; idempotencyKey: string; now: Date }) {
   if (a.actorRef.startsWith("bot:")) throw new LumiError("FORBIDDEN", 403);
@@ -84,7 +84,7 @@ export async function adjustMoney(db: Db, a: { actorRef: string; entryId: string
 /** Per ledger and currency; states are never merged; no profit is computed. Mixed currencies stay separate. */
 export async function moneySummary(db: Db, o: { projectId?: string; from?: string; to?: string } = {}) {
   const rows = (await db.query<any>(EFFECTIVE_SQL)).filter((r: any) =>
-    (!o.projectId || r.project_id === o.projectId) && (!o.from || !r.period_end || r.period_end >= o.from) && (!o.to || !r.period_start || r.period_start <= o.to));
+    (!o.projectId || r.project_id === o.projectId) && (!o.from || !r.pe || r.pe >= o.from) && (!o.to || !r.ps || r.ps <= o.to));
   const sum = (ledger: Ledger) => {
     const by: Record<string, Record<string, number>> = {};
     for (const r of rows.filter((x: any) => x.ledger === ledger)) { const c = (by[r.currency] ??= { RECORDED: 0, CONFIRMED: 0, PAID: 0, PIPELINE: 0, REVERSED: 0 }); c[r.state] = (c[r.state] ?? 0) + Number(r.amount); }
@@ -233,4 +233,29 @@ export async function listExperiments(db: Db) {
   const out: any[] = [];
   for (const e of rows) { const results = await resultsOf(db, e.id); out.push({ ...e, cap_amount: Number(e.cap_amount), max_loss: Number(e.max_loss), results, verdict: e.state === "DRAFT" ? null : evaluateExperiment(criteriaOf(e), results) }); }
   return out;
+}
+
+/**
+ * ECO-05: the economic report. Every figure carries its formula, period, currency and the sources typed with it; nothing is netted into a profit, and revenue is never double counted.
+ * `rows` is the CSV body (one line per effective entry) so the owner can open the numbers in a spreadsheet and trace each to its source.
+ */
+export const ECONOMY_FORMULAS = [
+  { name: "Hoa hồng ghi nhận", formula: "tổng khoản hoa hồng ở trạng thái «Đã ghi nhận» (mạng báo đang theo dõi/chờ xác nhận)", note: "Chưa phải khoản được chấp nhận" },
+  { name: "Hoa hồng xác nhận", formula: "tổng khoản hoa hồng ở trạng thái «Đã xác nhận»", note: "Chưa phải tiền đã nhận" },
+  { name: "Tiền đã thu", formula: "tổng khoản (hoa hồng + tài trợ) ở trạng thái «Đã trả» do người nhập kèm nguồn", note: "Không gồm pipeline" },
+  { name: "Pipeline (tài trợ đã ký)", formula: "tổng khoản tài trợ ở trạng thái «Pipeline»", note: "Doanh thu dự kiến, không cộng vào tiền thu" },
+  { name: "Chi phí quảng cáo", formula: "tổng khoản sổ chi phí quảng cáo (trừ phần đảo)", note: "Do người nhập; chưa đối soát với nền tảng quảng cáo" },
+  { name: "Chi phí AI đo thật", formula: "tổng (usage sau − usage trước) của khóa riêng, chỉ các lượt đo được", note: "Lượt «chưa biết» đếm riêng, không bằng 0" },
+];
+export async function economyReport(db: Db, o: { projectId?: string; from?: string; to?: string; now: Date }) {
+  const summary = await moneySummary(db, o);
+  const entries = await listMoney(db, { projectId: o.projectId, limit: 1000 });
+  const inRange = entries.filter((r: any) => (!o.from || !r.pe || r.pe >= o.from) && (!o.to || !r.ps || r.ps <= o.to));
+  const rows = inRange.map((r: any) => ({ ledger: r.ledger, project: r.project_name, state: r.state, amount: r.amount, currency: r.currency, period_start: r.ps ?? "", period_end: r.pe ?? "", source: r.source, recorded_by: r.created_by, recorded_at: new Date(r.created_at).toISOString() }));
+  const prov = rows.filter((r) => r.state === "RECORDED" || r.state === "PIPELINE").length;
+  return {
+    period: { from: o.from ?? null, to: o.to ?? null, project_id: o.projectId ?? null }, generated_at: o.now.toISOString(),
+    summary, formulas: ECONOMY_FORMULAS, rows,
+    reconciliation: { provisional_rows: prov, settled_rows: rows.length - prov, note: "Khoản không ghi kỳ được tính vào mọi báo cáo. Khoản «Đã ghi nhận»/«Pipeline» là tạm tính; chỉ «Đã xác nhận/Đã trả» mới coi là đã đối soát với nguồn. Ứng dụng không tự đối soát với ngân hàng hay mạng lưới." },
+  };
 }
