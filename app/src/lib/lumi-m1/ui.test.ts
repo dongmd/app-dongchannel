@@ -1533,6 +1533,54 @@ describe("Đợt 8 — Công suất, Quỹ, Đồ thị kiến thức, Kinh doan
   });
 });
 
+
+describe("Công tắc giao việc — trạng thái rõ ràng, hỏi xác nhận (UI)", () => {
+  it("OWNER: tóm tắt nói rõ sẵn sàng/chưa; công tắc tổng và bot hiện ĐANG BẬT/TẮT; bấm phải xác nhận; từ chối xác nhận thì không đổi; VIEWER không thấy công tắc", async () => {
+    const ctx = await browser.newContext(); const page = await ctx.newPage();
+    assert.equal((await login(page, base, "owner@dev.local")).user?.role, "OWNER");
+    await pg.sql`INSERT INTO lumi_system_flags(key,value,set_by,set_at) VALUES ('m1_enabled','true','test',now()) ON CONFLICT (key) DO UPDATE SET value='true'`;
+    await pg.sql`UPDATE lumi_assistants SET dispatch_enabled=true WHERE slug='lumitest'`;
+    await go(page, `${base}/lumi/telegram`);
+    await page.getByTestId("switch-panel").waitFor({ timeout: 60_000 });
+    assert.match(await page.getByTestId("m1-state").innerText(), /ĐANG BẬT/);
+    assert.match(await page.getByTestId("stop-state").innerText(), /BÌNH THƯỜNG/);
+    assert.match(await page.getByTestId("bot-state-lumitest").innerText(), /ĐANG NHẬN VIỆC/);
+    assert.match(await page.getByTestId("readiness-summary").innerText(), /SẴN SÀNG/);
+    // từ chối xác nhận ⇒ không đổi
+    page.once("dialog", (d) => void d.dismiss());
+    await page.getByTestId("m1-switch").click();
+    await page.waitForTimeout(800);
+    assert.equal((await pg.sql`SELECT value FROM lumi_system_flags WHERE key='m1_enabled'`)[0]!.value, true, "hủy xác nhận ⇒ không đổi");
+    // xác nhận TẮT ⇒ tóm tắt đổi sang CHƯA GIAO VIỆC ĐƯỢC
+    page.once("dialog", (d) => { assert.match(d.message(), /TẮT luồng giao việc/); void d.accept(); });
+    await page.getByTestId("m1-switch").click();
+    await page.locator("[data-testid='m1-state']", { hasText: "ĐANG TẮT" }).waitFor({ timeout: 30_000 });
+    assert.match(await page.getByTestId("readiness-summary").innerText(), /CHƯA GIAO VIỆC ĐƯỢC/);
+    assert.match(await page.getByTestId("readiness-summary").innerText(), /công tắc tổng/);
+    assert.equal((await pg.sql`SELECT value FROM lumi_system_flags WHERE key='m1_enabled'`)[0]!.value, false);
+    // bật lại
+    page.once("dialog", (d) => void d.accept());
+    await page.getByTestId("m1-switch").click();
+    await page.locator("[data-testid='m1-state']", { hasText: "ĐANG BẬT" }).waitFor({ timeout: 30_000 });
+    assert.match(await page.getByTestId("switch-msg").innerText(), /BẬT luồng giao việc/);
+    // bot: tắt rồi bật
+    page.once("dialog", (d) => void d.accept());
+    await page.getByTestId("bot-switch-lumitest").click();
+    await page.locator("[data-testid='bot-state-lumitest']", { hasText: "ĐANG TẮT" }).waitFor({ timeout: 30_000 });
+    assert.equal((await pg.sql`SELECT dispatch_enabled FROM lumi_assistants WHERE slug='lumitest'`)[0]!.dispatch_enabled, false);
+    page.once("dialog", (d) => void d.accept());
+    await page.getByTestId("bot-switch-lumitest").click();
+    await page.locator("[data-testid='bot-state-lumitest']", { hasText: "ĐANG NHẬN VIỆC" }).waitFor({ timeout: 30_000 });
+    await ctx.close();
+    const vctx = await browser.newContext(); const vp = await vctx.newPage();
+    assert.equal((await login(vp, base, "viewer@dev.local")).user?.role, "VIEWER");
+    await go(vp, `${base}/lumi/telegram`);
+    await vp.getByTestId("telegram-real").waitFor({ timeout: 60_000 });
+    assert.equal(await vp.getByTestId("switch-panel").count(), 0, "VIEWER không thấy công tắc");
+    await vctx.close();
+  });
+});
+
 describe("NFR-01 — dùng được ở 428 px, không cuộn ngang (OWNER, mọi màn Dong-Lumi)", () => {
   it("không màn nào làm trang rộng hơn khung nhìn 428 px (bảng được phép cuộn trong khung riêng)", async () => {
     const ctx = await browser.newContext({ viewport: { width: 428, height: 900 } }); const page = await ctx.newPage();
