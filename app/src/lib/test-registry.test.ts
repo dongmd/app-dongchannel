@@ -93,6 +93,10 @@ const EXCLUDED: ReadonlyArray<{ path: string; reason: string }> = [
 		reason: "Đợt 7 contract/concurrency tests (autonomy matrix, opportunities, economy report) on a real PostgreSQL server process (embedded binaries); run with `pnpm test:pg` (TDD 14.9, evidence class 2).",
 	},
 	{
+		path: "src/lib/lumi-m1/imp08-pg.test.ts",
+		reason: "Đợt 8 contract/concurrency tests (capacity, funds, campaigns, turn meetings, content pipeline) on a real PostgreSQL server process (embedded binaries); run with `pnpm test:pg` (TDD 14.9, evidence class 2).",
+	},
+	{
 		path: "src/lib/lumi-m1/plans-pg.test.ts",
 		reason: "IMP-01 concurrency/contract tests on a real PostgreSQL server process (embedded binaries); run with `pnpm test:pg` (TDD 14.9, evidence class 2).",
 	},

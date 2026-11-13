@@ -276,8 +276,8 @@ describe("Đợt 6 soát kiến thức, hết hạn đề xuất, tìm kiếm �
     await w.db.query(`UPDATE lumi_knowledge_versions SET created_at=$1 WHERE item_id=$2`, [new Date(T0.getTime() + 6 * 86400_000).toISOString(), fresh.item.id]);
     await w.db.query(`UPDATE lumi_task_template_versions SET created_at=$1`, [T0.toISOString()]);
     await w.db.query(`UPDATE lumi_ideas SET created_at=$1`, [T0.toISOString()]);
-    assert.deepEqual(await expiryTick(w.db, day8), { knowledge: 1, templates: 1, ideas: 1 });
-    assert.deepEqual(await expiryTick(w.db, day8), { knowledge: 0, templates: 0, ideas: 0 }, "lặp lại không làm gì thêm");
+    assert.deepEqual(await expiryTick(w.db, day8), { knowledge: 1, templates: 1, ideas: 1, proposals: 0, conclusions: 0, handoffs: 0 });
+    assert.deepEqual(await expiryTick(w.db, day8), { knowledge: 0, templates: 0, ideas: 0, proposals: 0, conclusions: 0, handoffs: 0 }, "lặp lại không làm gì thêm");
     const kn = await w.db.query<any>(`SELECT i.code,i.status,v.state,v.decided_by,v.decision_reason FROM lumi_knowledge_items i JOIN lumi_knowledge_versions v ON v.item_id=i.id ORDER BY i.code`);
     assert.deepEqual(kn.map((k: any) => [k.status, k.state]), [["REJECTED", "WITHDRAWN"], ["PROPOSED", "PROPOSED"]]);
     assert.match(kn[0].decision_reason, /Hết hạn đề xuất/); assert.equal(kn[0].decided_by, "system:expiry");

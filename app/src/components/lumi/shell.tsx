@@ -1,7 +1,7 @@
 "use client";
 
 import { usePathname } from "next/navigation";
-import { Bell, BookOpen, Brain, CalendarDays, Building2, FolderKanban, ListChecks, Menu, MessageCircle, MessagesSquare, Plus, RotateCcw, Server, Sparkles, Target, Users, Wallet, CalendarClock, Lightbulb, LayoutTemplate, Search as SearchIcon, Settings as SettingsIcon, ShieldCheck, Plug, Radar } from "lucide-react";
+import { Bell, BookOpen, Brain, CalendarDays, Building2, FolderKanban, ListChecks, Menu, MessageCircle, MessagesSquare, Plus, RotateCcw, Server, Sparkles, Target, Users, Wallet, CalendarClock, Lightbulb, LayoutTemplate, Search as SearchIcon, Settings as SettingsIcon, ShieldCheck, Plug, Radar, Gauge, Briefcase, FileText } from "lucide-react";
 import { useState, type ReactNode } from "react";
 
 import { pendingBreakdown, pendingCounts } from "@/lib/lumi/selectors";
@@ -100,6 +100,12 @@ export function Shell({ children }: { children: ReactNode }) {
                 <LumiLink href="/lumi/meetings" aria-current={cur("/lumi/meetings") ? "page" : undefined}>
                   <MessagesSquare size={17} /> Họp
                 </LumiLink>
+                <LumiLink href="/lumi/business" aria-current={cur("/lumi/business") ? "page" : undefined}>
+                  <Briefcase size={17} /> Kinh doanh
+                </LumiLink>
+                <LumiLink href="/lumi/content" aria-current={cur("/lumi/content") ? "page" : undefined}>
+                  <FileText size={17} /> Nội dung
+                </LumiLink>
                 <LumiLink href="/lumi/finance" aria-current={cur("/lumi/finance") ? "page" : undefined}>
                   <Wallet size={17} /> Tài chính
                 </LumiLink>
@@ -120,6 +126,9 @@ export function Shell({ children }: { children: ReactNode }) {
                 </LumiLink>
                 <LumiLink href="/lumi/opportunities" aria-current={cur("/lumi/opportunities") ? "page" : undefined}>
                   <Radar size={17} /> Cơ hội
+                </LumiLink>
+                <LumiLink href="/lumi/capacity" aria-current={cur("/lumi/capacity") ? "page" : undefined}>
+                  <Gauge size={17} /> Công suất
                 </LumiLink>
                 <LumiLink href="/lumi/autonomy" aria-current={cur("/lumi/autonomy") ? "page" : undefined}>
                   <ShieldCheck size={17} /> Tự chủ

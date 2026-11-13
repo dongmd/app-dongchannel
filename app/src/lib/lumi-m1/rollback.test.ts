@@ -114,8 +114,8 @@ describe("rollback rehearsal (PostgreSQL server, previous release code, syntheti
     assert.ok(s.kpiOk);
   });
 
-  it("2. sau khi áp 0039–0051, bản cũ vẫn chạy trên CSDL đã migrate với dữ liệu cũ (cổng bước 3)", async () => {
-    await replayMigrations(srv.sql, "0051", "0039"); // all of this release's migrations: the old code must still run on the fully migrated schema
+  it("2. sau khi áp 0039–0055, bản cũ vẫn chạy trên CSDL đã migrate với dữ liệu cũ (cổng bước 3)", async () => {
+    await replayMigrations(srv.sql, "0055", "0039"); // all of this release's migrations: the old code must still run on the fully migrated schema
     const cols = await q(`SELECT column_name FROM information_schema.columns WHERE table_name='tasks' AND column_name IN ('project_id','owner_kind','description')`);
     assert.equal(cols.length, 3);
     const s = oldSmoke();

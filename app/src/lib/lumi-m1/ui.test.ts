@@ -1395,11 +1395,149 @@ describe("Đợt 7 — Tự chủ, Tích hợp, Báo cáo kinh tế, Cơ hội (
   });
 });
 
+
+describe("Đợt 8 — Công suất, Quỹ, Đồ thị kiến thức, Kinh doanh, Họp theo lượt, Nội dung ba cổng (adapter GIẢ, dữ liệu mô phỏng)", () => {
+  it("OWNER: công suất + tạm dừng → quỹ chuẩn bị → chiến dịch (tạo, số liệu có nguồn, chạy, chạm trần tự dừng) → hiệu suất video + chiến lược → đồ thị kiến thức", async () => {
+    const ctx = await browser.newContext(); const page = await ctx.newPage();
+    assert.equal((await login(page, base, "owner@dev.local")).user?.role, "OWNER");
+    const [proj] = await pg.sql`SELECT id,name FROM lumi_projects WHERE slug='test-offer-us'`;
+    // công suất
+    await go(page, `${base}/lumi/capacity`);
+    await page.getByTestId("capacity-view").waitFor({ timeout: 60_000 });
+    await page.getByTestId("cap-input-lumitest").fill("9");
+    await page.getByTestId("cap-save-lumitest").click();
+    await until(async () => (await pg.sql`SELECT capacity FROM lumi_assistants WHERE slug='lumitest'`)[0]?.capacity === 9, "capacity saved");
+    await page.getByTestId("cap-pause-lumitest").click();
+    await until(async () => (await pg.sql`SELECT dispatch_paused FROM lumi_assistants WHERE slug='lumitest'`)[0]?.dispatch_paused === true, "paused");
+    await page.getByTestId("cap-pause-lumitest").filter({ hasText: "Tiếp tục" }).waitFor({ timeout: 30_000 });
+    await page.getByTestId("cap-pause-lumitest").click();
+    await until(async () => (await pg.sql`SELECT dispatch_paused FROM lumi_assistants WHERE slug='lumitest'`)[0]?.dispatch_paused === false, "resumed");
+    // quỹ chuẩn bị
+    await go(page, `${base}/lumi/finance`);
+    await page.getByTestId("finance-view").waitFor({ timeout: 60_000 });
+    await page.getByTestId("fin-tab-funds").click();
+    await page.getByTestId("fin-funds").waitFor({ timeout: 30_000 });
+    await page.getByTestId("fd-amount").fill("5");
+    await page.getByTestId("fd-start").fill("2026-11-01");
+    await page.getByTestId("fd-end").fill("2026-12-31");
+    await page.getByTestId("fd-save").click();
+    await page.getByTestId("fund-COMPANY").waitFor({ timeout: 30_000 });
+    assert.match(await page.getByTestId("fund-COMPANY").innerText(), /5/);
+    // chiến dịch
+    await go(page, `${base}/lumi/business`);
+    await page.getByTestId("business-view").waitFor({ timeout: 60_000 });
+    await page.getByTestId("cf-project").selectOption(proj!.id as string);
+    await page.getByTestId("cf-name").fill("UI chiến dịch thử");
+    await page.getByTestId("cf-cap").fill("20");
+    await page.getByTestId("cf-submit").click();
+    const camp = await until(async () => (await pg.sql`SELECT id,code FROM lumi_campaigns WHERE name='UI chiến dịch thử'`)[0], "campaign created");
+    await page.getByTestId("camp-empty-UI chiến dịch thử").waitFor({ timeout: 30_000 });
+    await page.getByTestId("camp-to-ACTIVE-UI chiến dịch thử").click();
+    await page.locator("[data-testid='camp-UI chiến dịch thử'][data-state='ACTIVE']").waitFor({ timeout: 30_000 });
+    await page.locator("section[data-testid='camp-UI chiến dịch thử'] details", { hasText: "Ghi số liệu" }).locator("summary").click();
+    await page.getByTestId("mt-start-UI chiến dịch thử").fill("2026-11-01");
+    await page.getByTestId("mt-end-UI chiến dịch thử").fill("2026-11-07");
+    await page.getByTestId("mt-spend-UI chiến dịch thử").fill("25");
+    await page.getByTestId("mt-clicks-UI chiến dịch thử").fill("50");
+    await page.getByTestId("mt-source-UI chiến dịch thử").fill("Bảng Ads (thử UI)");
+    await page.getByTestId("mt-go-UI chiến dịch thử").click();
+    await page.locator("[data-testid='camp-UI chiến dịch thử'][data-state='PAUSED']").waitFor({ timeout: 30_000 });
+    assert.match(await page.getByTestId("camp-pause-UI chiến dịch thử").innerText(), /trần/);
+    assert.match(await page.getByTestId("camp-total-UI chiến dịch thử-USD").innerText(), /chuyển đổi chưa có/, "thiếu chỉ số = chưa có, không phải 0");
+    assert.equal((await pg.sql`SELECT count(*)::int n FROM lumi_campaign_events WHERE campaign_id=${camp.id as string} AND event='CAP_REACHED'`)[0]!.n, 1);
+    // video + chiến lược (video của hệ cũ do bài test tạo trực tiếp)
+    await pg.sql`INSERT INTO videos(working_title) VALUES ('UI video thử') ON CONFLICT DO NOTHING`;
+    await page.getByTestId("biz-tab-youtube").click();
+    await page.getByTestId("biz-youtube").waitFor({ timeout: 30_000 });
+    await page.getByTestId("sf-project").selectOption(proj!.id as string);
+    await page.getByTestId("sf-goal").fill("Review trung thực đồng hồ cơ");
+    await page.getByTestId("sf-uniq").fill("Luôn đo thực tế");
+    await page.getByTestId("sf-breaks").fill("Không làm top 10 chung chung");
+    await page.getByTestId("sf-submit").click();
+    await page.getByTestId(`ys-${proj!.name as string}`).waitFor({ timeout: 30_000 });
+    await page.getByTestId("vid-UI video thử").waitFor({ timeout: 30_000 });
+    await page.getByTestId("vid-UI video thử").locator("details", { hasText: "Ghi hiệu suất" }).locator("summary").click();
+    await page.getByTestId("pf-views-UI video thử").fill("1200");
+    await page.getByTestId("pf-ctr-UI video thử").fill("0.05");
+    await page.getByTestId("pf-src-UI video thử").fill("YouTube Studio (thử UI)");
+    await page.getByTestId("pf-go-UI video thử").click();
+    await page.getByTestId("perf-UI video thử-7").waitFor({ timeout: 30_000 });
+    assert.match(await page.getByTestId("perf-UI video thử-7").innerText(), /5\.00%/);
+    // đồ thị kiến thức
+    await go(page, `${base}/lumi/knowledge/graph`);
+    await page.getByTestId("graph-view").waitFor({ timeout: 60_000 });
+    await page.getByTestId("conflicts").waitFor();
+    await page.getByTestId("linkcheck").waitFor();
+    await ctx.close();
+  });
+
+  it("Nội dung ba cổng: Chủ tạo → mệnh đề → gửi QA → ADMIN QA đạt → Chủ duyệt → đăng đích giả (có nhãn); tác giả không tự QA", async () => {
+    const own = await browser.newContext(); const op = await own.newPage();
+    assert.equal((await login(op, base, "owner@dev.local")).user?.role, "OWNER");
+    const [proj] = await pg.sql`SELECT id FROM lumi_projects WHERE slug='test-offer-us'`;
+    await go(op, `${base}/lumi/content`);
+    await op.getByTestId("content-view").waitFor({ timeout: 60_000 });
+    assert.match(await op.getByTestId("content-label").innerText(), /ADAPTER GIẢ/);
+    await op.getByTestId("af-project").selectOption(proj!.id as string);
+    await op.getByTestId("af-title").fill("UI bài review đồng hồ");
+    await op.getByTestId("af-body").fill("Đồng hồ cơ tự động dùng bộ máy lên dây bằng chuyển động cổ tay. ".repeat(6));
+    await op.getByTestId("af-submit").click();
+    const art = await until(async () => (await pg.sql`SELECT id,code FROM lumi_articles ORDER BY created_at DESC LIMIT 1`)[0], "article created");
+    const code = art.code as string;
+    await op.getByTestId(`art-${code}`).waitFor({ timeout: 30_000 });
+    assert.match(await op.getByTestId(`problems-${code}`).innerText(), /mệnh đề/);
+    await op.getByTestId(`cl-text-${code}`).fill("Bộ máy tự động lên dây bằng chuyển động cổ tay");
+    await op.getByTestId(`cl-level-${code}`).selectOption("E3");
+    await op.getByTestId(`cl-src-${code}`).fill("https://example.com/nguon");
+    await op.getByTestId(`cl-add-${code}`).click();
+    await op.getByTestId(`claims-${code}`).getByText(/E3/).first().waitFor({ timeout: 30_000 });
+    await op.getByTestId(`art-qa-submit-${code}`).click();
+    await op.locator(`[data-testid='art-${code}'][data-state='QA_PENDING']`).waitFor({ timeout: 30_000 });
+    await op.getByTestId(`art-qa-pass-${code}`).click(); // tác giả là chính Chủ ⇒ bị chặn
+    await op.waitForTimeout(1200);
+    assert.equal((await pg.sql`SELECT state FROM lumi_articles WHERE id=${art.id as string}`)[0]!.state, "QA_PENDING", "tác giả không tự qua QA");
+    await own.close();
+    const adm = await browser.newContext(); const ap = await adm.newPage();
+    assert.equal((await login(ap, base, "admin@dev.local")).user?.role, "ADMIN");
+    await go(ap, `${base}/lumi/content`);
+    await ap.getByTestId(`art-qa-pass-${code}`).waitFor({ timeout: 60_000 });
+    await ap.getByTestId(`art-qa-pass-${code}`).click();
+    await until(async () => (await pg.sql`SELECT state FROM lumi_articles WHERE id=${art.id as string}`)[0]?.state === "QA_PASSED", "qa passed");
+    assert.equal(await ap.getByTestId(`art-approve-${code}`).count(), 0, "ADMIN không duyệt được");
+    await adm.close();
+    const own2 = await browser.newContext(); const op2 = await own2.newPage();
+    await login(op2, base, "owner@dev.local"); await go(op2, `${base}/lumi/content`);
+    await op2.getByTestId(`art-approve-${code}`).waitFor({ timeout: 60_000 });
+    await op2.getByTestId(`art-approve-${code}`).click();
+    await op2.getByTestId(`art-publish-${code}`).waitFor({ timeout: 30_000 });
+    await op2.getByTestId(`art-publish-${code}`).click();
+    await op2.locator(`[data-testid='art-${code}'][data-state='PUBLISHED']`).waitFor({ timeout: 30_000 });
+    assert.equal((await pg.sql`SELECT label FROM lumi_fake_wp`)[0]!.label.includes("ADAPTER GIẢ"), true);
+    await own2.close();
+  });
+
+  it("VIEWER: xem được các màn mới nhưng không có điều khiển ghi; API ghi 403 và không đổi gì", async () => {
+    const ctx = await browser.newContext(); const page = await ctx.newPage();
+    assert.equal((await login(page, base, "viewer@dev.local")).user?.role, "VIEWER");
+    const cnt = async () => (await pg.sql`SELECT (SELECT count(*)::int FROM lumi_campaigns) c,(SELECT count(*)::int FROM lumi_articles) a,(SELECT count(*)::int FROM lumi_prep_funds) f,(SELECT count(*)::int FROM lumi_turn_meetings) t`)[0]!;
+    const before = await cnt();
+    for (const [url, tid] of [["capacity", "capacity-view"], ["business", "business-view"], ["content", "content-view"], ["turn-meetings", "turn-meetings-view"], ["knowledge/graph", "graph-view"]]) { await go(page, `${base}/lumi/${url}`); await page.getByTestId(tid!).waitFor({ timeout: 60_000 }); }
+    await go(page, `${base}/lumi/capacity`); await page.getByTestId("capacity-view").waitFor();
+    assert.equal(await page.locator("[data-testid^='cap-save-']").count(), 0); assert.equal(await page.getByTestId("transfer-form").count(), 0);
+    await go(page, `${base}/lumi/content`); await page.getByTestId("content-view").waitFor();
+    assert.equal(await page.getByTestId("article-form").count(), 0);
+    const post = (u: string, b: unknown) => page.evaluate(async ([url, body]) => (await fetch(url as string, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) })).status, [u, b] as [string, unknown]);
+    assert.deepEqual([await post("/api/v1/lumi/funds", { scope: "COMPANY", amount: 1, period_start: "2026-11-01", period_end: "2026-11-30" }), await post("/api/v1/lumi/campaigns", { project_id: "00000000-0000-4000-8000-000000000001", name: "xyz abc" }), await post("/api/v1/lumi/articles", { project_id: "00000000-0000-4000-8000-000000000001", title: "xyz", body: "abc" })], [403, 403, 403]);
+    assert.deepEqual(await cnt(), before);
+    await ctx.close();
+  });
+});
+
 describe("NFR-01 — dùng được ở 428 px, không cuộn ngang (OWNER, mọi màn Dong-Lumi)", () => {
   it("không màn nào làm trang rộng hơn khung nhìn 428 px (bảng được phép cuộn trong khung riêng)", async () => {
     const ctx = await browser.newContext({ viewport: { width: 428, height: 900 } }); const page = await ctx.newPage();
     assert.equal((await login(page, base, "owner@dev.local")).user?.role, "OWNER");
-    const routes = ["/lumi", "/lumi/approvals", "/lumi/projects", "/lumi/tasks", "/lumi/company", "/lumi/org", "/lumi/knowledge", "/lumi/knowledge/review", "/lumi/meetings", "/lumi/finance", "/lumi/routines", "/lumi/ideas", "/lumi/templates", "/lumi/search", "/lumi/settings", "/lumi/opportunities", "/lumi/autonomy", "/lumi/integrations", "/lumi/admin", "/lumi/telegram"];
+    const routes = ["/lumi", "/lumi/approvals", "/lumi/projects", "/lumi/tasks", "/lumi/company", "/lumi/org", "/lumi/knowledge", "/lumi/knowledge/review", "/lumi/meetings", "/lumi/finance", "/lumi/routines", "/lumi/ideas", "/lumi/templates", "/lumi/search", "/lumi/settings", "/lumi/opportunities", "/lumi/autonomy", "/lumi/integrations", "/lumi/capacity", "/lumi/business", "/lumi/content", "/lumi/turn-meetings", "/lumi/knowledge/graph", "/lumi/admin", "/lumi/telegram"];
     const wide: string[] = [];
     for (const r of routes) {
       await go(page, `${base}${r}`);

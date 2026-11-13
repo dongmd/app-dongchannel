@@ -11,8 +11,9 @@ import { errText, lumiApi, newKey } from "@/lib/lumi/plans-client";
 import { useLumi } from "./lumi-provider";
 import { Empty, fmtFull } from "./ui";
 import { EconomyReport } from "./biz-views";
+import { FundsPanel } from "./w8-views";
 
-type Tab = "limits" | "money" | "experiments" | "report";
+type Tab = "limits" | "money" | "experiments" | "report" | "funds";
 const LEDGER: Record<string, string> = { ADS_COST: "Chi phí quảng cáo", COMMISSION: "Hoa hồng", SPONSOR: "Tài trợ" };
 const MSTATE: Record<string, string> = { RECORDED: "Đã ghi nhận", CONFIRMED: "Đã xác nhận", PAID: "ĐÃ TRẢ (tiền đã nhận)", REVERSED: "Đảo/hoàn", PIPELINE: "Pipeline (chưa phải tiền thu)" };
 const ESTATE: Record<string, string> = { DRAFT: "Nháp (chưa chốt tiêu chí)", LOCKED: "Đã chốt, đang chạy", STOPPED: "ĐÃ DỪNG", SCALE_PROPOSED: "Đề xuất mở rộng (chờ Chủ)", INSUFFICIENT: "Chưa đủ bằng chứng", COMPLETED: "Đã quyết định" };
@@ -36,10 +37,11 @@ function Inner() {
         <p className="muted" style={{ margin: "4px 0 0" }}>Bốn sổ <strong>tách riêng, không cộng thành lợi nhuận</strong>: chi phí quảng cáo, hoa hồng, tài trợ (người nhập, nêu nguồn) và chi phí AI (đo thật). Hợp đồng đã ký là «pipeline», không phải tiền thu. Chưa có nguồn thì «chưa có dữ liệu», không tự điền.</p>
       </div>
       <div className="l-tabs" role="tablist" aria-label="Tài chính">
-        {([["limits", "Chi phí AI & giới hạn"], ["money", "Sổ tiền"], ["experiments", "Thử nghiệm"], ["report", "Báo cáo kinh tế"]] as [Tab, string][]).map(([k, l]) => <button key={k} role="tab" aria-selected={tab === k} onClick={() => setTab(k)} data-testid={`fin-tab-${k}`}>{l}</button>)}
+        {([["limits", "Chi phí AI & giới hạn"], ["money", "Sổ tiền"], ["experiments", "Thử nghiệm"], ["report", "Báo cáo kinh tế"], ["funds", "Quỹ"]] as [Tab, string][]).map(([k, l]) => <button key={k} role="tab" aria-selected={tab === k} onClick={() => setTab(k)} data-testid={`fin-tab-${k}`}>{l}</button>)}
       </div>
       {tab === "limits" && <Limits isOwner={isOwner} projects={projects} />}
       {tab === "money" && <Money canWrite={canWrite} projects={projects} />}
+      {tab === "funds" && <FundsPanel assistants={state.real?.assistants?.map((a: any) => ({ id: a.id, name: a.name })) ?? []} />}
       {tab === "report" && <EconomyReport projects={projects} />}
       {tab === "experiments" && <Experiments canWrite={canWrite} isOwner={isOwner} projects={projects} />}
     </div>

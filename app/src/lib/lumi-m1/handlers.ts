@@ -26,6 +26,10 @@ import { HANDLERS_IMP04 } from "./handlers-imp04";
 import { HANDLERS_IMP05 } from "./handlers-imp05";
 import { HANDLERS_IMP06 } from "./handlers-imp06";
 import { HANDLERS_IMP07 } from "./handlers-imp07";
+import { HANDLERS_IMP08 } from "./handlers-imp08";
+import { HANDLERS_BIZ2 } from "./handlers-biz2";
+import { HANDLERS_TM } from "./handlers-tm";
+import { HANDLERS_CONTENT } from "./handlers-content";
 import { cancelPlan, closeGoal, companyOverview, createGoal, createPlan, decidePlan, getPlanDetail, reconcileLedger, recordLedger, revisePlan, setPlansEnabled, type PlanDecision } from "./plans";
 
 export type Principal =
@@ -108,6 +112,11 @@ const MESSAGES: Record<string, string> = {
   MEETING_CAP: "Đã đủ số cuộc họp Chủ cho phép cho kế hoạch này",
   ROUND_LIMIT: "Vượt số vòng đóng góp cho phép của cuộc họp",
   NOT_READY: "Chưa đủ điều kiện tổng hợp (còn thiếu ý kiến bắt buộc, chưa hết hạn)",
+  SELF_REVIEW: "QA phải do người khác tác giả bản này thực hiện",
+  QA_CHECKLIST_FAILED: "Bài chưa đạt danh sách kiểm (xem chi tiết các lỗi)",
+  NOT_CONFIGURED: "Đích xuất bản này chưa được cấu hình và kiểm tra",
+  CAP_REACHED: "Chiến dịch đã chạm trần chi: nâng trần (quyết định mới của Chủ) rồi mới chạy lại",
+  CAPACITY_REACHED: "Trợ lý đã đủ công suất (số việc đang mở bằng mức tối đa): chuyển bớt việc hoặc nâng công suất ở màn Công suất",
   COST_CAP: "Đã chạm trần chi phí AI đo được: không mở lượt chạy mới (Chủ nâng trần ở Tài chính nếu muốn)",
   NOT_LOCKED: "Thử nghiệm chưa chốt tiêu chí: chưa nhận kết quả",
   EXPERIMENT_CLOSED: "Thử nghiệm đã dừng/đóng: không nhận thêm dữ liệu",
@@ -605,7 +614,7 @@ export const HANDLERS: Record<string, (ctx: ApiCtx, req: ApiReq) => Promise<ApiR
   },
 };
 
-Object.assign(HANDLERS, HANDLERS_IMP04, HANDLERS_IMP05, HANDLERS_IMP06, HANDLERS_IMP07); // IMP-04/05 handlers live in their own files
+Object.assign(HANDLERS, HANDLERS_IMP04, HANDLERS_IMP05, HANDLERS_IMP06, HANDLERS_IMP07, HANDLERS_IMP08, HANDLERS_BIZ2, HANDLERS_TM, HANDLERS_CONTENT); // IMP-04/05 handlers live in their own files
 
 const MAX_BODY = 64 * 1024;
 const NEW_WORK = new Set(["intake", "confirm", "createTask", "startRun", "setDispatch"]);

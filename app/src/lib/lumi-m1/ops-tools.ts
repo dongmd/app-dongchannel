@@ -17,6 +17,7 @@ export const SETTINGS = {
   proposal_expiry_days: { def: 7, min: 1, max: 90, label: "Đề xuất chờ quá bao nhiêu ngày thì tự bỏ", unit: "ngày" },
   knowledge_review_days: { def: 90, min: 7, max: 730, label: "Kiến thức quá bao nhiêu ngày chưa soát thì đánh dấu cũ", unit: "ngày" },
   routine_fail_threshold: { def: 3, min: 1, max: 20, label: "Routine lỗi liên tiếp bao nhiêu lần thì dừng và báo Chủ", unit: "lần" },
+  search_scan_limit: { def: 1000, min: 100, max: 5000, label: "Số mục gần nhất quét mỗi loại khi tìm kiếm", unit: "mục" },
   routine_catchup_hours: { def: 6, min: 1, max: 48, label: "Cửa sổ chạy bù khi routine lỡ mốc", unit: "giờ" },
 } as const;
 export type SettingKey = keyof typeof SETTINGS;
@@ -222,7 +223,7 @@ export async function markKnowledgeReviewed(db: Db, a: { actorRef: string; itemI
 }
 
 // ───────────────────────── APR-06 expiry: only what nobody decided; history kept; nothing is ever approved by expiry
-export async function expiryTick(db: Db, now: Date): Promise<{ knowledge: number; templates: number; ideas: number }> {
+export async function expiryTick(db: Db, now: Date): Promise<{ knowledge: number; templates: number; ideas: number; proposals: number; conclusions: number; handoffs: number }> {
   const days = await getSettingNumber(db, "proposal_expiry_days");
   const cutoff = iso(new Date(now.getTime() - days * 86400_000));
   const reason = `Hết hạn đề xuất sau ${days} ngày không ai quyết định (APR-06)`;
@@ -230,9 +231,14 @@ export async function expiryTick(db: Db, now: Date): Promise<{ knowledge: number
   if (kv.length) await db.query(`UPDATE lumi_knowledge_items SET status='REJECTED' WHERE id = ANY($1::uuid[]) AND status='PROPOSED' AND approved_version IS NULL`, [kv.map((x: any) => x.item_id)]);
   const tv = await db.query<any>(`UPDATE lumi_task_template_versions SET state='EXPIRED',decided_by='system:expiry',decided_at=$2,decision_note=$3 WHERE state='PROPOSED' AND created_at < $1 RETURNING id`, [cutoff, iso(now), reason]);
   const id = await db.query<any>(`UPDATE lumi_ideas SET status='DISCARDED',decided_by='system:expiry',decided_at=$2,decision_note=$3 WHERE status IN ('NEW','CLASSIFIED') AND created_at < $1 RETURNING id`, [cutoff, iso(now), reason]);
-  const n = kv.length + tv.length + id.length;
+  // APR-06 (extension): other undecided proposals — PM change proposals, pending meeting conclusions, proposed handoffs. Dropped with a reason, history kept, never approved.
+  const cp = await db.query<any>(`UPDATE lumi_change_proposals SET state='REJECTED',decided_by='system:expiry',decided_at=$2 WHERE state='PENDING' AND created_at < $1 RETURNING id`, [cutoff, iso(now)]);
+  const mc = await db.query<any>(`UPDATE lumi_meeting_conclusions SET state='REJECTED' WHERE state='PENDING_OWNER' AND created_at < $1 RETURNING id`, [cutoff]);
+  const ho = await db.query<any>(`UPDATE lumi_handoffs SET state='CANCELLED' WHERE state='PROPOSED' AND created_at < $1 RETURNING id`, [cutoff]);
+  for (const h of ho) await db.query(`INSERT INTO lumi_handoff_events(handoff_id,event_type,actor_ref,text,created_at) VALUES ($1,'EXPIRED','system:expiry',$2,$3)`, [h.id, reason, iso(now)]);
+  const n = kv.length + tv.length + id.length + cp.length + mc.length + ho.length;
   if (n > 0) { await audit(db, "proposal.expire", "system:expiry", { knowledge: kv.length, templates: tv.length, ideas: id.length }, now); await enqueueNotify(db, `notify:expiry:${iso(now).slice(0, 13)}`, { type: "PROPOSALS_EXPIRED", count: n }, now); }
-  return { knowledge: kv.length, templates: tv.length, ideas: id.length };
+  return { knowledge: kv.length, templates: tv.length, ideas: id.length, proposals: cp.length, conclusions: mc.length, handoffs: ho.length };
 }
 
 // ───────────────────────── SRC-01 global search, grouped by type, accent-insensitive, by viewer permission
@@ -243,12 +249,13 @@ export async function globalSearch(db: Db, a: { viewer: SearchViewer; q: string;
   if (a.viewer.kind !== "user") throw new LumiError("FORBIDDEN", 403);
   const want = (t: string) => !a.types || a.types.length === 0 || a.types.includes(t);
   const hit = (...fields: (string | null | undefined)[]) => { const n = normalizeText(fields.filter(Boolean).join(" ")); return terms.every((x) => n.includes(x)); };
+  const lim = await getSettingNumber(db, "search_scan_limit");
   const groups: { type: string; label: string; items: { code: string; title: string; sub?: string; href: string }[] }[] = [];
   const add = (type: string, label: string, rows: any[], pick: (r: any) => { code: string; title: string; sub?: string; href: string } | null, f: (r: any) => (string | null | undefined)[]) => {
     const items = rows.filter((r) => hit(...f(r))).slice(0, 10).map(pick).filter(Boolean) as any[];
     if (items.length) groups.push({ type, label, items });
   };
-  if (want("TASK")) add("TASK", "Việc", await db.query(`SELECT code,title,description,status FROM tasks ORDER BY created_at DESC LIMIT 1000`), (r) => ({ code: r.code, title: r.title, sub: r.status, href: "/lumi/work" }), (r) => [r.code, r.title, r.description]);
+  if (want("TASK")) add("TASK", "Việc", await db.query(`SELECT code,title,description,status FROM tasks ORDER BY created_at DESC LIMIT ${lim}`), (r) => ({ code: r.code, title: r.title, sub: r.status, href: "/lumi/work" }), (r) => [r.code, r.title, r.description]);
   if (want("GOAL")) add("GOAL", "Mục tiêu", await db.query(`SELECT code,title,outcome FROM lumi_goals ORDER BY created_at DESC LIMIT 500`), (r) => ({ code: r.code, title: r.title, href: "/lumi/company" }), (r) => [r.code, r.title, r.outcome]);
   if (want("PLAN")) add("PLAN", "Kế hoạch", await db.query(`SELECT p.code,g.title AS goal,p.status,p.id FROM lumi_plans p JOIN lumi_goals g ON g.id=p.goal_id ORDER BY p.created_at DESC LIMIT 500`), (r) => ({ code: r.code, title: r.goal, sub: r.status, href: `/lumi/plans/${r.id}` }), (r) => [r.code, r.goal]);
   if (want("KNOWLEDGE")) {
@@ -263,5 +270,5 @@ export async function globalSearch(db: Db, a: { viewer: SearchViewer; q: string;
   if (want("TEMPLATE")) add("TEMPLATE", "Mẫu công việc", await db.query(`SELECT t.code,t.name,v.description FROM lumi_task_templates t JOIN lumi_task_template_versions v ON v.template_id=t.id AND v.version=t.current_version`), (r) => ({ code: r.code, title: r.name, href: "/lumi/templates" }), (r) => [r.code, r.name, r.description]);
   if (want("EXPERIMENT")) add("EXPERIMENT", "Thử nghiệm", await db.query(`SELECT code,title,hypothesis,state FROM lumi_experiments ORDER BY created_at DESC LIMIT 300`), (r) => ({ code: r.code, title: r.title, sub: r.state, href: "/lumi/finance" }), (r) => [r.code, r.title, r.hypothesis]);
   if (want("ROUTINE")) add("ROUTINE", "Routine", await db.query(`SELECT code,name FROM lumi_routines`), (r) => ({ code: r.code, title: r.name, href: "/lumi/routines" }), (r) => [r.code, r.name]);
-  return { q: a.q, groups, total: groups.reduce((s, g) => s + g.items.length, 0), note: "Tìm trong 1000 mục gần nhất mỗi loại; không bỏ dấu cũng tìm được. Chưa tìm trong hội thoại Hermes, nội dung website, video/offer (chưa có trong ứng dụng)." };
+  return { q: a.q, groups, total: groups.reduce((s, g) => s + g.items.length, 0), note: "Tìm trong số mục gần nhất mỗi loại đặt ở Cài đặt (mặc định 1000); không bỏ dấu cũng tìm được. Chưa tìm trong hội thoại Hermes, nội dung website, video/offer (chưa có trong ứng dụng)." };
 }

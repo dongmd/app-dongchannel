@@ -45,12 +45,12 @@ function RoutinesInner({ isOwner, canWrite }: { isOwner: boolean; canWrite: bool
   const { d, err, load } = useGet<any>("/api/v1/lumi/routines");
   const projects = useProjects(); const assistants = useAssistants();
   const [adding, setAdding] = useState(false);
-  const empty = { name: "", kind: "NOTIFY", sched: "WEEKDAYS", time: "07:30", weekday: "1", tz: "Asia/Ho_Chi_Minh", project: "", assignee: "", title: "", message: "", max: "1", deadline: "60" };
+  const empty = { name: "", kind: "NOTIFY", sched: "WEEKDAYS", time: "07:30", weekday: "1", tz: "Asia/Ho_Chi_Minh", project: "", assignee: "", title: "", message: "", max: "1", deadline: "60", scan: false };
   const [f, setF] = useState<any>(empty); const set = (k: string, v: string) => setF((p: any) => ({ ...p, [k]: v }));
   async function create(e: React.FormEvent) {
     e.preventDefault();
     const body: any = { name: f.name, kind: f.kind, schedule_kind: f.sched, time_of_day: f.time, timezone: f.tz, weekday: f.sched === "WEEKLY" ? Number(f.weekday) : undefined, max_runs_per_day: Number(f.max) };
-    if (f.kind === "NOTIFY") body.message = f.message; else { body.title = f.title; body.project_id = f.project || undefined; body.assignee_id = f.assignee || undefined; body.deadline_minutes = Number(f.deadline); }
+    if (f.kind === "NOTIFY") body.message = f.message; else { body.title = f.title; body.project_id = f.project || undefined; body.assignee_id = f.assignee || undefined; body.deadline_minutes = Number(f.deadline); if (f.scan) body.purpose = "OPPORTUNITY_SCAN"; }
     const r = await lumiApi("/api/v1/lumi/routines", { method: "POST", body });
     toast(r.ok ? "Đã tạo routine (đang TẮT; bật là quyết định của Chủ)." : `Không thực hiện được: ${missingText(r.error)}`);
     if (r.ok) { setAdding(false); setF(empty); void load(); }
@@ -86,6 +86,7 @@ function RoutinesInner({ isOwner, canWrite }: { isOwner: boolean; canWrite: bool
               <div className="l-row" style={{ gap: 8, flexWrap: "wrap" }}>
                 <label className="l-label">Dự án<select className="l-input" value={f.project} onChange={(e) => set("project", e.target.value)} data-testid="rt-project"><option value="">— chọn —</option>{projects.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}</select></label>
                 <label className="l-label">Giao cho bot<select className="l-input" value={f.assignee} onChange={(e) => set("assignee", e.target.value)} data-testid="rt-assignee"><option value="">— chọn —</option>{assistants.map((a) => <option key={a.id} value={a.id}>{a.name}</option>)}</select></label>
+                <label className="small" style={{ alignSelf: "center" }}><input type="checkbox" checked={f.scan} onChange={(e) => setF((p: any) => ({ ...p, scan: e.target.checked }))} data-testid="rt-scan" /> Lịch tự tìm cơ hội (dùng quỹ chuẩn bị, hết quỹ thì dừng)</label>
                 <label className="l-label" style={{ width: 150 }}>Hạn mỗi lần (phút)<input className="l-input" inputMode="numeric" value={f.deadline} onChange={(e) => set("deadline", e.target.value)} data-testid="rt-deadline" /></label>
               </div>
             </div>
@@ -251,22 +252,33 @@ function SettingsInner() {
 }
 
 // ───────────────────────── Tìm kiếm
+const plain = (x: string) => x.normalize("NFD").replace(/[\u0300-\u036f]/g, "").replace(/đ/g, "d").replace(/Đ/g, "D").toLowerCase();
+/** highlights the typed words (accent-insensitive) */
+function Hl({ text, q }: { text: string; q: string }) {
+  const terms = plain(q).split(/\s+/).filter(Boolean); const p = plain(text);
+  const marks = new Array(text.length).fill(false);
+  for (const t of terms) { let i = p.indexOf(t); while (i >= 0) { for (let k = i; k < i + t.length; k++) marks[k] = true; i = p.indexOf(t, i + t.length); } }
+  const out: React.ReactNode[] = []; let k = 0;
+  while (k < text.length) { let j = k; while (j < text.length && marks[j] === marks[k]) j++; const seg = text.slice(k, j); out.push(marks[k] ? <mark key={k}>{seg}</mark> : <span key={k}>{seg}</span>); k = j; }
+  return <>{out}</>;
+}
 export function SearchView() { const { live } = useRole(); return live ? <SearchInner /> : <Need />; }
 function SearchInner() {
-  const [q, setQ] = useState(""); const [res, setRes] = useState<any | null>(null); const [msg, setMsg] = useState<string | null>(null); const [busy, setBusy] = useState(false);
+  const [q, setQ] = useState(""); const [types, setTypes] = useState<string[]>([]); const [res, setRes] = useState<any | null>(null); const [msg, setMsg] = useState<string | null>(null); const [busy, setBusy] = useState(false);
   async function go(e: React.FormEvent) {
     e.preventDefault(); setBusy(true); setMsg(null);
-    const r = await lumiApi<any>("/api/v1/lumi/search", { method: "POST", body: { q } });
+    const r = await lumiApi<any>("/api/v1/lumi/search", { method: "POST", body: { q, types: types.length ? types : undefined } });
     setBusy(false); if (r.ok) setRes(r.data); else { setRes(null); setMsg(errText(r.error)); }
   }
   return (
     <div className="l-grid" style={{ gap: 12 }} data-testid="search-view">
       <Head icon={<Search size={22} />} title="Tìm kiếm" note="Tìm xuyên việc, mục tiêu, kế hoạch, kiến thức, cuộc họp, trợ lý, dự án, ý tưởng, mẫu, thử nghiệm, routine. Không cần gõ dấu." />
       <form className="l-row" style={{ gap: 8 }} onSubmit={go} role="search"><input className="l-input" style={{ flex: 1 }} value={q} onChange={(e) => setQ(e.target.value)} placeholder="Từ khóa…" aria-label="Từ khóa tìm kiếm" data-testid="search-q" /><button className="l-btn primary" disabled={busy || q.trim().length === 0} data-testid="search-go">Tìm</button></form>
+      <div className="small l-row" style={{ gap: 10, flexWrap: "wrap" }} data-testid="search-types">Chỉ tìm trong:{[["TASK", "Việc"], ["GOAL", "Mục tiêu"], ["PLAN", "Kế hoạch"], ["KNOWLEDGE", "Kiến thức"], ["MEETING", "Họp"], ["ASSISTANT", "Trợ lý"], ["PROJECT", "Dự án"], ["IDEA", "Ý tưởng"], ["TEMPLATE", "Mẫu"], ["EXPERIMENT", "Thử nghiệm"], ["ROUTINE", "Routine"]].map(([k, l]) => <label key={k}><input type="checkbox" checked={types.includes(k!)} onChange={(e) => setTypes(e.target.checked ? [...types, k!] : types.filter((x) => x !== k))} data-testid={`st-${k}`} /> {l}</label>)}</div>
       {msg && <div className="l-note" role="alert">{msg}</div>}
       {res && (res.total === 0 ? <Empty>Không có kết quả cho «{res.q}».</Empty> : (res.groups as any[]).map((g) => (
         <section key={g.type} className="l-card" data-testid={`search-group-${g.type}`}><h3 style={{ margin: "0 0 4px" }}>{g.label} ({g.items.length})</h3>
-          <ul style={{ margin: 0, paddingLeft: 18 }}>{g.items.map((it: any) => <li key={it.code}><LumiLink href={it.href}><u>{it.code}</u></LumiLink> · {it.title}{it.sub ? <span className="muted"> · {it.sub}</span> : null}</li>)}</ul></section>
+          <ul style={{ margin: 0, paddingLeft: 18 }}>{g.items.map((it: any) => <li key={it.code}><LumiLink href={it.href}><u>{it.code}</u></LumiLink> · <Hl text={it.title} q={q} />{it.sub ? <span className="muted"> · {it.sub}</span> : null}</li>)}</ul></section>
       )))}
       {res && <p className="small muted">{res.note}</p>}
     </div>

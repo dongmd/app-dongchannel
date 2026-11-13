@@ -48,7 +48,7 @@ function Inner() {
     <div className="l-grid" style={{ gap: 14 }} data-testid="knowledge-view">
       <div>
         <h1 className="l-row" style={{ gap: 8 }}><BookOpen size={22} /> Kiến thức</h1>
-        <p className="small" style={{ margin: "2px 0 0" }}><LumiLink href="/lumi/knowledge/review" data-testid="kn-review-link"><u>Soát định kỳ (số liệu thiếu ngày, nội dung cũ)</u></LumiLink></p>
+        <p className="small" style={{ margin: "2px 0 0" }}><LumiLink href="/lumi/knowledge/review" data-testid="kn-review-link"><u>Soát định kỳ (số liệu thiếu ngày, nội dung cũ)</u></LumiLink> · <LumiLink href="/lumi/knowledge/graph" data-testid="kn-graph-link"><u>Đồ thị kiến thức</u></LumiLink></p>
         <p className="muted" style={{ margin: "4px 0 0" }}>Nguồn → ghi chú → quyết định → quy tắc. Mỗi mục có phạm vi, phiên bản và nguồn. Bot chỉ <strong>đề xuất</strong>; chỉ Chủ duyệt. Quy tắc là <strong>chỉ dẫn</strong> cho bot, không phải quyền hành động hay ngân sách.</p>
       </div>
       <div className="l-row" style={{ gap: 8, flexWrap: "wrap", alignItems: "flex-end" }}>

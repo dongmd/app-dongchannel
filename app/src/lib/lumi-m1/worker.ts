@@ -9,6 +9,7 @@ import { costTick } from "./cost-probe";
 import { costLimitTick } from "./cost-limits";
 import { expiryTick } from "./ops-tools";
 import { routineTick } from "./ops-routines";
+import { turnMeetingTick } from "./turn-meetings";
 import { meetingTick } from "./meetings";
 
 export interface WorkerDeps { hermes: HermesPort; notify: NotifyPort; heartbeatMs?: number; clock?: () => Date; hermesMode?: string; slugs?: string[] }
@@ -29,7 +30,8 @@ export async function workerCycle(db: Db, deps: WorkerDeps, workerId: string, op
   // Đợt 6: scheduled routines (one record per slot, never double-run) and expiry of undecided proposals (never approves anything). Neither can block the loop.
   const routines = await routineTick(db, clock()).catch((e) => ({ error: String(e) }));
   const expiry = await expiryTick(db, clock()).catch((e) => ({ error: String(e) }));
+  const turnMeetings = await turnMeetingTick(db, clock()).catch((e) => ({ error: String(e) }));
   // IMP-01: book run costs, release commitments, expire versions, write reports (no-op unless plans_enabled). Never blocks the loop.
   const plans = await planTick(db, clock(), { hermesMode: deps.hermesMode ?? "simulated" }).catch((e) => ({ error: String(e) }));
-  return { results, reaped, plans, costs, limits, meetings, routines, expiry };
+  return { results, reaped, plans, costs, limits, meetings, routines, expiry, turnMeetings };
 }

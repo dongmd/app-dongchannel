@@ -10,7 +10,7 @@ import { MessagesSquare, Plus } from "lucide-react";
 
 import { errText, lumiApi, newKey } from "@/lib/lumi/plans-client";
 import { useLumi } from "./lumi-provider";
-import { Empty, fmtFull } from "./ui";
+import { Empty, fmtFull, LumiLink } from "./ui";
 
 const REASON: Record<string, string> = { CROSS_ROLE: "Quyết định chéo vai trò / bất đồng", JOINT_PLAN: "Nhiều bot cùng góp một Plan & Cost", MILESTONE: "Mốc / đánh giá sau thử nghiệm", OWNER: "Chủ yêu cầu" };
 const ROLE: Record<string, string> = { CHAIR: "Chủ trì", REQUIRED_EXPERT: "Chuyên gia bắt buộc", CONTRIBUTOR: "Đóng góp", OBSERVER: "Quan sát", OWNER_OPTIONAL: "Chủ (tùy chọn)" };
@@ -40,6 +40,7 @@ function Inner() {
     <div className="l-grid" style={{ gap: 14 }} data-testid="meetings-view">
       <div>
         <h1 className="l-row" style={{ gap: 8 }}><MessagesSquare size={22} /> Họp</h1>
+        <p className="small" style={{ margin: "2px 0 0" }}><LumiLink href="/lumi/turn-meetings" data-testid="mt-turns-link"><u>Họp theo lượt (khi họp bất đồng bộ không đủ)</u></LumiLink></p>
         <p className="muted" style={{ margin: "4px 0 0" }}>Họp là <strong>ngoại lệ có lý do</strong>, không phải bước mặc định: việc có một người phụ trách rõ đi thẳng bàn giao. Họp bất đồng bộ: mỗi bên nộp đóng góp có cấu trúc, chủ trì tổng hợp một biên bản có phiên bản. <strong>Kết luận không tự mở rộng ngân sách hay quyền</strong>; im lặng không phải đồng ý.</p>
       </div>
       {isOwner && <div><button className="l-btn primary" onClick={() => setOpening(true)} data-testid="mt-open"><Plus size={15} /> Mở cuộc họp</button></div>}

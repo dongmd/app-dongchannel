@@ -7,6 +7,7 @@
 import { LumiError, audit, enqueueNotify, missingExecConfig, requireRole, type Db } from "./core";
 import { createTaskInTx } from "./core-web";
 import { getSettingNumber } from "./ops-tools";
+import { fundsOverview } from "./capacity-funds";
 
 const iso = (d: Date) => d.toISOString();
 export const TIMEZONES = ["Asia/Ho_Chi_Minh", "Asia/Bangkok", "Asia/Tokyo", "UTC", "Europe/London", "America/New_York"] as const;
@@ -56,10 +57,11 @@ export function scheduleText(r: { schedule_kind: string; time_of_day: string; we
 
 export interface RoutineInput {
   actorRef: string; name: string; kind: string; scheduleKind: string; timeOfDay: string; weekday?: number | null; timezone?: string;
-  projectId?: string; assigneeId?: string; templateId?: string; title?: string; description?: string; message?: string; maxRunsPerDay?: number; deadlineMinutes?: number; now: Date;
+  projectId?: string; assigneeId?: string; templateId?: string; title?: string; description?: string; message?: string; maxRunsPerDay?: number; deadlineMinutes?: number; purpose?: string; now: Date;
 }
 function validate(i: Partial<RoutineInput>, full: boolean) {
   const bad: string[] = [];
+  if (i.purpose !== undefined && i.purpose !== "OPPORTUNITY_SCAN") bad.push("purpose(OPPORTUNITY_SCAN)");
   if (full || i.name !== undefined) if (typeof i.name !== "string" || i.name.trim().length < 3 || i.name.length > 120) bad.push("name(3..120)");
   if (full || i.kind !== undefined) if (!(KINDS as readonly string[]).includes(i.kind as string)) bad.push("kind(NOTIFY|CREATE_TASK)");
   if (full || i.scheduleKind !== undefined) if (!(SCHEDULES as readonly string[]).includes(i.scheduleKind as string)) bad.push("schedule_kind(DAILY|WEEKDAYS|WEEKLY)");
@@ -79,9 +81,9 @@ export async function createRoutine(db: Db, i: RoutineInput) {
   if (i.kind === "NOTIFY" && !i.message) throw new LumiError("VALIDATION_ERROR", 400, { missing: ["message"] });
   if (i.kind === "CREATE_TASK" && !i.templateId && !i.title) throw new LumiError("VALIDATION_ERROR", 400, { missing: ["title hoặc template_id"] });
   const [r] = await db.query<any>(
-    `INSERT INTO lumi_routines(name,kind,schedule_kind,time_of_day,weekday,timezone,project_id,assignee_id,template_id,title,description,message,max_runs_per_day,deadline_minutes,created_by,created_at,updated_at)
-     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$16) RETURNING *`,
-    [i.name.trim(), i.kind, i.scheduleKind, i.timeOfDay, i.scheduleKind === "WEEKLY" ? i.weekday : null, i.timezone ?? "Asia/Ho_Chi_Minh", i.projectId ?? null, i.assigneeId ?? null, i.templateId ?? null, i.title ?? null, i.description ?? null, i.message ?? null, i.maxRunsPerDay ?? null, i.deadlineMinutes ?? null, i.actorRef, iso(i.now)]);
+    `INSERT INTO lumi_routines(name,kind,schedule_kind,time_of_day,weekday,timezone,project_id,assignee_id,template_id,title,description,message,max_runs_per_day,deadline_minutes,created_by,created_at,updated_at,purpose)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$16,$17) RETURNING *`,
+    [i.name.trim(), i.kind, i.scheduleKind, i.timeOfDay, i.scheduleKind === "WEEKLY" ? i.weekday : null, i.timezone ?? "Asia/Ho_Chi_Minh", i.projectId ?? null, i.assigneeId ?? null, i.templateId ?? null, i.title ?? null, i.description ?? null, i.message ?? null, i.maxRunsPerDay ?? null, i.deadlineMinutes ?? null, i.actorRef, iso(i.now), i.purpose ?? null]);
   await audit(db, "routine.create", i.actorRef, { code: r.code }, i.now);
   return { routine: r };
 }
@@ -187,6 +189,12 @@ export async function runSlot(db: Db, routineId: string, slot: Date, trigger: "S
   if (r0.kind === "NOTIFY") {
     await enqueueNotify(db, `notify:routine:${routineId}:${iso(slot)}`, { type: "ROUTINE_NOTICE", routine: r0.code, message: r0.message }, now);
     return (await finish("DONE", null, null)) ? { result: "DONE" } : dup();
+  }
+  // PLN-12: an opportunity-scan routine spends the PREPARATION fund: no active company fund, or nothing left ⇒ it stops (recorded), it never opens a budget by itself
+  if (r0.purpose === "OPPORTUNITY_SCAN") {
+    const f = (await fundsOverview(db)).prep.find((x: any) => x.scope === "COMPANY");
+    if (!f) return (await finish("CAP", null, "Chưa có quỹ chuẩn bị toàn công ty")) ? { result: "CAP" } : dup();
+    if (f.available <= 0) return (await finish("CAP", null, "Quỹ chuẩn bị đã hết")) ? { result: "CAP" } : dup();
   }
   // CREATE_TASK: one coded task, created under the routine's creator, through the normal lifecycle
   try {

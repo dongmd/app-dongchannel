@@ -9,6 +9,7 @@
  *  - knowledge_context returns only the brief of the run's own task (there is no knowledge base before M3).
  * Arguments come from a language model, so they are treated as untrusted input.
  */
+import { submitTurn } from "./turn-meetings";
 import { createHash } from "node:crypto";
 import { ackRun, LumiError } from "./core";
 import { handle, type ApiCtx, type Principal } from "./handlers";
@@ -85,6 +86,11 @@ export const MCP_TOOLS = [
     name: "meeting_contribute",
     description: "Chỉ trong việc 'Họp MT-nnn: đóng góp ý kiến': nộp đóng góp có cấu trúc (lập trường, bằng chứng, rủi ro, ước tính, phản đối, đề xuất). Không có chat tự do. Im lặng không được coi là đồng ý.",
     inputSchema: { type: "object", properties: { run_id: { type: "string" }, round: { type: "integer" }, stance: { type: "string" }, evidence: { type: "string" }, risks: { type: "string" }, estimate: { type: "string" }, objection: { type: "string" }, proposal: { type: "string" } }, required: ["run_id", "stance"], additionalProperties: false },
+  },
+  {
+    name: "meeting_turn_submit",
+    description: "Chỉ trong việc 'Họp TM-nnn: lượt k' (họp THEO LƯỢT): nộp lượt phát biểu của bạn — lập trường (stance), có lập trường/lập luận MỚI hay không (new_position), và bạn có đồng ý với phương án hiện tại không (agrees). Không có chat tự do; không tự ra quyết định thay Chủ. Họp dừng khi chạm số lượt, trần chi phí, hạn giờ, hoặc một vòng không có lập trường mới.",
+    inputSchema: { type: "object", properties: { run_id: { type: "string" }, stance: { type: "string" }, new_position: { type: "boolean" }, agrees: { type: "boolean" } }, required: ["run_id", "stance", "new_position", "agrees"], additionalProperties: false },
   },
   {
     name: "meeting_synthesize",
@@ -166,7 +172,7 @@ async function callTool(ctx: ApiCtx, p: Extract<Principal, { kind: "bot" }>, nam
       throw e;
     }
   }
-  if (["knowledge_propose", "knowledge_search", "meeting_contribute", "meeting_synthesize", "meeting_action_respond"].includes(name)) {
+  if (["knowledge_propose", "knowledge_search", "meeting_contribute", "meeting_synthesize", "meeting_action_respond", "meeting_turn_submit"].includes(name)) {
     const runId = typeof args?.run_id === "string" ? args.run_id : "";
     if (!UUID.test(runId)) return text("run_id không hợp lệ.", true);
     const [run] = await ctx.db.query<any>(`SELECT r.id,r.state,r.task_id,r.assistant_id,a.slug,t.project_id FROM lumi_task_runs r JOIN lumi_assistants a ON a.id=r.assistant_id JOIN tasks t ON t.id=r.task_id WHERE r.id=$1`, [runId]);
@@ -174,6 +180,10 @@ async function callTool(ctx: ApiCtx, p: Extract<Principal, { kind: "bot" }>, nam
     if (!["DISPATCHED", "DISPATCH_UNCERTAIN", "RUNNING"].includes(run.state)) return text(`Lượt chạy không còn mở (trạng thái ${run.state}). Dừng ngay.`, true);
     const s = (v: unknown) => (typeof v === "string" ? v.trim() : "");
     try {
+      if (name === "meeting_turn_submit") {
+        const r = await submitTurn(ctx.db, { taskId: run.task_id, actorRef: p.actorRef, assistantId: run.assistant_id, stance: s(args.stance), newPosition: args.new_position === true, agrees: args.agrees === true, now: ctx.now() });
+        return text(r.alreadyProcessed ? "Lượt này đã được ghi trước đó. Dừng." : "late" in r && r.late ? "Họp đã đóng: lượt của bạn không còn tính. Dừng." : r.status === "NEXT_TURN" ? "Đã ghi lượt của bạn. Lượt kế tiếp đã được giao cho người sau. Dừng." : `Đã ghi lượt của bạn. Cuộc họp đã kết thúc (${r.status}); kết luận (nếu có) chỉ là kết quả ghi nhận, chờ Chủ. Dừng.`);
+      }
       if (name === "knowledge_propose") {
         const scope = s(args.scope) || "PROJECT";
         let supersedes: string | undefined;

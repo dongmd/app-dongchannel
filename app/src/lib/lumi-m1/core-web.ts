@@ -3,6 +3,7 @@
  * M1 additions used by the HTTP layer and the worker: web task creation (TDD 8.6.4), releasing tasks that waited for an
  * assistant, transition endpoint (8.6.8), lease renewal (8.5), identity mirror, and read models for the UI.
  */
+import { enforceCapacity } from "./capacity-funds";
 import { LumiError, activity, audit, cancelTask, createRun, enqueueNotify, missingExecConfig, requireRole, roleOf, type Db, type Role } from "./core";
 
 const iso = (d: Date) => d.toISOString();
@@ -57,6 +58,7 @@ export async function createTaskInTx(t: Db, a: NewTask) {
         if (!asst.dispatch_enabled) status = "WAITING_ASSISTANT";
       }
     }
+    await enforceCapacity(t, asst); // ORG-06: a full assistant refuses new work
     const [task] = await t.query<any>(
       `INSERT INTO tasks (code,profile_slug,title,description,status,review_status,project_id,owner_kind,owner_assistant_id,owner_actor_ref,source_key,due_at,expected_output,created_at,updated_at,plan_id,plan_version,plan_task_key,acceptance)
        VALUES ('DL-'||lpad(nextval('lumi_task_code_seq')::text,3,'0'),$1,$2,$3,$4::task_status,'NONE',$5,$6,$7,$8,$9,$10,$11,$12,$12,$13,$14,$15,$16) RETURNING id,code,status`,
